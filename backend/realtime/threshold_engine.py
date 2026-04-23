@@ -472,6 +472,52 @@ def _apply_static_profile_overrides(base_sig: dict, signal_type: str, ctx: dict,
     return out, {"applied": True, "rules": applied_rules}
 
 
+def resolve_market_phase_detail(ts_epoch: int) -> str:
+    """
+    更细粒度的盘中阶段：
+      - open_strict  09:30-09:35
+      - open         09:35-10:00
+      - morning      10:00-11:30
+      - lunch_break  11:30-13:00
+      - afternoon    13:00-14:30
+      - close        14:30-14:57
+      - close_reduce 14:57-15:00
+      - off_session  其余时段
+    """
+    dt = _dt.datetime.fromtimestamp(int(ts_epoch), tz=_CST)
+    hm = dt.hour * 60 + dt.minute
+    if 555 <= hm < 570:
+        return "pre_auction"
+    if 570 <= hm < 575:
+        return "open_strict"
+    if 575 <= hm < 600:
+        return "open"
+    if 600 <= hm < 690:
+        return "morning"
+    if 690 <= hm < 780:
+        return "lunch_break"
+    if 780 <= hm < 870:
+        return "afternoon"
+    if 870 <= hm < 897:
+        return "close"
+    if 897 <= hm < 900:
+        return "close_reduce"
+    return "off_session"
+
+
+def resolve_session_policy(ts_epoch: int) -> str:
+    detail = resolve_market_phase_detail(ts_epoch)
+    if detail == "pre_auction":
+        return "auction_pause"
+    if detail == "open_strict":
+        return "open_strict"
+    if detail == "lunch_break":
+        return "lunch_pause"
+    if detail == "close_reduce":
+        return "close_reduce"
+    return "none"
+
+
 def resolve_market_phase(ts_epoch: int) -> str:
     """
     交易时段分层：
@@ -481,15 +527,14 @@ def resolve_market_phase(ts_epoch: int) -> str:
       - close     14:30-15:00
       - off_session 其余时段
     """
-    dt = _dt.datetime.fromtimestamp(int(ts_epoch), tz=_CST)
-    hhmm = dt.hour * 100 + dt.minute
-    if 930 <= hhmm < 1000:
+    detail = resolve_market_phase_detail(ts_epoch)
+    if detail in {"open_strict", "open"}:
         return "open"
-    if 1000 <= hhmm < 1130:
+    if detail == "morning":
         return "morning"
-    if 1300 <= hhmm < 1430:
+    if detail == "afternoon":
         return "afternoon"
-    if 1430 <= hhmm <= 1500:
+    if detail in {"close", "close_reduce"}:
         return "close"
     return "off_session"
 
@@ -525,6 +570,33 @@ def resolve_regime(ctx: dict) -> str:
     if vol_20 >= mid:
         return "mid_vol"
     return "low_vol"
+
+
+def _apply_session_policy_overrides(base_sig: dict, signal_type: str, ctx: dict, cfg: dict) -> tuple[dict, dict]:
+    out = copy.deepcopy(base_sig)
+    policy = str(ctx.get("session_policy") or "none")
+    if policy in {"", "none"}:
+        return out, {"applied": False, "policy": "none", "params": {}}
+    session_cfg = cfg.get("session_policies") if isinstance(cfg, dict) else None
+    if not isinstance(session_cfg, dict):
+        return out, {"applied": False, "policy": policy, "params": {}}
+    policy_cfg = session_cfg.get(policy)
+    if not isinstance(policy_cfg, dict):
+        return out, {"applied": False, "policy": policy, "params": {}}
+    params = policy_cfg.get(signal_type)
+    if not isinstance(params, dict):
+        return out, {"applied": False, "policy": policy, "params": {}}
+    _deep_update(out, params)
+    return out, {
+        "applied": True,
+        "policy": policy,
+        "market_phase_detail": str(ctx.get("market_phase_detail") or ""),
+        "params": {
+            k: params.get(k)
+            for k in ("blocked", "blocked_reason", "observer_only", "observer_reason", "session_hint")
+            if k in params
+        },
+    }
 
 
 def build_signal_context(
@@ -599,6 +671,10 @@ def build_signal_context(
     lm_th = _safe_float(lm_cfg.get("distance_pct"), 1.5)
     limit_magnet = bool(lm_enabled and min_dist_limit_pct is not None and min_dist_limit_pct < lm_th)
     progress_ratio = intraday.get("progress_ratio", intraday.get("volume_pace_progress"))
+    concept_boards = market.get("concept_boards") if isinstance(market.get("concept_boards"), list) else []
+    concept_boards = [str(x or "").strip() for x in concept_boards if str(x or "").strip()]
+    core_concept_board = str(market.get("core_concept_board") or "").strip()
+    concept_ecology = market.get("concept_ecology") if isinstance(market.get("concept_ecology"), dict) else {}
     micro_environment = _detect_micro_environment(
         price=price,
         bid_ask_ratio=bid_ask_ratio,
@@ -618,6 +694,8 @@ def build_signal_context(
         "pool_id": int(pool_id),
         "timestamp": now_ts,
         "market_phase": resolve_market_phase(now_ts),
+        "market_phase_detail": resolve_market_phase_detail(now_ts),
+        "session_policy": resolve_session_policy(now_ts),
         "price": price,
         "pre_close": pre_close,
         "pct_chg": pct_chg,
@@ -645,6 +723,9 @@ def build_signal_context(
         "listing_days": instrument_profile.get("listing_days"),
         "listing_stage": instrument_profile.get("listing_stage"),
         "price_limit_pct": price_limit_pct,
+        "concept_boards": concept_boards,
+        "core_concept_board": core_concept_board,
+        "concept_ecology": dict(concept_ecology),
         "volume_drought": bool(micro_environment.get("volume_drought")),
         "board_seal_env": bool(micro_environment.get("board_seal_env")),
         "seal_side": micro_environment.get("seal_side"),
@@ -729,7 +810,10 @@ def get_thresholds(signal_type: str, ctx: dict, profile: Optional[dict] = None) 
     if not isinstance(cfg, dict):
         cfg = {}
 
-    phase = str(ctx.get("market_phase") or resolve_market_phase(int(time.time())))
+    ts_now = int(ctx.get("timestamp") or time.time())
+    phase = str(ctx.get("market_phase") or resolve_market_phase(ts_now))
+    phase_detail = str(ctx.get("market_phase_detail") or resolve_market_phase_detail(ts_now))
+    session_policy = str(ctx.get("session_policy") or resolve_session_policy(ts_now))
     regime = str(ctx.get("regime") or resolve_regime(ctx))
     version = str(cfg.get("version", "dyn-v1"))
 
@@ -747,26 +831,36 @@ def get_thresholds(signal_type: str, ctx: dict, profile: Optional[dict] = None) 
         _deep_update(base_sig, regime_sig)
 
     profile_sig, profile_meta = _apply_static_profile_overrides(base_sig, signal_type, ctx, cfg)
-    calibrated_sig, cali_meta = _apply_runtime_override(profile_sig, signal_type, ctx)
+    session_sig, session_meta = _apply_session_policy_overrides(profile_sig, signal_type, ctx, cfg)
+    calibrated_sig, cali_meta = _apply_runtime_override(session_sig, signal_type, ctx)
     limit_filter = apply_limit_magnet_filter(ctx, {"signal_type": signal_type}, cfg)
 
     out = copy.deepcopy(calibrated_sig)
     version_suffix = []
     if bool(profile_meta.get("applied")):
         version_suffix.append("profile")
+    if bool(session_meta.get("applied")):
+        version_suffix.append("session")
     if bool(cali_meta.get("applied")):
         version_suffix.append("calib")
     version_text = version if not version_suffix else f"{version}+{'+'.join(version_suffix)}"
+    pre_blocked = bool(out.get("blocked"))
+    pre_observer_only = bool(out.get("observer_only"))
     out.update({
         "signal_type": signal_type,
         "threshold_version": version_text,
         "market_phase": phase,
+        "market_phase_detail": phase_detail,
+        "session_policy": session_policy,
         "regime": regime,
         "industry": str(ctx.get("industry") or ""),
         "board_segment": str(ctx.get("board_segment") or ""),
         "security_type": str(ctx.get("security_type") or ""),
         "listing_stage": str(ctx.get("listing_stage") or ""),
         "price_limit_pct": _safe_float(ctx.get("price_limit_pct"), 0.0),
+        "concept_boards": list(ctx.get("concept_boards") or []),
+        "core_concept_board": str(ctx.get("core_concept_board") or ""),
+        "concept_ecology": ctx.get("concept_ecology") if isinstance(ctx.get("concept_ecology"), dict) else {},
         "risk_warning": bool(ctx.get("risk_warning")),
         "volume_drought": bool(ctx.get("volume_drought")),
         "board_seal_env": bool(ctx.get("board_seal_env")),
@@ -774,12 +868,20 @@ def get_thresholds(signal_type: str, ctx: dict, profile: Optional[dict] = None) 
         "instrument_profile": ctx.get("instrument_profile") if isinstance(ctx.get("instrument_profile"), dict) else {},
         "micro_environment": ctx.get("micro_environment") if isinstance(ctx.get("micro_environment"), dict) else {},
         "profile_override": profile_meta,
+        "session_override": session_meta,
         "limit_filter": limit_filter,
-        "blocked": bool(limit_filter.get("blocked")),
-        "observer_only": bool(limit_filter.get("observer_only")),
+        "blocked": bool(pre_blocked or limit_filter.get("blocked")),
+        "observer_only": bool(pre_observer_only or limit_filter.get("observer_only")),
         "limit_magnet": bool(limit_filter.get("limit_magnet")),
         "calibration": cali_meta,
     })
+    if bool(out.get("blocked")) and not out.get("blocked_reason"):
+        if bool(session_meta.get("applied")):
+            out["blocked_reason"] = str((session_meta.get("params") or {}).get("blocked_reason") or session_policy)
+        else:
+            out["blocked_reason"] = "threshold_blocked"
+    if bool(out.get("observer_only")) and not out.get("observer_reason") and bool(session_meta.get("applied")):
+        out["observer_reason"] = str((session_meta.get("params") or {}).get("observer_reason") or session_policy)
     return out
 
 
@@ -789,6 +891,8 @@ __all__ = [
     "infer_instrument_profile",
     "calc_theoretical_limits",
     "resolve_market_phase",
+    "resolve_market_phase_detail",
+    "resolve_session_policy",
     "resolve_regime",
     "apply_limit_magnet_filter",
     "get_thresholds",

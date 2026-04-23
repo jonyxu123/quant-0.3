@@ -102,6 +102,14 @@ class TickProvider(ABC):
         """批量更新股票行业映射。默认空实现。"""
         pass
 
+    def bulk_update_stock_concepts(self, mapping: dict):
+        """批量更新股票到东方财富概念板块映射。默认空实现。"""
+        pass
+
+    def bulk_update_concept_snapshots(self, mapping: dict):
+        """批量更新东方财富概念板块生态快照。默认空实现。"""
+        pass
+
     def bulk_update_instrument_profiles(self, mapping: dict):
         """???????????"""
         pass

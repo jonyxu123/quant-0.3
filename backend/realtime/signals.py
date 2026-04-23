@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import datetime as _dt
 import time
 import statistics
 import sys, os
@@ -145,6 +146,19 @@ _P1_CHIP_BAND_MAX = float(_P1_CHIP_CFG.get('concentration_band_max_pct', 35) or 
 _P1_ENABLED_V2 = bool(_P1_CFG.get('enabled_v2', True))
 _P1_CONFIRM_CFG = _P1_CFG.get('confirm', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_BID_ASK_TH = float(_P1_CONFIRM_CFG.get('bid_ask_ratio', 1.12) or 1.12)
+_P1_LEFT_RECLAIM_CFG = _P1_CFG.get('left_reclaim', {}) if isinstance(_P1_CFG, dict) else {}
+_P1_LEFT_RECLAIM_ENABLED = bool(_P1_LEFT_RECLAIM_CFG.get('enabled', True))
+_P1_LEFT_RECLAIM_BELOW_MIN_CONFIRMS = int(_P1_LEFT_RECLAIM_CFG.get('below_lower_min_confirms', 2) or 2)
+_P1_LEFT_RECLAIM_NEAR_MIN_CONFIRMS = int(_P1_LEFT_RECLAIM_CFG.get('near_lower_min_confirms', 1) or 1)
+_P1_LEFT_RECLAIM_BIDASK_MIN = float(_P1_LEFT_RECLAIM_CFG.get('bid_ask_ratio_min', 1.05) or 1.05)
+_P1_LEFT_RECLAIM_ASK_ABSORB_MIN = float(_P1_LEFT_RECLAIM_CFG.get('ask_wall_absorb_ratio_min', 0.55) or 0.55)
+_P1_LEFT_RECLAIM_SUPER_INFLOW_BPS_MIN = float(_P1_LEFT_RECLAIM_CFG.get('super_net_inflow_bps_min', 20) or 20)
+_P1_LEFT_RECLAIM_PRICE_BUFFER_PCT = float(_P1_LEFT_RECLAIM_CFG.get('price_reclaim_buffer_pct', 0.10) or 0.10) / 100.0
+_P1_LEFT_RECLAIM_LOOKBACK_BARS = int(_P1_LEFT_RECLAIM_CFG.get('recent_break_lookback_bars', 5) or 5)
+_P1_LEFT_RECLAIM_BREAK_EPS_PCT = float(_P1_LEFT_RECLAIM_CFG.get('recent_break_eps_pct', 0.20) or 0.20) / 100.0
+_P1_LEFT_RECLAIM_HIGHER_LOW_RISE_PCT = float(_P1_LEFT_RECLAIM_CFG.get('higher_low_min_rise_pct', 0.05) or 0.05) / 100.0
+_P1_LEFT_RECLAIM_SCORE_BONUS = int(_P1_LEFT_RECLAIM_CFG.get('score_bonus_per_confirm', 4) or 4)
+_P1_LEFT_RECLAIM_MAX_BONUS = int(_P1_LEFT_RECLAIM_CFG.get('max_confirm_bonus', 12) or 12)
 _P1_VETO_CFG = _P1_CFG.get('veto', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_VETO_LURE_LONG = bool(_P1_VETO_CFG.get('veto_lure_long', True))
 _P1_VETO_WASH_TRADE = bool(_P1_VETO_CFG.get('veto_wash_trade', True))
@@ -166,11 +180,59 @@ _P1_EXIT_LONG_HOLD_MIN_CONFIRM = int(_P1_EXIT_CFG.get('long_hold_min_confirm', 3
 _P1_EXIT_ALLOW_EARLY_RISK = bool(_P1_EXIT_CFG.get('allow_early_risk_exit', True))
 _P1_EXIT_HARD_DROP_PCT = float(_P1_EXIT_CFG.get('hard_drop_pct', -5.0) or -5.0)
 _P1_EXIT_RSI_WEAK_TH = float(_P1_EXIT_CFG.get('rsi_weak_th', 42) or 42)
+_P1_EXIT_RSI_HOT_TH = float(_P1_EXIT_CFG.get('rsi_hot_th', 72) or 72)
+_P1_EXIT_TAKE_PROFIT_DAY_GAIN_PCT = float(_P1_EXIT_CFG.get('take_profit_day_gain_pct', 3.0) or 3.0)
+_P1_EXIT_TAKE_PROFIT_NEAR_UPPER_PCT = float(_P1_EXIT_CFG.get('take_profit_near_upper_pct', 0.20) or 0.20)
+_P1_EXIT_PARTIAL_REDUCE_RATIO = float(_P1_EXIT_CFG.get('partial_reduce_ratio', 0.50) or 0.50)
+_P1_EXIT_BETA_REDUCE_RATIO = float(_P1_EXIT_CFG.get('beta_reduce_ratio', 0.33) or 0.33)
+_P1_EXIT_OBSERVE_REDUCE_RATIO = float(_P1_EXIT_CFG.get('observe_reduce_ratio', 0.25) or 0.25)
+_P1_EXIT_ATR_LOW_PCT = float(_P1_EXIT_CFG.get('atr_low_pct', 0.020) or 0.020)
+_P1_EXIT_ATR_HIGH_PCT = float(_P1_EXIT_CFG.get('atr_high_pct', 0.045) or 0.045)
+_P1_EXIT_ATR_LOW_EXTRA_CONFIRM = int(_P1_EXIT_CFG.get('atr_low_extra_confirm', 1) or 1)
+_P1_EXIT_ATR_HIGH_RELAX_CONFIRM = int(_P1_EXIT_CFG.get('atr_high_relax_confirm', 1) or 1)
 _P1_EXIT_BIDASK_WEAK_RATIO = float(_P1_EXIT_CFG.get('bid_ask_weak_ratio', 0.95) or 0.95)
 _P1_EXIT_BIG_BIAS_SELL_TH = float(_P1_EXIT_CFG.get('big_order_bias_sell_th', -0.25) or -0.25)
 _P1_EXIT_SUPER_BIAS_SELL_TH = float(_P1_EXIT_CFG.get('super_order_bias_sell_th', -0.20) or -0.20)
 _P1_EXIT_BIG_NET_OUT_BPS_TH = float(_P1_EXIT_CFG.get('big_net_outflow_bps_th', -80) or -80)
 _P1_EXIT_SUPER_NET_OUT_BPS_TH = float(_P1_EXIT_CFG.get('super_net_outflow_bps_th', -120) or -120)
+_P1_EXIT_ANCHOR_CFG = _P1_CFG.get('exit_anchor', {}) if isinstance(_P1_CFG, dict) else {}
+_P1_EXIT_ANCHOR_ENABLED = bool(_P1_EXIT_ANCHOR_CFG.get('enabled', True))
+_P1_EXIT_ENTRY_COST_BREAK_PCT = float(_P1_EXIT_ANCHOR_CFG.get('entry_cost_break_pct', 1.20) or 1.20)
+_P1_EXIT_ENTRY_AVWAP_BREAK_PCT = float(_P1_EXIT_ANCHOR_CFG.get('entry_avwap_break_pct', 0.35) or 0.35)
+_P1_EXIT_TAKE_PROFIT_COST_PREMIUM_PCT = float(
+    _P1_EXIT_ANCHOR_CFG.get('take_profit_cost_premium_pct', 6.0) or 6.0
+)
+_P1_EXIT_BETA_REDUCE_COST_PREMIUM_PCT = float(
+    _P1_EXIT_ANCHOR_CFG.get('beta_reduce_cost_premium_pct', 3.5) or 3.5
+)
+_P1_EXIT_INTRADAY_AVWAP_MIN_BARS = int(_P1_EXIT_ANCHOR_CFG.get('intraday_avwap_min_bars', 8) or 8)
+_P1_BREAKOUT_ANCHOR_CFG = _P1_CFG.get('breakout_anchor', {}) if isinstance(_P1_CFG, dict) else {}
+_P1_BREAKOUT_ANCHOR_ENABLED = bool(_P1_BREAKOUT_ANCHOR_CFG.get('enabled', True))
+_P1_BREAKOUT_ANCHOR_LOOKBACK_BARS = int(_P1_BREAKOUT_ANCHOR_CFG.get('lookback_bars', 30) or 30)
+_P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS = int(_P1_BREAKOUT_ANCHOR_CFG.get('high_lookback_bars', 5) or 5)
+_P1_BREAKOUT_ANCHOR_VOLUME_EXPAND_RATIO = float(
+    _P1_BREAKOUT_ANCHOR_CFG.get('volume_expand_ratio', 1.35) or 1.35
+)
+_P1_BREAKOUT_ANCHOR_MIN_BARS = int(_P1_BREAKOUT_ANCHOR_CFG.get('min_anchor_bars', 5) or 5)
+_P1_BREAKOUT_ANCHOR_AVWAP_BREAK_PCT = float(
+    _P1_BREAKOUT_ANCHOR_CFG.get('avwap_break_pct', 0.30) or 0.30
+)
+_P1_BREAKOUT_ANCHOR_BETA_REDUCE_PREMIUM_PCT = float(
+    _P1_BREAKOUT_ANCHOR_CFG.get('beta_reduce_premium_pct', 2.50) or 2.50
+)
+_P1_EVENT_ANCHOR_CFG = _P1_CFG.get('event_anchor', {}) if isinstance(_P1_CFG, dict) else {}
+_P1_EVENT_ANCHOR_ENABLED = bool(_P1_EVENT_ANCHOR_CFG.get('enabled', True))
+_P1_EVENT_ANCHOR_LOOKBACK_BARS = int(_P1_EVENT_ANCHOR_CFG.get('lookback_bars', 60) or 60)
+_P1_EVENT_ANCHOR_HIGH_LOOKBACK_BARS = int(_P1_EVENT_ANCHOR_CFG.get('high_lookback_bars', 3) or 3)
+_P1_EVENT_ANCHOR_VOLUME_EXPAND_RATIO = float(
+    _P1_EVENT_ANCHOR_CFG.get('volume_expand_ratio', 1.50) or 1.50
+)
+_P1_EVENT_ANCHOR_IMPULSE_PCT = float(_P1_EVENT_ANCHOR_CFG.get('impulse_pct', 1.00) or 1.00)
+_P1_EVENT_ANCHOR_MIN_BARS = int(_P1_EVENT_ANCHOR_CFG.get('min_anchor_bars', 4) or 4)
+_P1_EVENT_ANCHOR_AVWAP_BREAK_PCT = float(_P1_EVENT_ANCHOR_CFG.get('avwap_break_pct', 0.25) or 0.25)
+_P1_EVENT_ANCHOR_BETA_REDUCE_PREMIUM_PCT = float(
+    _P1_EVENT_ANCHOR_CFG.get('beta_reduce_premium_pct', 2.00) or 2.00
+)
 _P1_VOL_PACE_CFG = _P1_CFG.get('volume_pace', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_VOL_PACE_ENABLED = bool(_P1_VOL_PACE_CFG.get('enabled', True))
 _P1_VOL_PACE_MIN_PROGRESS = float(_P1_VOL_PACE_CFG.get('min_progress', 0.15) or 0.15)
@@ -183,6 +245,35 @@ _P1_VOL_LEFT_SURGE_BONUS = int(_P1_VOL_PACE_CFG.get('left_surge_bonus', 6) or 6)
 _P1_VOL_RIGHT_MIN_PACE = float(_P1_VOL_PACE_CFG.get('right_min_pace', 0.75) or 0.75)
 _P1_VOL_RIGHT_EXPAND_BONUS = int(_P1_VOL_PACE_CFG.get('right_expand_bonus', 6) or 6)
 _P1_VOL_RIGHT_SURGE_BONUS = int(_P1_VOL_PACE_CFG.get('right_surge_bonus', 8) or 8)
+_P1_CONCEPT_ECOLOGY_CFG = _P1_CFG.get('concept_ecology', {}) if isinstance(_P1_CFG, dict) else {}
+_P1_CONCEPT_ECOLOGY_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('enabled', False))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_RETREAT = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_retreat', True))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_weak', False))
+_P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('retreat_score_max', -20.0) or -20.0)
+_P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('weak_score_max', 5.0) or 5.0)
+_P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN = float(_P1_CONCEPT_ECOLOGY_CFG.get('strong_score_min', 30.0) or 30.0)
+_P1_CONCEPT_ECOLOGY_EXPAND_SCORE_MIN = float(_P1_CONCEPT_ECOLOGY_CFG.get('expand_score_min', 45.0) or 45.0)
+_P1_CONCEPT_ECOLOGY_STRONG_BONUS = int(_P1_CONCEPT_ECOLOGY_CFG.get('strong_bonus', 4) or 4)
+_P1_CONCEPT_ECOLOGY_EXPAND_BONUS = int(_P1_CONCEPT_ECOLOGY_CFG.get('expand_bonus', 6) or 6)
+_P1_CONCEPT_ECOLOGY_WEAK_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('weak_penalty', 5) or 5)
+_P1_CONCEPT_ECOLOGY_RETREAT_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('retreat_penalty', 10) or 10)
+_P1_LEFT_STREAK_CFG = _P1_CFG.get('left_streak_guard', {}) if isinstance(_P1_CFG, dict) else {}
+_P1_LEFT_STREAK_ENABLED = bool(_P1_LEFT_STREAK_CFG.get('enabled', True))
+_P1_LEFT_STREAK_ONLY_LEFT = bool(_P1_LEFT_STREAK_CFG.get('only_left_side_buy', True))
+_P1_LEFT_STREAK_COOLDOWN_HOURS = float(_P1_LEFT_STREAK_CFG.get('cooldown_hours', 72.0) or 72.0)
+_P1_LEFT_STREAK_SAME_DAY_OBS_HOURS = float(_P1_LEFT_STREAK_CFG.get('same_day_observe_hours', 18.0) or 18.0)
+_P1_LEFT_STREAK_QUICK_CLEAR_MAX_DAYS = float(_P1_LEFT_STREAK_CFG.get('quick_clear_max_hold_days', 3.0) or 3.0)
+_P1_LEFT_STREAK_REPEAT_THRESHOLD = int(_P1_LEFT_STREAK_CFG.get('repeat_streak_threshold', 2) or 2)
+_P1_LEFT_STREAK_RECENT_CLEAR_PENALTY = int(_P1_LEFT_STREAK_CFG.get('recent_clear_penalty', 4) or 4)
+_P1_LEFT_STREAK_WEAK_PENALTY = int(_P1_LEFT_STREAK_CFG.get('weak_penalty', 4) or 4)
+_P1_LEFT_STREAK_RETREAT_PENALTY = int(_P1_LEFT_STREAK_CFG.get('retreat_penalty', 8) or 8)
+_P1_LEFT_STREAK_REPEAT_WEAK_PENALTY = int(_P1_LEFT_STREAK_CFG.get('repeat_weak_penalty', 6) or 6)
+_P1_LEFT_STREAK_REPEAT_RETREAT_PENALTY = int(_P1_LEFT_STREAK_CFG.get('repeat_retreat_penalty', 12) or 12)
+_P1_LEFT_STREAK_OBS_RECENT_CLEAR = bool(_P1_LEFT_STREAK_CFG.get('observe_on_recent_clear', False))
+_P1_LEFT_STREAK_OBS_WEAK = bool(_P1_LEFT_STREAK_CFG.get('observe_on_weak', False))
+_P1_LEFT_STREAK_OBS_RETREAT = bool(_P1_LEFT_STREAK_CFG.get('observe_on_retreat', True))
+_P1_LEFT_STREAK_OBS_REPEAT_WEAK = bool(_P1_LEFT_STREAK_CFG.get('observe_on_repeat_weak', False))
+_P1_LEFT_STREAK_OBS_REPEAT_RETREAT = bool(_P1_LEFT_STREAK_CFG.get('observe_on_repeat_retreat', True))
 
 
 def _threshold_value(thresholds: Optional[dict], key: str, default: float) -> float:
@@ -202,11 +293,16 @@ def _threshold_meta(thresholds: Optional[dict]) -> dict:
     return {
         'threshold_version': thresholds.get('threshold_version'),
         'market_phase': thresholds.get('market_phase'),
+        'market_phase_detail': thresholds.get('market_phase_detail'),
+        'session_policy': thresholds.get('session_policy'),
         'regime': thresholds.get('regime'),
         'board_segment': thresholds.get('board_segment'),
         'security_type': thresholds.get('security_type'),
         'listing_stage': thresholds.get('listing_stage'),
         'price_limit_pct': thresholds.get('price_limit_pct'),
+        'concept_boards': thresholds.get('concept_boards'),
+        'core_concept_board': thresholds.get('core_concept_board'),
+        'concept_ecology': thresholds.get('concept_ecology'),
         'risk_warning': thresholds.get('risk_warning'),
         'volume_drought': thresholds.get('volume_drought'),
         'board_seal_env': thresholds.get('board_seal_env'),
@@ -214,10 +310,28 @@ def _threshold_meta(thresholds: Optional[dict]) -> dict:
         'instrument_profile': thresholds.get('instrument_profile'),
         'micro_environment': thresholds.get('micro_environment'),
         'profile_override': thresholds.get('profile_override'),
+        'session_override': thresholds.get('session_override'),
         'limit_filter': thresholds.get('limit_filter'),
         'observer_only': bool(thresholds.get('observer_only', False)),
+        'observer_reason': thresholds.get('observer_reason'),
         'blocked': bool(thresholds.get('blocked', False)),
+        'blocked_reason': thresholds.get('blocked_reason'),
     }
+
+
+def _threshold_block_reason(th_meta: Optional[dict], default: str = 'threshold_blocked') -> str:
+    if not isinstance(th_meta, dict):
+        return default
+    limit_filter = th_meta.get('limit_filter')
+    if isinstance(limit_filter, dict) and bool(limit_filter.get('blocked')):
+        return 'limit_magnet_block'
+    reason = str(th_meta.get('blocked_reason') or '').strip()
+    if reason:
+        return reason
+    policy = str(th_meta.get('session_policy') or '').strip()
+    if policy:
+        return policy
+    return default
 
 
 def _pool1_reject(result: dict, reason: str, extra: Optional[dict] = None) -> dict:
@@ -454,6 +568,367 @@ def compute_pool1_resonance_60m(minute_bars_1m: Optional[list[dict]], fallback: 
     return resonance, info
 
 
+def _parse_minute_bar_ts(bar: dict) -> Optional[int]:
+    if not isinstance(bar, dict):
+        return None
+    for key in ('timestamp', 'ts'):
+        try:
+            raw = bar.get(key)
+            if raw is None:
+                continue
+            return int(float(raw))
+        except Exception:
+            continue
+    raw_time = str(bar.get('time') or bar.get('datetime') or '').strip()
+    if not raw_time:
+        return None
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M'):
+        try:
+            return int(_dt.datetime.strptime(raw_time, fmt).timestamp())
+        except Exception:
+            pass
+    for fmt in ('%H:%M:%S', '%H:%M'):
+        try:
+            parsed = _dt.datetime.strptime(raw_time, fmt)
+            now = _dt.datetime.now()
+            return int(
+                now.replace(
+                    hour=parsed.hour,
+                    minute=parsed.minute,
+                    second=getattr(parsed, 'second', 0),
+                    microsecond=0,
+                ).timestamp()
+            )
+        except Exception:
+            pass
+    return None
+
+
+def _compute_pool1_entry_anchor(
+    price: float,
+    last_buy_price: Optional[float] = None,
+    last_buy_at: Optional[int] = None,
+    minute_bars_1m: Optional[list[dict]] = None,
+) -> dict:
+    info = {
+        'enabled': bool(_P1_EXIT_ANCHOR_ENABLED),
+        'reason': 'disabled',
+        'last_buy_at': int(last_buy_at or 0),
+        'last_buy_price': None,
+        'has_entry_cost_anchor': False,
+        'entry_cost_anchor': None,
+        'entry_cost_break_line': None,
+        'entry_cost_lost': False,
+        'entry_premium_pct': None,
+        'has_entry_avwap': False,
+        'entry_avwap': None,
+        'entry_avwap_break_line': None,
+        'entry_avwap_lost': False,
+        'entry_avwap_premium_pct': None,
+        'entry_avwap_bars': 0,
+        'has_breakout_anchor': False,
+        'breakout_anchor_reason': 'disabled',
+        'breakout_anchor_index': None,
+        'breakout_anchor_ts': None,
+        'breakout_anchor_price': None,
+        'breakout_anchor_avwap': None,
+        'breakout_anchor_break_line': None,
+        'breakout_anchor_lost': False,
+        'breakout_anchor_premium_pct': None,
+        'breakout_anchor_bars': 0,
+        'has_event_anchor': False,
+        'event_anchor_reason': 'disabled',
+        'event_anchor_index': None,
+        'event_anchor_ts': None,
+        'event_anchor_price': None,
+        'event_anchor_avwap': None,
+        'event_anchor_break_line': None,
+        'event_anchor_lost': False,
+        'event_anchor_premium_pct': None,
+        'event_anchor_bars': 0,
+        'available_anchor_count': 0,
+        'lost_anchor_count': 0,
+        'lost_anchor_labels': [],
+        'support_band_low': None,
+        'support_band_high': None,
+        'support_anchor_type': '',
+        'support_anchor_line': None,
+        'support_anchor_lost': False,
+    }
+    if not _P1_EXIT_ANCHOR_ENABLED:
+        return info
+
+    try:
+        px = float(price or 0.0)
+    except Exception:
+        px = 0.0
+    if px <= 0:
+        info['reason'] = 'invalid_price'
+        return info
+
+    try:
+        buy_price = float(last_buy_price or 0.0)
+    except Exception:
+        buy_price = 0.0
+    try:
+        buy_at = int(last_buy_at or 0)
+    except Exception:
+        buy_at = 0
+
+    if buy_price > 0:
+        cost_break_line = buy_price * (1 - _P1_EXIT_ENTRY_COST_BREAK_PCT / 100.0)
+        premium_pct = (px - buy_price) / buy_price * 100.0
+        info.update(
+            {
+                'reason': 'entry_cost_only',
+                'last_buy_price': round(buy_price, 4),
+                'has_entry_cost_anchor': True,
+                'entry_cost_anchor': round(buy_price, 4),
+                'entry_cost_break_line': round(cost_break_line, 4),
+                'entry_cost_lost': bool(px <= cost_break_line),
+                'entry_premium_pct': round(premium_pct, 4),
+            }
+        )
+    else:
+        info['reason'] = 'missing_entry_cost'
+        return info
+
+    if buy_at > 0 and isinstance(minute_bars_1m, list) and minute_bars_1m:
+        try:
+            buy_day = _dt.datetime.fromtimestamp(buy_at).date()
+        except Exception:
+            buy_day = None
+        if buy_day == _dt.datetime.now().date():
+            start_ts = max(0, buy_at - 60)
+            valid_bars: list[tuple[float, float]] = []
+            for bar in minute_bars_1m:
+                ts = _parse_minute_bar_ts(bar)
+                if ts is None or ts < start_ts:
+                    continue
+                try:
+                    if _dt.datetime.fromtimestamp(ts).date() != buy_day:
+                        continue
+                except Exception:
+                    continue
+                try:
+                    volume = float(bar.get('volume', 0) or 0)
+                except Exception:
+                    volume = 0.0
+                if volume <= 0:
+                    continue
+                try:
+                    amount = float(bar.get('amount', 0) or 0)
+                except Exception:
+                    amount = 0.0
+                if amount <= 0:
+                    try:
+                        close = float(bar.get('close', 0) or 0)
+                    except Exception:
+                        close = 0.0
+                    if close > 0:
+                        amount = close * volume
+                if amount <= 0:
+                    continue
+                valid_bars.append((volume, amount))
+
+            info['entry_avwap_bars'] = len(valid_bars)
+            if len(valid_bars) >= _P1_EXIT_INTRADAY_AVWAP_MIN_BARS:
+                total_volume = sum(v for v, _ in valid_bars)
+                total_amount = sum(a for _, a in valid_bars)
+                if total_volume > 0 and total_amount > 0:
+                    entry_avwap = total_amount / total_volume
+                    avwap_break_line = entry_avwap * (1 - _P1_EXIT_ENTRY_AVWAP_BREAK_PCT / 100.0)
+                    avwap_premium_pct = (px - entry_avwap) / entry_avwap * 100.0 if entry_avwap > 0 else None
+                    info.update(
+                        {
+                            'reason': 'entry_avwap_ready',
+                            'has_entry_avwap': True,
+                            'entry_avwap': round(entry_avwap, 4),
+                            'entry_avwap_break_line': round(avwap_break_line, 4),
+                            'entry_avwap_lost': bool(px <= avwap_break_line),
+                            'entry_avwap_premium_pct': round(avwap_premium_pct, 4) if avwap_premium_pct is not None else None,
+                        }
+                    )
+        else:
+            info['reason'] = 'entry_day_not_current_session'
+
+    if not _P1_BREAKOUT_ANCHOR_ENABLED:
+        return info
+
+    bars_norm: list[dict] = []
+    if isinstance(minute_bars_1m, list):
+        for bar in minute_bars_1m:
+            ts = _parse_minute_bar_ts(bar)
+            if ts is None:
+                continue
+            try:
+                close = float(bar.get('close', 0) or 0)
+            except Exception:
+                close = 0.0
+            if close <= 0:
+                continue
+            try:
+                high = float(bar.get('high', close) or close)
+            except Exception:
+                high = close
+            try:
+                volume = float(bar.get('volume', 0) or 0)
+            except Exception:
+                volume = 0.0
+            try:
+                amount = float(bar.get('amount', 0) or 0)
+            except Exception:
+                amount = 0.0
+            if amount <= 0 and volume > 0:
+                amount = close * volume
+            bars_norm.append(
+                {
+                    'timestamp': ts,
+                    'close': close,
+                    'high': high if high > 0 else close,
+                    'volume': max(0.0, volume),
+                    'amount': max(0.0, amount),
+                }
+            )
+    bars_norm.sort(key=lambda x: int(x.get('timestamp', 0) or 0))
+    bars_breakout = list(bars_norm)
+    if _P1_BREAKOUT_ANCHOR_LOOKBACK_BARS > 0 and len(bars_breakout) > _P1_BREAKOUT_ANCHOR_LOOKBACK_BARS:
+        bars_breakout = bars_breakout[-_P1_BREAKOUT_ANCHOR_LOOKBACK_BARS:]
+    if len(bars_breakout) >= max(_P1_BREAKOUT_ANCHOR_MIN_BARS, _P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS + 1):
+        breakout_idx: Optional[int] = None
+        for i in range(_P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS, len(bars_breakout)):
+            hist = bars_breakout[i - _P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS:i]
+            prev_high = max(float(x.get('high', x.get('close', 0)) or 0) for x in hist)
+            vols = [float(x.get('volume', 0) or 0) for x in hist]
+            avg_vol = statistics.mean(vols) if vols else 0.0
+            cur_close = float(bars_breakout[i].get('close', 0) or 0)
+            cur_vol = float(bars_breakout[i].get('volume', 0) or 0)
+            if cur_close <= 0 or prev_high <= 0 or avg_vol <= 0:
+                continue
+            if cur_close >= prev_high and cur_vol >= avg_vol * _P1_BREAKOUT_ANCHOR_VOLUME_EXPAND_RATIO:
+                breakout_idx = i
+
+        if breakout_idx is None:
+            info['breakout_anchor_reason'] = 'no_recent_breakout'
+        else:
+            anchor_bars = bars_breakout[breakout_idx:]
+            info['breakout_anchor_bars'] = len(anchor_bars)
+            if len(anchor_bars) < _P1_BREAKOUT_ANCHOR_MIN_BARS:
+                info['breakout_anchor_reason'] = 'anchor_window_too_short'
+            else:
+                total_volume = sum(float(x.get('volume', 0) or 0) for x in anchor_bars)
+                total_amount = sum(float(x.get('amount', 0) or 0) for x in anchor_bars)
+                if total_volume <= 0 or total_amount <= 0:
+                    info['breakout_anchor_reason'] = 'invalid_anchor_volume'
+                else:
+                    breakout_avwap = total_amount / total_volume
+                    breakout_break_line = breakout_avwap * (1 - _P1_BREAKOUT_ANCHOR_AVWAP_BREAK_PCT / 100.0)
+                    breakout_premium_pct = (px - breakout_avwap) / breakout_avwap * 100.0 if breakout_avwap > 0 else None
+                    info.update(
+                        {
+                            'has_breakout_anchor': True,
+                            'breakout_anchor_reason': 'recent_breakout_ready',
+                            'breakout_anchor_index': int(breakout_idx),
+                            'breakout_anchor_ts': int(anchor_bars[0].get('timestamp', 0) or 0),
+                            'breakout_anchor_price': round(float(anchor_bars[0].get('close', 0) or 0), 4),
+                            'breakout_anchor_avwap': round(breakout_avwap, 4),
+                            'breakout_anchor_break_line': round(breakout_break_line, 4),
+                            'breakout_anchor_lost': bool(px <= breakout_break_line),
+                            'breakout_anchor_premium_pct': round(breakout_premium_pct, 4) if breakout_premium_pct is not None else None,
+                            'breakout_anchor_bars': len(anchor_bars),
+                        }
+                    )
+    else:
+        info['breakout_anchor_reason'] = 'insufficient_bars'
+
+    bars_event = list(bars_norm)
+    if buy_at > 0:
+        bars_event = [x for x in bars_event if int(x.get('timestamp', 0) or 0) >= max(0, buy_at - 60)]
+    if _P1_EVENT_ANCHOR_LOOKBACK_BARS > 0 and len(bars_event) > _P1_EVENT_ANCHOR_LOOKBACK_BARS:
+        bars_event = bars_event[-_P1_EVENT_ANCHOR_LOOKBACK_BARS:]
+    if _P1_EVENT_ANCHOR_ENABLED and len(bars_event) >= max(_P1_EVENT_ANCHOR_MIN_BARS, _P1_EVENT_ANCHOR_HIGH_LOOKBACK_BARS + 2):
+        event_idx: Optional[int] = None
+        for i in range(_P1_EVENT_ANCHOR_HIGH_LOOKBACK_BARS + 1, len(bars_event)):
+            hist = bars_event[i - _P1_EVENT_ANCHOR_HIGH_LOOKBACK_BARS:i]
+            prev_bar = bars_event[i - 1]
+            prev_close = float(prev_bar.get('close', 0) or 0)
+            prev_high = max(float(x.get('high', x.get('close', 0)) or 0) for x in hist)
+            vols = [float(x.get('volume', 0) or 0) for x in hist]
+            avg_vol = statistics.mean(vols) if vols else 0.0
+            cur_close = float(bars_event[i].get('close', 0) or 0)
+            cur_vol = float(bars_event[i].get('volume', 0) or 0)
+            if cur_close <= 0 or prev_close <= 0 or avg_vol <= 0:
+                continue
+            impulse_pct = (cur_close - prev_close) / prev_close * 100.0
+            if (
+                impulse_pct >= _P1_EVENT_ANCHOR_IMPULSE_PCT
+                and cur_close >= prev_high
+                and cur_vol >= avg_vol * _P1_EVENT_ANCHOR_VOLUME_EXPAND_RATIO
+            ):
+                event_idx = i
+
+        if event_idx is None:
+            info['event_anchor_reason'] = 'no_recent_event'
+        else:
+            anchor_bars = bars_event[event_idx:]
+            info['event_anchor_bars'] = len(anchor_bars)
+            if len(anchor_bars) < _P1_EVENT_ANCHOR_MIN_BARS:
+                info['event_anchor_reason'] = 'anchor_window_too_short'
+            else:
+                total_volume = sum(float(x.get('volume', 0) or 0) for x in anchor_bars)
+                total_amount = sum(float(x.get('amount', 0) or 0) for x in anchor_bars)
+                if total_volume <= 0 or total_amount <= 0:
+                    info['event_anchor_reason'] = 'invalid_anchor_volume'
+                else:
+                    event_avwap = total_amount / total_volume
+                    event_break_line = event_avwap * (1 - _P1_EVENT_ANCHOR_AVWAP_BREAK_PCT / 100.0)
+                    event_premium_pct = (px - event_avwap) / event_avwap * 100.0 if event_avwap > 0 else None
+                    info.update(
+                        {
+                            'has_event_anchor': True,
+                            'event_anchor_reason': 'recent_event_ready',
+                            'event_anchor_index': int(event_idx),
+                            'event_anchor_ts': int(anchor_bars[0].get('timestamp', 0) or 0),
+                            'event_anchor_price': round(float(anchor_bars[0].get('close', 0) or 0), 4),
+                            'event_anchor_avwap': round(event_avwap, 4),
+                            'event_anchor_break_line': round(event_break_line, 4),
+                            'event_anchor_lost': bool(px <= event_break_line),
+                            'event_anchor_premium_pct': round(event_premium_pct, 4) if event_premium_pct is not None else None,
+                            'event_anchor_bars': len(anchor_bars),
+                        }
+                    )
+    elif _P1_EVENT_ANCHOR_ENABLED:
+        info['event_anchor_reason'] = 'insufficient_bars'
+
+    anchors: list[tuple[str, float, bool]] = []
+    if info.get('entry_cost_break_line') is not None:
+        anchors.append(('entry_cost', float(info['entry_cost_break_line']), bool(info.get('entry_cost_lost', False))))
+    if info.get('entry_avwap_break_line') is not None:
+        anchors.append(('entry_avwap', float(info['entry_avwap_break_line']), bool(info.get('entry_avwap_lost', False))))
+    if info.get('breakout_anchor_break_line') is not None:
+        anchors.append(('breakout_avwap', float(info['breakout_anchor_break_line']), bool(info.get('breakout_anchor_lost', False))))
+    if info.get('event_anchor_break_line') is not None:
+        anchors.append(('event_avwap', float(info['event_anchor_break_line']), bool(info.get('event_anchor_lost', False))))
+
+    if anchors:
+        sorted_anchors = sorted(anchors, key=lambda x: x[1])
+        dominant_anchor = max(anchors, key=lambda x: x[1])
+        lost_labels = [label for label, _, lost in anchors if lost]
+        info.update(
+            {
+                'available_anchor_count': len(anchors),
+                'lost_anchor_count': len(lost_labels),
+                'lost_anchor_labels': lost_labels,
+                'support_band_low': round(sorted_anchors[0][1], 4),
+                'support_band_high': round(sorted_anchors[-1][1], 4),
+                'support_anchor_type': dominant_anchor[0],
+                'support_anchor_line': round(dominant_anchor[1], 4),
+                'support_anchor_lost': bool(dominant_anchor[2]),
+            }
+        )
+    return info
+
+
 def compute_pool1_chip_bonus(chip: Optional[dict]) -> tuple[int, dict]:
     """
     Pool1 二阶段筹码加分：在满足前置条件时给出 [0, weight] 加分。
@@ -506,6 +981,288 @@ def compute_pool1_chip_bonus(chip: Optional[dict]) -> tuple[int, dict]:
     info['bonus'] = max(0, bonus)
     info['reason'] = 'ok' if bonus > 0 else 'weak_bonus'
     return max(0, bonus), info
+
+
+def _compute_pool1_left_reclaim(
+    *,
+    price: float,
+    boll_lower: float,
+    near_lower: bool,
+    below_lower: bool,
+    rsi6: Optional[float],
+    rsi_oversold_th: float,
+    pct_chg: Optional[float],
+    prev_price: Optional[float] = None,
+    bid_ask_ratio: Optional[float] = None,
+    ask_wall_absorb_ratio: Optional[float] = None,
+    super_net_flow_bps: Optional[float] = None,
+    minute_bars_1m: Optional[list[dict]] = None,
+) -> tuple[bool, dict]:
+    info = {
+        'enabled': bool(_P1_LEFT_RECLAIM_ENABLED),
+        'candidate': False,
+        'current_above_lower': False,
+        'recent_break_below_lower': False,
+        'reclaimed_lower': False,
+        'higher_low_1m': False,
+        'confirm_items': [],
+        'required_confirms': 0,
+        'confirm_count': 0,
+        'score_bonus': 0,
+        'reason': '',
+    }
+    if not _P1_LEFT_RECLAIM_ENABLED or price <= 0 or boll_lower <= 0:
+        info['reason'] = 'disabled_or_invalid'
+        return True, info
+
+    current_above_lower = bool(price >= boll_lower * (1 - _P1_LEFT_RECLAIM_PRICE_BUFFER_PCT))
+    info['current_above_lower'] = current_above_lower
+
+    recent_break = bool(below_lower)
+    higher_low = False
+    bars = minute_bars_1m if isinstance(minute_bars_1m, list) else []
+    valid_lows: list[float] = []
+    if bars:
+        for b in bars[-max(2, _P1_LEFT_RECLAIM_LOOKBACK_BARS):]:
+            try:
+                low = float(b.get('low', 0) or 0)
+            except Exception:
+                low = 0.0
+            if low > 0:
+                valid_lows.append(low)
+        if valid_lows:
+            recent_low = min(valid_lows)
+            recent_break = bool(recent_break or recent_low <= boll_lower * (1 - _P1_LEFT_RECLAIM_BREAK_EPS_PCT))
+        if len(valid_lows) >= 3:
+            recent_lows = valid_lows[-3:]
+            higher_low = bool(
+                recent_lows[-2] <= recent_lows[-3]
+                and recent_lows[-1] >= recent_lows[-2] * (1 + _P1_LEFT_RECLAIM_HIGHER_LOW_RISE_PCT)
+            )
+    info['recent_break_below_lower'] = recent_break
+    info['higher_low_1m'] = higher_low
+
+    try:
+        rsi_val = float(rsi6) if rsi6 is not None else None
+    except Exception:
+        rsi_val = None
+    try:
+        pct_val = float(pct_chg) if pct_chg is not None else None
+    except Exception:
+        pct_val = None
+    oversold_pressure = bool(
+        (rsi_val is not None and rsi_val <= float(rsi_oversold_th))
+        or (pct_val is not None and pct_val <= -3.0)
+    )
+    candidate = bool(below_lower or recent_break or (near_lower and oversold_pressure))
+    info['candidate'] = candidate
+    if not candidate:
+        info['reason'] = 'reclaim_candidate_missing'
+        return False, info
+
+    reclaimed_lower = bool(
+        current_above_lower
+        and (
+            recent_break
+            or (prev_price is not None and float(prev_price) > 0 and float(prev_price) < boll_lower)
+        )
+    )
+    info['reclaimed_lower'] = reclaimed_lower
+
+    confirm_items: list[str] = []
+    if reclaimed_lower:
+        confirm_items.append('下轨回收')
+    if bid_ask_ratio is not None and float(bid_ask_ratio) >= _P1_LEFT_RECLAIM_BIDASK_MIN:
+        confirm_items.append(f'承接回暖({float(bid_ask_ratio):.2f})')
+    if ask_wall_absorb_ratio is not None and float(ask_wall_absorb_ratio) >= _P1_LEFT_RECLAIM_ASK_ABSORB_MIN:
+        confirm_items.append(f'压盘吸收({float(ask_wall_absorb_ratio):.2f})')
+    if super_net_flow_bps is not None and float(super_net_flow_bps) >= _P1_LEFT_RECLAIM_SUPER_INFLOW_BPS_MIN:
+        confirm_items.append(f'超大单回流({float(super_net_flow_bps):+.0f}bps)')
+    if higher_low:
+        confirm_items.append('1m低点抬高')
+
+    required_confirms = (
+        _P1_LEFT_RECLAIM_BELOW_MIN_CONFIRMS if below_lower else _P1_LEFT_RECLAIM_NEAR_MIN_CONFIRMS
+    )
+    info['confirm_items'] = confirm_items
+    info['required_confirms'] = int(required_confirms)
+    info['confirm_count'] = int(len(confirm_items))
+    info['score_bonus'] = min(_P1_LEFT_RECLAIM_MAX_BONUS, len(confirm_items) * _P1_LEFT_RECLAIM_SCORE_BONUS)
+
+    if len(confirm_items) < required_confirms:
+        info['reason'] = 'reclaim_confirm_missing'
+        return False, info
+
+    info['reason'] = 'ok'
+    return True, info
+
+
+def _compute_pool1_concept_ecology_gate(
+    *,
+    core_concept_board: Optional[str],
+    concept_boards: Optional[list[str]],
+    concept_ecology: Optional[dict],
+) -> dict:
+    info = {
+        'enabled': bool(_P1_CONCEPT_ECOLOGY_ENABLED),
+        'core_concept_board': str(core_concept_board or '').strip(),
+        'concept_boards': list(concept_boards or []),
+        'state': 'unknown',
+        'score': 0.0,
+        'observe_only': False,
+        'observe_reason': '',
+        'score_adj': 0,
+        'reason': '',
+    }
+    if not _P1_CONCEPT_ECOLOGY_ENABLED:
+        info['reason'] = 'disabled'
+        return info
+
+    ecology = dict(concept_ecology or {})
+    if not info['core_concept_board'] and info['concept_boards']:
+        info['core_concept_board'] = str(info['concept_boards'][0] or '').strip()
+    if not info['core_concept_board']:
+        info['reason'] = 'concept_missing'
+        return info
+
+    state = str(ecology.get('state') or 'unknown').strip().lower()
+    try:
+        score = float(ecology.get('score', 0.0) or 0.0)
+    except Exception:
+        score = 0.0
+    info['state'] = state or 'unknown'
+    info['score'] = round(score, 2)
+
+    if score <= _P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX or state == 'retreat':
+        info['score_adj'] = -abs(_P1_CONCEPT_ECOLOGY_RETREAT_PENALTY)
+        if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_RETREAT:
+            info['observe_only'] = True
+            info['observe_reason'] = 'concept_retreat'
+        info['reason'] = 'retreat'
+        return info
+
+    if score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX or state == 'weak':
+        info['score_adj'] = -abs(_P1_CONCEPT_ECOLOGY_WEAK_PENALTY)
+        if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK:
+            info['observe_only'] = True
+            info['observe_reason'] = 'concept_weak'
+        info['reason'] = 'weak'
+        return info
+
+    if score >= _P1_CONCEPT_ECOLOGY_EXPAND_SCORE_MIN or state == 'expand':
+        info['score_adj'] = abs(_P1_CONCEPT_ECOLOGY_EXPAND_BONUS)
+        info['reason'] = 'expand'
+        return info
+
+    if score >= _P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN or state == 'strong':
+        info['score_adj'] = abs(_P1_CONCEPT_ECOLOGY_STRONG_BONUS)
+        info['reason'] = 'strong'
+        return info
+
+    info['reason'] = 'neutral'
+    return info
+
+
+def _compute_pool1_left_streak_guard(
+    *,
+    position_state: Optional[dict],
+    concept_gate: Optional[dict],
+    now_ts: Optional[int] = None,
+) -> dict:
+    info = {
+        'enabled': bool(_P1_LEFT_STREAK_ENABLED),
+        'active': False,
+        'observe_only': False,
+        'observe_reason': '',
+        'score_adj': 0,
+        'reason': '',
+        'last_buy_type': '',
+        'last_sell_type': '',
+        'hold_days_before_clear': None,
+        'hours_since_clear': None,
+        'cooldown_hours': float(_P1_LEFT_STREAK_COOLDOWN_HOURS),
+        'remaining_cooldown_hours': None,
+        'quick_clear_streak': 0,
+        'concept_state': str((concept_gate or {}).get('state') or 'unknown'),
+    }
+    if not _P1_LEFT_STREAK_ENABLED:
+        info['reason'] = 'disabled'
+        return info
+    if not isinstance(position_state, dict):
+        info['reason'] = 'position_state_missing'
+        return info
+
+    ts_now = int(now_ts or time.time())
+    last_buy_at = int(position_state.get('last_buy_at', 0) or 0)
+    last_sell_at = int(position_state.get('last_sell_at', 0) or 0)
+    last_buy_type = str(position_state.get('last_buy_type') or '').strip()
+    last_sell_type = str(position_state.get('last_sell_type') or '').strip()
+    quick_clear_streak = int(position_state.get('left_quick_clear_streak', 0) or 0)
+    info['last_buy_type'] = last_buy_type
+    info['last_sell_type'] = last_sell_type
+    info['quick_clear_streak'] = quick_clear_streak
+    if last_buy_at <= 0 or last_sell_at <= 0 or last_sell_at < last_buy_at:
+        info['reason'] = 'no_recent_roundtrip'
+        return info
+    if _P1_LEFT_STREAK_ONLY_LEFT and last_buy_type != 'left_side_buy':
+        info['reason'] = 'last_buy_not_left_side'
+        return info
+
+    hold_days = max(0.0, float(last_sell_at - last_buy_at) / 86400.0)
+    hours_since_clear = max(0.0, float(ts_now - last_sell_at) / 3600.0)
+    info['hold_days_before_clear'] = round(hold_days, 4)
+    info['hours_since_clear'] = round(hours_since_clear, 2)
+    info['remaining_cooldown_hours'] = round(max(0.0, _P1_LEFT_STREAK_COOLDOWN_HOURS - hours_since_clear), 2)
+    if hold_days > _P1_LEFT_STREAK_QUICK_CLEAR_MAX_DAYS:
+        info['reason'] = 'clear_not_quick'
+        return info
+    if hours_since_clear > _P1_LEFT_STREAK_COOLDOWN_HOURS:
+        info['reason'] = 'cooldown_expired'
+        return info
+
+    info['active'] = True
+    info['score_adj'] -= abs(_P1_LEFT_STREAK_RECENT_CLEAR_PENALTY)
+    info['reason'] = 'recent_quick_clear'
+
+    concept_state = str((concept_gate or {}).get('state') or 'unknown').strip().lower()
+    if concept_state == 'retreat':
+        info['score_adj'] -= abs(_P1_LEFT_STREAK_RETREAT_PENALTY)
+        info['reason'] = 'retreat_after_quick_clear'
+        if _P1_LEFT_STREAK_OBS_RETREAT:
+            info['observe_only'] = True
+            info['observe_reason'] = 'left_side_streak_retreat'
+    elif concept_state == 'weak':
+        info['score_adj'] -= abs(_P1_LEFT_STREAK_WEAK_PENALTY)
+        info['reason'] = 'weak_after_quick_clear'
+        if _P1_LEFT_STREAK_OBS_WEAK:
+            info['observe_only'] = True
+            info['observe_reason'] = 'left_side_streak_weak'
+
+    if quick_clear_streak >= _P1_LEFT_STREAK_REPEAT_THRESHOLD:
+        if concept_state == 'retreat':
+            info['score_adj'] -= abs(_P1_LEFT_STREAK_REPEAT_RETREAT_PENALTY)
+            info['reason'] = 'repeat_retreat_after_quick_clear'
+            if _P1_LEFT_STREAK_OBS_REPEAT_RETREAT:
+                info['observe_only'] = True
+                info['observe_reason'] = 'left_side_repeat_retreat'
+        elif concept_state == 'weak':
+            info['score_adj'] -= abs(_P1_LEFT_STREAK_REPEAT_WEAK_PENALTY)
+            info['reason'] = 'repeat_weak_after_quick_clear'
+            if _P1_LEFT_STREAK_OBS_REPEAT_WEAK:
+                info['observe_only'] = True
+                info['observe_reason'] = 'left_side_repeat_weak'
+
+    if (
+        hours_since_clear <= _P1_LEFT_STREAK_SAME_DAY_OBS_HOURS
+        and not info['observe_only']
+        and _P1_LEFT_STREAK_OBS_RECENT_CLEAR
+    ):
+        info['observe_only'] = True
+        info['observe_reason'] = 'left_side_recent_clear'
+
+    if not info['observe_only']:
+        info['observe_reason'] = ''
+    return info
 
 
 # ============================================================
@@ -851,20 +1608,45 @@ def finalize_pool1_signal(signal: dict, thresholds: Optional[dict] = None) -> di
         if th_meta:
             details['threshold'] = th_meta
 
+    detail_observe_only = bool(details.get('observe_only', False))
     observe_only = (strength < _P1_SCORE_EXECUTABLE) or bool(
         th_meta.get('observer_only') if isinstance(th_meta, dict) else False
-    )
+    ) or detail_observe_only
     details['observe_only'] = bool(observe_only)
     details['score_exec_th'] = _P1_SCORE_EXECUTABLE
     details['score_observe_th'] = _P1_SCORE_OBSERVE
+    if sig_type == 'timing_clear':
+        clear_level = str(details.get('clear_level_hint') or 'full').strip().lower()
+        clear_family = str(details.get('clear_family') or 'defense').strip().lower()
+        if observe_only:
+            clear_level = 'observe'
+            if not details.get('suggest_reduce_ratio'):
+                details['suggest_reduce_ratio'] = round(float(_P1_EXIT_OBSERVE_REDUCE_RATIO), 2)
+        elif clear_level not in ('full', 'partial'):
+            clear_level = 'full'
+        details['clear_level'] = clear_level
+        details['clear_family'] = clear_family
+        if clear_level == 'partial' and not details.get('suggest_reduce_ratio'):
+            details['suggest_reduce_ratio'] = round(float(_P1_EXIT_PARTIAL_REDUCE_RATIO), 2)
+        if clear_level == 'full':
+            details['clear_label'] = '清仓执行'
+        elif clear_level == 'partial':
+            details['clear_label'] = '分批减仓'
+        else:
+            details['clear_label'] = '观察减仓'
 
     msg = str(out.get('message') or '')
-    if observe_only:
-        if '仅观察' not in msg:
-            out['message'] = f'{msg}·仅观察' if msg else '仅观察'
+    if sig_type == 'timing_clear':
+        clear_label = str(details.get('clear_label') or ('观察减仓' if observe_only else '清仓执行'))
+        if clear_label and clear_label not in msg:
+            out['message'] = f'{msg}·{clear_label}' if msg else clear_label
     else:
-        if '可执行' not in msg:
-            out['message'] = f'{msg}·可执行' if msg else '可执行'
+        if observe_only:
+            if '仅观察' not in msg:
+                out['message'] = f'{msg}·仅观察' if msg else '仅观察'
+        else:
+            if '可执行' not in msg:
+                out['message'] = f'{msg}·可执行' if msg else '可执行'
     out['strength'] = int(round(strength))
     return out
 
@@ -888,6 +1670,14 @@ def detect_left_side_buy(
     volume_pace_ratio: Optional[float] = None,
     volume_pace_state: Optional[str] = None,
     thresholds: Optional[dict] = None,
+    prev_price: Optional[float] = None,
+    ask_wall_absorb_ratio: Optional[float] = None,
+    super_net_flow_bps: Optional[float] = None,
+    minute_bars_1m: Optional[list[dict]] = None,
+    core_concept_board: Optional[str] = None,
+    concept_boards: Optional[list[str]] = None,
+    concept_ecology: Optional[dict] = None,
+    position_state: Optional[dict] = None,
 ) -> dict:
     """
     左侧买入信号：价格贴近/跌破下轨，配合 RSI 与确认项。
@@ -899,7 +1689,7 @@ def detect_left_side_buy(
 
     th_meta = _threshold_meta(thresholds)
     if th_meta.get('blocked'):
-        reason = 'limit_magnet_block' if th_meta.get('limit_filter') else 'threshold_blocked'
+        reason = _threshold_block_reason(th_meta)
         return _pool1_reject(result, reason, {'threshold': th_meta})
 
     # 动态阈值已提供 limit_filter 时，以动态引擎结果为准
@@ -942,6 +1732,36 @@ def detect_left_side_buy(
     if _P1_ENABLED_V2 and not (near_lower or below_lower):
         return _pool1_reject(result, 'trigger_missing')
 
+    reclaim_ok, reclaim_info = _compute_pool1_left_reclaim(
+        price=price,
+        boll_lower=boll_lower,
+        near_lower=near_lower,
+        below_lower=below_lower,
+        rsi6=rsi6,
+        rsi_oversold_th=rsi_oversold_th,
+        pct_chg=pct_chg,
+        prev_price=prev_price,
+        bid_ask_ratio=bid_ask_ratio,
+        ask_wall_absorb_ratio=ask_wall_absorb_ratio,
+        super_net_flow_bps=super_net_flow_bps,
+        minute_bars_1m=minute_bars_1m,
+    )
+    if not reclaim_ok:
+        return _pool1_reject(result, str(reclaim_info.get('reason') or 'reclaim_missing'), {
+            'left_reclaim': reclaim_info,
+            'threshold': th_meta,
+        })
+
+    concept_gate = _compute_pool1_concept_ecology_gate(
+        core_concept_board=core_concept_board,
+        concept_boards=concept_boards,
+        concept_ecology=concept_ecology,
+    )
+    left_streak_guard = _compute_pool1_left_streak_guard(
+        position_state=position_state,
+        concept_gate=concept_gate,
+    )
+
     conditions = []
     if near_lower:
         conditions.append(f'贴近下轨({dist_to_lower:+.2f}%<= {near_lower_th:.1f}%)')
@@ -951,6 +1771,20 @@ def detect_left_side_buy(
         conditions.append(f'RSI6超卖({rsi6:.1f}<={rsi_oversold_th:.0f})')
     if pct_chg is not None and pct_chg < -3:
         conditions.append(f'跌幅{pct_chg:.2f}%')
+    reclaim_items = list(reclaim_info.get('confirm_items') or [])
+    if reclaim_items:
+        conditions.append('回收确认:' + '+'.join(reclaim_items))
+    concept_summary = ''
+    if concept_gate.get('enabled') and concept_gate.get('core_concept_board'):
+        concept_summary = f"{concept_gate.get('core_concept_board')}:{concept_gate.get('state')}({float(concept_gate.get('score', 0.0)):+.0f})"
+        conditions.append('概念生态:' + concept_summary)
+    if left_streak_guard.get('active'):
+        streak_reason = str(left_streak_guard.get('reason') or 'recent_quick_clear')
+        hours_since_clear = left_streak_guard.get('hours_since_clear')
+        if hours_since_clear is not None:
+            conditions.append(f'左侧抑制:{streak_reason}({float(hours_since_clear):.1f}h)')
+        else:
+            conditions.append(f'左侧抑制:{streak_reason}')
 
     if _P1_ENABLED_V2:
         if _P1_RESONANCE_ENABLED and not resonance_60m:
@@ -986,6 +1820,9 @@ def detect_left_side_buy(
             pace_adj += _P1_VOL_LEFT_EXPAND_BONUS
         elif pace_state == 'surge':
             pace_adj += _P1_VOL_LEFT_SURGE_BONUS
+    reclaim_bonus = int(reclaim_info.get('score_bonus', 0) or 0)
+    concept_adj = int(concept_gate.get('score_adj', 0) or 0)
+    left_streak_adj = int(left_streak_guard.get('score_adj', 0) or 0)
 
     strength = 0
     if near_lower:
@@ -998,7 +1835,9 @@ def detect_left_side_buy(
         strength += 20
     if below_lower and rsi6 is not None and rsi6 <= rsi_oversold_th:
         strength += 10
-    strength = max(0, min(100, strength + pace_adj))
+    strength = max(0, min(100, strength + pace_adj + reclaim_bonus + concept_adj + left_streak_adj))
+    observe_only_gate = bool(concept_gate.get('observe_only')) or bool(left_streak_guard.get('observe_only'))
+    observe_reason = str(left_streak_guard.get('observe_reason') or '') or str(concept_gate.get('observe_reason') or '')
     return {
         'has_signal': True,
         'type': 'left_side_buy',
@@ -1017,6 +1856,19 @@ def detect_left_side_buy(
             'volume_pace_ratio': round(pace_ratio_val, 4) if pace_ratio_val is not None else None,
             'volume_pace_state': pace_state,
             'volume_pace_adj': int(pace_adj),
+            'left_reclaim': reclaim_info,
+            'left_reclaim_bonus': int(reclaim_bonus),
+            'concept_board': str(core_concept_board or ''),
+            'concept_boards': list(concept_boards or []),
+            'concept_ecology': concept_gate,
+            'concept_ecology_adj': int(concept_adj),
+            'left_streak_guard': left_streak_guard,
+            'left_streak_adj': int(left_streak_adj),
+            'prev_price': round(float(prev_price), 3) if prev_price is not None else None,
+            'ask_wall_absorb_ratio': round(float(ask_wall_absorb_ratio), 3) if ask_wall_absorb_ratio is not None else None,
+            'super_net_flow_bps': round(float(super_net_flow_bps), 2) if super_net_flow_bps is not None else None,
+            'observe_only': observe_only_gate,
+            'observe_reason': observe_reason if observe_only_gate else None,
             'threshold': th_meta,
         },
     }
@@ -1055,7 +1907,7 @@ def detect_right_side_breakout(
 
     th_meta = _threshold_meta(thresholds)
     if th_meta.get('blocked'):
-        reason = 'limit_magnet_block' if th_meta.get('limit_filter') else 'threshold_blocked'
+        reason = _threshold_block_reason(th_meta)
         return _pool1_reject(result, reason, {'threshold': th_meta})
 
     if _P1_ENABLED_V2 and (prev_price is None or prev_price <= 0):
@@ -1207,9 +2059,11 @@ def detect_right_side_breakout(
 def detect_timing_clear(
     price: float,
     boll_mid: float,
+    boll_upper: Optional[float] = None,
     ma5: Optional[float] = None,
     ma10: Optional[float] = None,
     ma20: Optional[float] = None,
+    atr_14: Optional[float] = None,
     rsi6: Optional[float] = None,
     pct_chg: Optional[float] = None,
     volume_ratio: Optional[float] = None,
@@ -1221,6 +2075,9 @@ def detect_timing_clear(
     super_net_flow_bps: Optional[float] = None,
     volume_pace_ratio: Optional[float] = None,
     volume_pace_state: Optional[str] = None,
+    last_buy_price: Optional[float] = None,
+    last_buy_at: Optional[int] = None,
+    minute_bars_1m: Optional[list[dict]] = None,
     in_holding: bool = False,
     holding_days: float = 0.0,
     thresholds: Optional[dict] = None,
@@ -1231,6 +2088,8 @@ def detect_timing_clear(
     - 仅在持仓态评估，不在观望态误触发
     - 卖出门槛高于买入，降低中长期持仓的噪声换手
     - 支持“强风险提前清仓”兜底
+    - 按 full / partial / observe 输出更细粒度的退出语义
+    - 引入 ATR 波动率分桶，对低波/高波持仓使用不同退出模板
     """
     result = _empty('timing_clear')
     if not _P1_EXIT_ENABLED:
@@ -1242,12 +2101,70 @@ def detect_timing_clear(
 
     th_meta = _threshold_meta(thresholds)
     if th_meta.get('blocked'):
-        return _pool1_reject(result, 'threshold_blocked', {'threshold': th_meta})
+        return _pool1_reject(result, _threshold_block_reason(th_meta), {'threshold': th_meta})
 
     try:
         hold_days = max(0.0, float(holding_days or 0.0))
     except Exception:
         hold_days = 0.0
+    entry_anchor = _compute_pool1_entry_anchor(
+        price=price,
+        last_buy_price=last_buy_price,
+        last_buy_at=last_buy_at,
+        minute_bars_1m=minute_bars_1m,
+    )
+    try:
+        atr_val = float(atr_14) if atr_14 is not None else None
+    except Exception:
+        atr_val = None
+    atr_pct = (atr_val / price) if (atr_val is not None and atr_val > 0 and price > 0) else None
+    if atr_pct is None:
+        atr_bucket = 'unknown'
+    elif atr_pct <= _P1_EXIT_ATR_LOW_PCT:
+        atr_bucket = 'low'
+    elif atr_pct >= _P1_EXIT_ATR_HIGH_PCT:
+        atr_bucket = 'high'
+    else:
+        atr_bucket = 'mid'
+    entry_cost_lost = bool(entry_anchor.get('entry_cost_lost', False))
+    entry_avwap_lost = bool(entry_anchor.get('entry_avwap_lost', False))
+    breakout_anchor_lost = bool(entry_anchor.get('breakout_anchor_lost', False))
+    event_anchor_lost = bool(entry_anchor.get('event_anchor_lost', False))
+    lost_anchor_count = int(entry_anchor.get('lost_anchor_count', 0) or 0)
+    support_anchor_lost = bool(entry_anchor.get('support_anchor_lost', False))
+    entry_premium_pct = entry_anchor.get('entry_premium_pct')
+    try:
+        entry_premium_val = float(entry_premium_pct) if entry_premium_pct is not None else None
+    except Exception:
+        entry_premium_val = None
+    breakout_anchor_premium_pct = entry_anchor.get('breakout_anchor_premium_pct')
+    try:
+        breakout_anchor_premium_val = (
+            float(breakout_anchor_premium_pct) if breakout_anchor_premium_pct is not None else None
+        )
+    except Exception:
+        breakout_anchor_premium_val = None
+    event_anchor_premium_pct = entry_anchor.get('event_anchor_premium_pct')
+    try:
+        event_anchor_premium_val = (
+            float(event_anchor_premium_pct) if event_anchor_premium_pct is not None else None
+        )
+    except Exception:
+        event_anchor_premium_val = None
+    anchor_take_profit_ready = bool(
+        entry_premium_val is not None and entry_premium_val >= _P1_EXIT_TAKE_PROFIT_COST_PREMIUM_PCT
+    )
+    anchor_beta_reduce_ready = bool(
+        entry_premium_val is not None and entry_premium_val >= _P1_EXIT_BETA_REDUCE_COST_PREMIUM_PCT
+    )
+    breakout_beta_reduce_ready = bool(
+        breakout_anchor_premium_val is not None
+        and breakout_anchor_premium_val >= _P1_BREAKOUT_ANCHOR_BETA_REDUCE_PREMIUM_PCT
+    )
+    event_beta_reduce_ready = bool(
+        event_anchor_premium_val is not None
+        and event_anchor_premium_val >= _P1_EVENT_ANCHOR_BETA_REDUCE_PREMIUM_PCT
+    )
 
     break_mid = bool(boll_mid and boll_mid > 0 and price < boll_mid * 0.998)
     break_ma10 = bool(ma10 and ma10 > 0 and price < ma10 * 0.998)
@@ -1255,11 +2172,37 @@ def detect_timing_clear(
     trend_reversal = bool(
         ma5 and ma10 and ma5 > 0 and ma10 > 0 and (ma5 < ma10 * 0.998)
     )
+    near_upper = bool(
+        boll_upper and boll_upper > 0 and price >= boll_upper * (1 - _P1_EXIT_TAKE_PROFIT_NEAR_UPPER_PCT / 100.0)
+    )
+    rsi_hot = bool(rsi6 is not None and rsi6 >= _P1_EXIT_RSI_HOT_TH)
+    gain_hot = bool(pct_chg is not None and pct_chg >= _P1_EXIT_TAKE_PROFIT_DAY_GAIN_PCT)
+    pace_hot = str(volume_pace_state or '').strip().lower() in ('expand', 'surge')
     hard_drop = bool(pct_chg is not None and pct_chg <= _P1_EXIT_HARD_DROP_PCT)
     vol_down = bool(
         volume_ratio is not None and pct_chg is not None and volume_ratio >= 1.4 and pct_chg < 0
     )
-    early_risk_exit = bool(hard_drop or (break_ma20 and vol_down))
+    mild_bid_ask_weak = bool(bid_ask_ratio is not None and bid_ask_ratio <= _P1_EXIT_BIDASK_WEAK_RATIO)
+    severe_bid_ask_weak = bool(bid_ask_ratio is not None and bid_ask_ratio <= _P1_EXIT_BIDASK_WEAK_RATIO * 0.92)
+    mild_big_bias_sell = bool(big_order_bias is not None and big_order_bias <= (_P1_EXIT_BIG_BIAS_SELL_TH * 0.60))
+    severe_big_bias_sell = bool(big_order_bias is not None and big_order_bias <= (_P1_EXIT_BIG_BIAS_SELL_TH * 1.25))
+    mild_super_bias_sell = bool(super_order_bias is not None and super_order_bias <= (_P1_EXIT_SUPER_BIAS_SELL_TH * 0.60))
+    severe_super_bias_sell = bool(super_order_bias is not None and super_order_bias <= (_P1_EXIT_SUPER_BIAS_SELL_TH * 1.25))
+    mild_big_out = bool(big_net_flow_bps is not None and big_net_flow_bps <= (_P1_EXIT_BIG_NET_OUT_BPS_TH * 0.60))
+    severe_big_out = bool(big_net_flow_bps is not None and big_net_flow_bps <= (_P1_EXIT_BIG_NET_OUT_BPS_TH * 1.25))
+    mild_super_out = bool(super_net_flow_bps is not None and super_net_flow_bps <= (_P1_EXIT_SUPER_NET_OUT_BPS_TH * 0.60))
+    severe_super_out = bool(super_net_flow_bps is not None and super_net_flow_bps <= (_P1_EXIT_SUPER_NET_OUT_BPS_TH * 1.25))
+    severe_flow = bool(
+        severe_bid_ask_weak or severe_big_out or severe_super_out or severe_big_bias_sell or severe_super_bias_sell
+    )
+    mild_flow = bool(
+        mild_bid_ask_weak or mild_big_out or mild_super_out or mild_big_bias_sell or mild_super_bias_sell
+    )
+    early_risk_exit = bool(
+        hard_drop
+        or (break_ma20 and vol_down)
+        or (atr_bucket == 'high' and break_ma10 and vol_down and mild_flow)
+    )
 
     if hold_days < _P1_EXIT_MIN_HOLD_DAYS and not (_P1_EXIT_ALLOW_EARLY_RISK and early_risk_exit):
         return _pool1_reject(
@@ -1283,76 +2226,270 @@ def detect_timing_clear(
         trigger_items.append('短均线走弱')
     if rsi6 is not None and rsi6 <= _P1_EXIT_RSI_WEAK_TH:
         trigger_items.append(f'RSI6转弱({rsi6:.1f})')
+    if near_upper:
+        trigger_items.append('贴近上轨')
+    if rsi_hot:
+        trigger_items.append(f'RSI过热({rsi6:.1f})')
+    if gain_hot:
+        trigger_items.append(f'涨幅过热({pct_chg:.2f}%)')
     if pct_chg is not None and pct_chg <= -2.0:
         trigger_items.append(f'日内走弱({pct_chg:.2f}%)')
     if vol_down:
         trigger_items.append('放量下跌')
+    if pace_hot and pct_chg is not None and pct_chg > 0:
+        trigger_items.append(f'加速放量({str(volume_pace_state or "").strip().lower()})')
+    if entry_cost_lost:
+        trigger_items.append('失守建仓成本')
+    if entry_avwap_lost:
+        trigger_items.append('失守建仓AVWAP')
+    if breakout_anchor_lost:
+        trigger_items.append('失守突破AVWAP')
+    if event_anchor_lost:
+        trigger_items.append('失守事件AVWAP')
+    if lost_anchor_count >= 2:
+        trigger_items.append(f'多锚失守({lost_anchor_count})')
+    if anchor_take_profit_ready:
+        trigger_items.append(f'脱离建仓成本({entry_premium_val:.2f}%)')
+    if breakout_beta_reduce_ready:
+        trigger_items.append(f'脱离突破锚({breakout_anchor_premium_val:.2f}%)')
+    if event_beta_reduce_ready:
+        trigger_items.append(f'脱离事件锚({event_anchor_premium_val:.2f}%)')
 
     major_break = bool(break_ma20 or (break_ma10 and break_mid) or trend_reversal)
-    if not major_break and not early_risk_exit:
+    defense_candidate = bool(
+        early_risk_exit
+        or entry_cost_lost
+        or entry_avwap_lost
+        or (breakout_anchor_lost and (break_mid or mild_flow or resonance_60m is False))
+        or (event_anchor_lost and (break_mid or mild_flow or resonance_60m is False))
+        or (lost_anchor_count >= 2 and (break_mid or mild_flow or support_anchor_lost))
+        or break_ma20
+        or (trend_reversal and (break_mid or severe_flow))
+        or (break_ma10 and break_mid and severe_flow)
+    )
+    take_profit_candidate = bool(
+        hold_days >= _P1_EXIT_MIN_HOLD_DAYS
+        and not hard_drop
+        and not break_ma20
+        and (
+            (near_upper and (rsi_hot or gain_hot or pace_hot))
+            or (rsi_hot and gain_hot)
+            or (anchor_take_profit_ready and (rsi_hot or gain_hot or mild_flow or resonance_60m is False))
+        )
+    )
+    beta_reduce_candidate = bool(
+        hold_days >= _P1_EXIT_MIN_HOLD_DAYS
+        and not defense_candidate
+        and not hard_drop
+        and not break_ma20
+        and (
+            resonance_60m is False
+            or mild_flow
+            or (break_ma10 and mild_bid_ask_weak)
+            or (anchor_beta_reduce_ready and (mild_flow or break_mid or resonance_60m is False))
+            or (breakout_beta_reduce_ready and (mild_flow or break_mid or resonance_60m is False))
+            or (event_beta_reduce_ready and (mild_flow or break_mid or resonance_60m is False))
+        )
+    )
+    if not defense_candidate and not take_profit_candidate and not beta_reduce_candidate and not major_break and not early_risk_exit:
         return _pool1_reject(result, 'trigger_missing', {'threshold': th_meta})
 
     confirm_items: list[str] = []
-    if bid_ask_ratio is not None and bid_ask_ratio <= _P1_EXIT_BIDASK_WEAK_RATIO:
+    if mild_bid_ask_weak:
         confirm_items.append(f'承接转弱({bid_ask_ratio:.2f})')
     if _P1_RESONANCE_ENABLED and resonance_60m is False:
         confirm_items.append('60m失共振')
-    if big_order_bias is not None and big_order_bias <= _P1_EXIT_BIG_BIAS_SELL_TH:
+    if mild_big_bias_sell:
         confirm_items.append(f'大单偏空({big_order_bias:.2f})')
-    if super_order_bias is not None and super_order_bias <= _P1_EXIT_SUPER_BIAS_SELL_TH:
+    if mild_super_bias_sell:
         confirm_items.append(f'超大单偏空({super_order_bias:.2f})')
-    if big_net_flow_bps is not None and big_net_flow_bps <= _P1_EXIT_BIG_NET_OUT_BPS_TH:
+    if mild_big_out:
         confirm_items.append(f'大单净流出({big_net_flow_bps:.0f}bps)')
-    if super_net_flow_bps is not None and super_net_flow_bps <= _P1_EXIT_SUPER_NET_OUT_BPS_TH:
+    if mild_super_out:
         confirm_items.append(f'超大单净流出({super_net_flow_bps:.0f}bps)')
+    if entry_cost_lost:
+        confirm_items.append('成本锚失守')
+    if entry_avwap_lost:
+        confirm_items.append('AVWAP失守')
+    if breakout_anchor_lost:
+        confirm_items.append('突破锚失守')
+    if event_anchor_lost:
+        confirm_items.append('事件锚失守')
+    if lost_anchor_count >= 2:
+        confirm_items.append(f'多锚失守({lost_anchor_count})')
+    if near_upper:
+        confirm_items.append('临近压力位')
+    if rsi_hot:
+        confirm_items.append(f'热度过高({rsi6:.1f})')
+    if gain_hot:
+        confirm_items.append(f'涨幅已大({pct_chg:.2f}%)')
+    if pace_hot and pct_chg is not None and pct_chg > 0:
+        confirm_items.append(f'加速放量({str(volume_pace_state or "").strip().lower()})')
 
-    min_confirm = 1 if early_risk_exit else 2
     long_hold = hold_days >= max(_P1_EXIT_MIN_HOLD_DAYS, _P1_EXIT_LONG_HOLD_DAYS)
-    if long_hold and not early_risk_exit:
-        min_confirm = max(2, _P1_EXIT_LONG_HOLD_MIN_CONFIRM)
-        if not (hard_drop or break_ma20 or trend_reversal):
+    clear_family = 'defense'
+    clear_level_hint = 'full'
+    suggest_reduce_ratio = 1.0
+    if defense_candidate:
+        clear_family = 'defense'
+        clear_level_hint = 'full'
+        suggest_reduce_ratio = 1.0
+    elif take_profit_candidate:
+        clear_family = 'take_profit'
+        clear_level_hint = 'partial'
+        suggest_reduce_ratio = _P1_EXIT_PARTIAL_REDUCE_RATIO
+    elif beta_reduce_candidate:
+        clear_family = 'beta_reduce'
+        clear_level_hint = 'partial'
+        suggest_reduce_ratio = _P1_EXIT_BETA_REDUCE_RATIO
+
+    if clear_family == 'defense':
+        min_confirm = 1 if early_risk_exit else 2
+        if long_hold and not early_risk_exit:
+            min_confirm = max(2, _P1_EXIT_LONG_HOLD_MIN_CONFIRM)
+            if not (hard_drop or break_ma20 or trend_reversal):
+                return _pool1_reject(
+                    result,
+                    'long_hold_weak_exit',
+                    {
+                        'holding_days': round(hold_days, 2),
+                        'min_hold_days': _P1_EXIT_MIN_HOLD_DAYS,
+                        'long_hold_days': _P1_EXIT_LONG_HOLD_DAYS,
+                        'threshold': th_meta,
+                    },
+                )
+        if atr_bucket == 'low' and not early_risk_exit:
+            min_confirm += _P1_EXIT_ATR_LOW_EXTRA_CONFIRM
+        elif atr_bucket == 'high':
+            min_confirm = max(1, min_confirm - _P1_EXIT_ATR_HIGH_RELAX_CONFIRM)
+    elif clear_family == 'take_profit':
+        min_confirm = 2 if atr_bucket == 'low' else 1
+    else:
+        min_confirm = 2 if atr_bucket == 'low' else 1
+
+    observe_only_hint = False
+    if len(confirm_items) < min_confirm:
+        if clear_family in ('take_profit', 'beta_reduce') and len(confirm_items) >= 1:
+            clear_level_hint = 'observe'
+            observe_only_hint = True
+            suggest_reduce_ratio = _P1_EXIT_OBSERVE_REDUCE_RATIO
+        else:
             return _pool1_reject(
                 result,
-                'long_hold_weak_exit',
+                'confirm_missing',
                 {
                     'holding_days': round(hold_days, 2),
-                    'min_hold_days': _P1_EXIT_MIN_HOLD_DAYS,
-                    'long_hold_days': _P1_EXIT_LONG_HOLD_DAYS,
+                    'min_confirm': int(min_confirm),
+                    'long_hold': bool(long_hold),
+                    'clear_family': clear_family,
+                    'atr_bucket': atr_bucket,
                     'threshold': th_meta,
                 },
             )
-    if len(confirm_items) < min_confirm:
-        return _pool1_reject(
-            result,
-            'confirm_missing',
-            {
-                'holding_days': round(hold_days, 2),
-                'min_confirm': int(min_confirm),
-                'long_hold': bool(long_hold),
-                'threshold': th_meta,
-            },
-        )
 
     strength = 0
-    if break_ma10:
-        strength += 20
-    if break_mid:
-        strength += 20
-    if break_ma20:
-        strength += 30
-    if trend_reversal:
-        strength += 15
-    if vol_down:
-        strength += 10
-    if hard_drop:
-        strength += 15
-    strength += min(20, len(confirm_items) * 6)
-    if hold_days >= 10:
-        strength += 5
-    strength = min(100, int(round(strength)))
+    if clear_family == 'defense':
+        if break_ma10:
+            strength += 20
+        if break_mid:
+            strength += 20
+        if break_ma20:
+            strength += 30
+        if entry_cost_lost:
+            strength += 12
+        if entry_avwap_lost:
+            strength += 14
+        if breakout_anchor_lost:
+            strength += 12
+        if event_anchor_lost:
+            strength += 10
+        if lost_anchor_count >= 2:
+            strength += 10 + min(6, (lost_anchor_count - 2) * 3)
+        if trend_reversal:
+            strength += 15
+        if vol_down:
+            strength += 10
+        if hard_drop:
+            strength += 15
+        if severe_flow:
+            strength += 10
+        if atr_bucket == 'high':
+            strength += 6
+        elif atr_bucket == 'low' and not early_risk_exit:
+            strength -= 4
+        strength += min(20, len(confirm_items) * 6)
+        if hold_days >= 10:
+            strength += 5
+    elif clear_family == 'take_profit':
+        if near_upper:
+            strength += 24
+        if anchor_take_profit_ready:
+            strength += 10
+        if rsi_hot:
+            strength += 20
+        if gain_hot:
+            strength += 10
+        if pace_hot:
+            strength += 10 if str(volume_pace_state or '').strip().lower() == 'surge' else 6
+        if resonance_60m is False:
+            strength += 8
+        if mild_bid_ask_weak:
+            strength += 8
+        if mild_big_out:
+            strength += 8
+        if mild_super_out:
+            strength += 10
+        strength += min(18, len(confirm_items) * 5)
+        if hold_days >= _P1_EXIT_MIN_HOLD_DAYS:
+            strength += 5
+        if atr_bucket == 'low':
+            strength -= 4
+    else:
+        if anchor_beta_reduce_ready:
+            strength += 8
+        if breakout_beta_reduce_ready:
+            strength += 8
+        if event_beta_reduce_ready:
+            strength += 8
+        if resonance_60m is False:
+            strength += 18
+        if mild_bid_ask_weak:
+            strength += 12
+        if mild_big_out:
+            strength += 10
+        if mild_super_out:
+            strength += 12
+        if break_mid:
+            strength += 8
+        if break_ma10:
+            strength += 10
+        if pace_hot and pct_chg is not None and pct_chg > 0:
+            strength += 6
+        strength += min(18, len(confirm_items) * 5)
+        if hold_days >= _P1_EXIT_MIN_HOLD_DAYS:
+            strength += 4
+        if atr_bucket == 'high':
+            strength += 5
+        elif atr_bucket == 'low':
+            strength -= 3
+
+    if clear_level_hint == 'observe':
+        strength = min(max(int(round(strength)), int(_P1_SCORE_OBSERVE + 2)), int(_P1_SCORE_EXECUTABLE - 2))
+    elif clear_level_hint == 'partial':
+        strength = max(int(round(strength)), int(_P1_SCORE_OBSERVE + 3))
+    else:
+        strength = max(int(round(strength)), int(_P1_SCORE_EXECUTABLE))
+    strength = min(100, max(0, int(round(strength))))
+
+    if clear_family == 'defense':
+        msg_head = '防守清仓信号'
+    elif clear_family == 'take_profit':
+        msg_head = '分批止盈信号' if clear_level_hint != 'observe' else '止盈观察信号'
+    else:
+        msg_head = '被动减仓信号' if clear_level_hint != 'observe' else '减仓观察信号'
 
     msg = (
-        f"择时清仓信号@{price:.2f} | "
+        f"{msg_head}@{price:.2f} | "
         + ' + '.join(trigger_items[:4])
         + " | 确认:"
         + ' + '.join(confirm_items[:4])
@@ -1375,9 +2512,19 @@ def detect_timing_clear(
             'trend_reversal': trend_reversal,
             'early_risk_exit': early_risk_exit,
             'hard_drop': hard_drop,
+            'near_upper': near_upper,
+            'rsi_hot': rsi_hot,
+            'gain_hot': gain_hot,
+            'clear_family': clear_family,
+            'clear_level_hint': clear_level_hint,
+            'suggest_reduce_ratio': round(float(suggest_reduce_ratio), 2),
             'vol_down': vol_down,
             'rsi6': rsi6,
             'pct_chg': pct_chg,
+            'atr_14': atr_val,
+            'atr_pct': round(float(atr_pct), 4) if atr_pct is not None else None,
+            'atr_bucket': atr_bucket,
+            'entry_anchor': entry_anchor,
             'volume_ratio': volume_ratio,
             'bid_ask_ratio': bid_ask_ratio,
             'resonance_60m': resonance_60m,
@@ -1387,6 +2534,11 @@ def detect_timing_clear(
             'super_net_flow_bps': super_net_flow_bps,
             'volume_pace_ratio': volume_pace_ratio,
             'volume_pace_state': volume_pace_state,
+            'trigger_items': trigger_items,
+            'confirm_items': confirm_items,
+            'min_confirm': int(min_confirm),
+            'observe_only': bool(observe_only_hint),
+            'observe_reason': 'timing_clear_observe' if observe_only_hint else None,
             'threshold': th_meta,
         },
     }
@@ -1440,7 +2592,7 @@ def detect_positive_t(
 
     th_meta = _threshold_meta(thresholds)
     if th_meta.get('blocked'):
-        result['details'] = {'threshold': th_meta}
+        result['details'] = {'threshold': th_meta, 'veto': _threshold_block_reason(th_meta)}
         return result
 
     bias_vwap_th = _threshold_value(thresholds, 'bias_vwap_th', _BIAS_VWAP_PCT)
@@ -1640,7 +2792,7 @@ def detect_reverse_t(
 
     th_meta = _threshold_meta(thresholds)
     if th_meta.get('blocked'):
-        result['details'] = {'threshold': th_meta}
+        result['details'] = {'threshold': th_meta, 'veto': _threshold_block_reason(th_meta)}
         return result
 
     z_th = _threshold_value(thresholds, 'z_th', _ROBUST_ZSCORE_TH)
@@ -1976,6 +3128,9 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                     'name': m.get('name'),
                     'market_name': m.get('market_name'),
                     'list_date': m.get('list_date'),
+                    'concept_boards': m.get('concept_boards'),
+                    'core_concept_board': m.get('core_concept_board'),
+                    'concept_ecology': m.get('concept_ecology'),
                     'instrument_profile': m.get('instrument_profile'),
                 },
             )
@@ -2039,13 +3194,37 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
             in_holding = bool(m.get('pool1_in_holding', False))
             if not in_holding:
                 s1 = detect_left_side_buy(
-                    m.get('price', 0), m.get('boll_upper', 0),
-                    m.get('boll_mid', 0), m.get('boll_lower', 0),
-                    m.get('rsi6'), m.get('pct_chg'),
-                    m.get('bid_ask_ratio'), m.get('lure_long', False), m.get('wash_trade', False),
-                    m.get('up_limit'), m.get('down_limit'), bool(resonance_60m_val),
-                    m.get('volume_pace_ratio'), m.get('volume_pace_state'),
+                    price=m.get('price', 0),
+                    boll_upper=m.get('boll_upper', 0),
+                    boll_mid=m.get('boll_mid', 0),
+                    boll_lower=m.get('boll_lower', 0),
+                    rsi6=m.get('rsi6'),
+                    pct_chg=m.get('pct_chg'),
+                    bid_ask_ratio=m.get('bid_ask_ratio'),
+                    lure_long=m.get('lure_long', False),
+                    wash_trade=m.get('wash_trade', False),
+                    up_limit=m.get('up_limit'),
+                    down_limit=m.get('down_limit'),
+                    resonance_60m=bool(resonance_60m_val),
+                    volume_pace_ratio=m.get('volume_pace_ratio'),
+                    volume_pace_state=m.get('volume_pace_state'),
                     thresholds=p1_left_th,
+                    prev_price=m.get('prev_price'),
+                    ask_wall_absorb_ratio=m.get('ask_wall_absorb_ratio'),
+                    super_net_flow_bps=m.get('super_net_flow_bps'),
+                    minute_bars_1m=m.get('minute_bars_1m'),
+                    core_concept_board=m.get('core_concept_board'),
+                    concept_boards=m.get('concept_boards'),
+                    concept_ecology=m.get('concept_ecology'),
+                    position_state={
+                        'status': m.get('pool1_position_status'),
+                        'last_buy_at': m.get('pool1_last_buy_at'),
+                        'last_buy_type': m.get('pool1_last_buy_type'),
+                        'last_sell_at': m.get('pool1_last_sell_at'),
+                        'last_sell_type': m.get('pool1_last_sell_type'),
+                        'left_quick_clear_streak': m.get('pool1_left_quick_clear_streak'),
+                        'last_left_quick_clear_at': m.get('pool1_last_left_quick_clear_at'),
+                    },
                 )
                 if s1['has_signal']:
                     s1 = finalize_pool1_signal(s1, thresholds=p1_left_th)
@@ -2071,9 +3250,11 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
             s3 = detect_timing_clear(
                 price=m.get('price', 0),
                 boll_mid=m.get('boll_mid', 0),
+                boll_upper=m.get('boll_upper'),
                 ma5=m.get('ma5'),
                 ma10=m.get('ma10'),
                 ma20=m.get('ma20'),
+                atr_14=m.get('atr_14'),
                 rsi6=m.get('rsi6'),
                 pct_chg=m.get('pct_chg'),
                 volume_ratio=m.get('volume_ratio'),
@@ -2085,6 +3266,9 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                 super_net_flow_bps=m.get('super_net_flow_bps'),
                 volume_pace_ratio=m.get('volume_pace_ratio'),
                 volume_pace_state=m.get('volume_pace_state'),
+                last_buy_price=m.get('pool1_last_buy_price'),
+                last_buy_at=m.get('pool1_last_buy_at'),
+                minute_bars_1m=m.get('minute_bars_1m'),
                 in_holding=in_holding,
                 holding_days=float(m.get('pool1_holding_days', 0) or 0),
                 thresholds=p1_clear_th,

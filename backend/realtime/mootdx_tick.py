@@ -137,6 +137,49 @@ class MootdxTickProvider(TickProvider):
         except Exception as e:
             logger.debug(f"[mootdx] bulk_update_stock_industry failed: {e}")
 
+    def bulk_update_stock_concepts(self, mapping: dict):
+        try:
+            from backend.realtime import gm_tick
+            gm_tick._main_stock_concepts.clear()
+            gm_tick._main_stock_core_concept.clear()
+            for ts_code, payload in (mapping or {}).items():
+                code = str(ts_code or "")
+                if not code:
+                    continue
+                if isinstance(payload, dict):
+                    boards = payload.get("concept_boards") if isinstance(payload.get("concept_boards"), list) else payload.get("boards")
+                    core = payload.get("core_concept_board") or payload.get("core_concept") or payload.get("core")
+                elif isinstance(payload, (list, tuple, set)):
+                    boards = list(payload)
+                    core = boards[0] if boards else ""
+                else:
+                    boards = [payload] if payload else []
+                    core = payload
+                clean_boards: list[str] = []
+                seen: set[str] = set()
+                for board in boards or []:
+                    name = str(board or "").strip()
+                    if not name or name in seen:
+                        continue
+                    seen.add(name)
+                    clean_boards.append(name)
+                gm_tick._main_stock_concepts[code] = clean_boards
+                gm_tick._main_stock_core_concept[code] = str(core or (clean_boards[0] if clean_boards else "")).strip()
+        except Exception as e:
+            logger.debug(f"[mootdx] bulk_update_stock_concepts failed: {e}")
+
+    def bulk_update_concept_snapshots(self, mapping: dict):
+        try:
+            from backend.realtime import gm_tick
+            gm_tick._main_concept_snapshot.clear()
+            for concept_name, payload in (mapping or {}).items():
+                name = str(concept_name or "").strip()
+                if not name:
+                    continue
+                gm_tick._main_concept_snapshot[name] = dict(payload or {})
+        except Exception as e:
+            logger.debug(f"[mootdx] bulk_update_concept_snapshots failed: {e}")
+
     def get_prev_price(self, ts_code: str) -> Optional[float]:
         try:
             from backend.realtime import gm_tick
@@ -212,18 +255,19 @@ class MootdxTickProvider(TickProvider):
                 daily = gm_tick._main_daily_cache.get(ts_code, {})
                 pools = gm_tick._main_stock_pools.get(ts_code, set())
                 fired: list[dict] = []
-                if daily and pools and ((1 in pools) or (2 in pools)):
+                if daily and pools and ((1 in pools) or (2 in pools)) and gm_tick._is_signal_processing_allowed(int(now)):
                     try:
                         fired = gm_tick._compute_signals_for_tick(tick, daily, ts_code=ts_code) or []
                     except Exception as ce:
                         logger.debug(f"[mootdx] compute signal failed {ts_code}: {ce}")
 
-                gm_tick._postprocess_fired_signals(
-                    ts_code=ts_code,
-                    tick=tick,
-                    all_fired=fired,
-                    now=int(now),
-                    persist=True,
-                )
+                if gm_tick._is_signal_processing_allowed(int(now)):
+                    gm_tick._postprocess_fired_signals(
+                        ts_code=ts_code,
+                        tick=tick,
+                        all_fired=fired,
+                        now=int(now),
+                        persist=True,
+                    )
             except Exception as e:
                 logger.debug(f"[mootdx] poll {ts_code} failed: {e}")

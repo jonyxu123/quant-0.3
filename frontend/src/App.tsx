@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation, Link } from 'react-router-do
 import { 
   LayoutDashboard, RefreshCw, BarChart2, TrendingUp,
   Activity, LineChart, ShieldAlert, PieChart, Settings,
-  ChevronDown, ChevronRight, Table2, Star, Eye
+  ChevronDown, ChevronRight, Table2, Star, Eye, Newspaper
 } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import DataSync from './pages/DataSync'
@@ -16,6 +16,10 @@ import Watchlist from './pages/Watchlist'
 import StockDetail from './pages/StockDetail'
 import RealtimeMonitor from './pages/RealtimeMonitor'
 import T0ReverseReplay from './pages/T0ReverseReplay'
+import ConceptBoards from './pages/ConceptBoards'
+import ConceptFundFlow from './pages/ConceptFundFlow'
+import MarketChanges from './pages/MarketChanges'
+import NewsFeeds from './pages/NewsFeeds'
 
 const API = 'http://localhost:8000'
 
@@ -61,12 +65,26 @@ const NAV_ITEMS: NavItem[] = [
   { path: '/sync',     label: '数据同步', icon: RefreshCw },
   { path: '/factors',  label: '因子管理', icon: BarChart2 },
   { path: '/selection', label: '每日选股', icon: TrendingUp },
+  { path: '/concepts', label: '概念板块', icon: Table2 },
   { path: '/watchlist',  label: '自选股票', icon: Star },
+  {
+    path: '/news-cjzc-em', label: '资讯数据', icon: Newspaper,
+    children: [
+      { path: '/news-cjzc-em', label: '财经早餐-东方财富', icon: ChevronRight },
+      { path: '/news-global-em', label: '全球财经快讯-东方财富', icon: ChevronRight },
+      { path: '/news-global-sina', label: '全球财经快讯-新浪财经', icon: ChevronRight },
+      { path: '/news-global-futu', label: '快讯-富途牛牛', icon: ChevronRight },
+      { path: '/news-global-ths', label: '全球财经直播-同花顺财经', icon: ChevronRight },
+      { path: '/news-global-cls', label: '电报-财联社', icon: ChevronRight },
+    ]
+  },
   {
     path: '/realtime', label: '盯盘', icon: Eye,
     children: [
       { path: '/realtime', label: '实时盯盘', icon: Eye },
       { path: '/realtime-t0-replay', label: '反T回放', icon: ChevronRight },
+      { path: '/realtime-concept-flow', label: '概念资金流向', icon: ChevronRight },
+      { path: '/realtime-market-changes', label: '盘口异动', icon: ChevronRight },
     ]
   },
   { path: '/market',   label: '市场状态', icon: Activity },
@@ -396,9 +414,18 @@ function Layout() {
             <Route path="/sync"     element={<DataSync />} />
             <Route path="/factors"  element={<Factors />} />
             <Route path="/selection" element={<StockSelection />} />
+            <Route path="/concepts" element={<ConceptBoards />} />
             <Route path="/watchlist" element={<Watchlist />} />
+            <Route path="/news-cjzc-em" element={<NewsFeeds />} />
+            <Route path="/news-global-em" element={<NewsFeeds />} />
+            <Route path="/news-global-sina" element={<NewsFeeds />} />
+            <Route path="/news-global-futu" element={<NewsFeeds />} />
+            <Route path="/news-global-ths" element={<NewsFeeds />} />
+            <Route path="/news-global-cls" element={<NewsFeeds />} />
             <Route path="/realtime" element={<RealtimeMonitor />} />
             <Route path="/realtime-t0-replay" element={<T0ReverseReplay />} />
+            <Route path="/realtime-concept-flow" element={<ConceptFundFlow />} />
+            <Route path="/realtime-market-changes" element={<MarketChanges />} />
             <Route path="/stock/:ts_code" element={<StockDetail />} />
             <Route path="/strategy" element={<Strategy />} />
             <Route path="/monitor"  element={<Monitor />} />

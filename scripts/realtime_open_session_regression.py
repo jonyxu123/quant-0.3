@@ -5,6 +5,7 @@ Focus:
 2) Signal payload field completeness.
 3) Fast/slow path consistency + missing-field diagnostics.
 4) Pool1 observe storage source verification.
+5) Instrument-profile / limit-band segmentation completeness.
 
 Usage:
   python scripts/realtime_open_session_regression.py
@@ -84,6 +85,18 @@ def _parse_pool_ids(raw: str) -> list[int]:
         if v in (1, 2):
             out.append(v)
     return out or [1, 2]
+
+
+def _nested_nonzero_total(v: Any) -> int:
+    total = 0
+    if not isinstance(v, dict):
+        return 0
+    for sub in v.values():
+        if not isinstance(sub, dict):
+            continue
+        for cnt in sub.values():
+            total += _to_int(cnt, 0)
+    return total
 
 
 def main() -> int:
@@ -206,6 +219,44 @@ def main() -> int:
             else t_snap.get("error"),
         }
     )
+    if ok_ts and isinstance(t_snap, dict):
+        rows = t_snap.get("rows")
+        rules = t_snap.get("rules")
+        row_list = rows if isinstance(rows, list) else []
+        rule_list = rules if isinstance(rules, list) else []
+        missing_profile_dims = 0
+        for item in row_list[:50]:
+            if not isinstance(item, dict):
+                continue
+            if not str(item.get("board_segment") or ""):
+                missing_profile_dims += 1
+            if not str(item.get("security_type") or ""):
+                missing_profile_dims += 1
+            if not str(item.get("listing_stage") or ""):
+                missing_profile_dims += 1
+        for item in rule_list[:50]:
+            if not isinstance(item, dict):
+                continue
+            if "board_segment" not in item:
+                missing_profile_dims += 1
+            if "security_type" not in item:
+                missing_profile_dims += 1
+            if "listing_stage" not in item:
+                missing_profile_dims += 1
+        dims_ok = (missing_profile_dims == 0)
+        dims_warn = bool(ok_ts and (len(row_list) == 0 and len(rule_list) == 0))
+        checks.append(
+            {
+                "name": "threshold_calibration_profile_dims",
+                "ok": dims_ok,
+                "level": _level(dims_ok, warn=dims_warn),
+                "detail": {
+                    "row_count": len(row_list),
+                    "rule_count": len(rule_list),
+                    "missing_profile_dims": missing_profile_dims,
+                },
+            }
+        )
 
     # Channel split conflict.
     ok_sp, split = _safe_get(
@@ -248,6 +299,8 @@ def main() -> int:
         phase_missing = 0
         phase_mismatch = 0
         threshold_missing = 0
+        profile_missing = 0
+        limit_model_missing = 0
         for r in rows if isinstance(rows, list) else []:
             if not isinstance(r, dict):
                 bad_rows += 1
@@ -273,6 +326,15 @@ def main() -> int:
                     phase_missing += 1
                 elif expected_phase and phase != expected_phase and effective_open:
                     phase_mismatch += 1
+                for k in ("board_segment", "security_type", "listing_stage"):
+                    if not str(th.get(k) or "").strip():
+                        profile_missing += 1
+                try:
+                    pl = th.get("price_limit_pct")
+                    if pl is None or float(pl) <= 0:
+                        limit_model_missing += 1
+                except Exception:
+                    limit_model_missing += 1
 
         count_warn = bool(ok_fast and member_count > 0 and count != member_count)
         shape_ok = bool(ok_fast and bad_rows == 0)
@@ -319,6 +381,19 @@ def main() -> int:
                         "threshold_missing": threshold_missing,
                         "phase_missing": phase_missing,
                         "phase_mismatch": phase_mismatch,
+                    },
+                }
+            )
+            profile_ok = (profile_missing == 0 and limit_model_missing == 0)
+            checks.append(
+                {
+                    "name": f"pool{pool_id}_active_signal_profile_fields",
+                    "ok": profile_ok,
+                    "level": _level(profile_ok, warn=bool(not profile_ok and not effective_open)),
+                    "detail": {
+                        "active_signals": active_signals,
+                        "profile_missing": profile_missing,
+                        "limit_model_missing": limit_model_missing,
                     },
                 }
             )
@@ -382,10 +457,75 @@ def main() -> int:
                 },
             }
         )
+        reject_counts_total = sum(_to_int(v, 0) for v in ((data.get("reject_counts") or {}) if isinstance(data.get("reject_counts"), dict) else {}).values())
+        board_total = _nested_nonzero_total(data.get("reject_by_board_segment"))
+        security_total = _nested_nonzero_total(data.get("reject_by_security_type"))
+        listing_total = _nested_nonzero_total(data.get("reject_by_listing_stage"))
+        dims_ok = True
+        dims_warn = False
+        if sample > 0 and reject_counts_total > 0:
+            dims_ok = (board_total > 0 and security_total > 0 and listing_total > 0)
+            dims_warn = bool((not dims_ok) and not effective_open)
+        checks.append(
+            {
+                "name": "pool1_observe_profile_dimensions",
+                "ok": dims_ok,
+                "level": _level(dims_ok, warn=dims_warn),
+                "detail": {
+                    "sample": sample,
+                    "reject_total": reject_counts_total,
+                    "board_segment_total": board_total,
+                    "security_type_total": security_total,
+                    "listing_stage_total": listing_total,
+                },
+            }
+        )
+        windows = data.get("reject_windows") or {}
+        w5 = windows.get("5m") if isinstance(windows, dict) else {}
+        w15 = windows.get("15m") if isinstance(windows, dict) else {}
+        w60 = windows.get("1h") if isinstance(windows, dict) else {}
+        window_dim_bad = 0
+        for w in (w5, w15, w60):
+            if not isinstance(w, dict):
+                continue
+            event_count = _to_int(w.get("event_count"), 0)
+            if event_count <= 0:
+                continue
+            if _nested_nonzero_total(w.get("reject_by_board_segment")) <= 0:
+                window_dim_bad += 1
+            if _nested_nonzero_total(w.get("reject_by_security_type")) <= 0:
+                window_dim_bad += 1
+            if _nested_nonzero_total(w.get("reject_by_listing_stage")) <= 0:
+                window_dim_bad += 1
+        window_ok = (window_dim_bad == 0)
+        window_warn = bool(window_dim_bad > 0 and not effective_open)
+        checks.append(
+            {
+                "name": "pool1_observe_window_profile_dimensions",
+                "ok": window_ok,
+                "level": _level(window_ok, warn=window_warn),
+                "detail": {
+                    "window_dim_bad": window_dim_bad,
+                    "window_event_count": {
+                        "5m": _to_int((w5 or {}).get("event_count"), 0) if isinstance(w5, dict) else 0,
+                        "15m": _to_int((w15 or {}).get("event_count"), 0) if isinstance(w15, dict) else 0,
+                        "1h": _to_int((w60 or {}).get("event_count"), 0) if isinstance(w60, dict) else 0,
+                    },
+                },
+            }
+        )
     else:
         checks.append(
             {
                 "name": "pool1_observe_storage_check",
+                "ok": False,
+                "level": "red",
+                "detail": obs.get("error") if not ok_obs else {"supported": False},
+            }
+        )
+        checks.append(
+            {
+                "name": "pool1_observe_profile_dimensions",
                 "ok": False,
                 "level": "red",
                 "detail": obs.get("error") if not ok_obs else {"supported": False},

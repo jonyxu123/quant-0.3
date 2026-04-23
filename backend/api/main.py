@@ -16,6 +16,7 @@ warnings.filterwarnings("ignore", message=r"urllib3 .* doesn't match a supported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.api.routers import sync, factors, strategy, monitor, stock, watchlist, realtime_monitor
+from backend.realtime_runtime import persistence_service, pool_service, runtime_jobs
 
 
 @asynccontextmanager
@@ -30,7 +31,7 @@ async def _lifespan(app: FastAPI):
 
     # 0. 提前建表（主线程单连接，避免后续多线程并发 DDL 冲突）
     try:
-        _init_conn = realtime_monitor._get_conn()
+        _init_conn = persistence_service._get_conn()
         _init_conn.close()
         logger.info("[启动] DB 表结构初始化完成")
     except Exception as e:
@@ -40,7 +41,7 @@ async def _lifespan(app: FastAPI):
     try:
         from config import TICK_PROVIDER
         if str(TICK_PROVIDER).lower() == "gm":
-            with realtime_monitor._ro_conn_ctx() as conn:
+            with persistence_service._ro_conn_ctx() as conn:
                 rows = conn.execute(
                     """
                     SELECT DISTINCT ts_code
@@ -59,7 +60,7 @@ async def _lifespan(app: FastAPI):
 
     # 1. 启动时加载一次日线指标缓存
     try:
-        n = realtime_monitor._refresh_daily_factors_cache(pool_id=None)
+        n = pool_service._refresh_daily_factors_cache(pool_id=None)
         logger.info(f"[启动] Layer2 日线指标缓存初始化完成: {n} 只股票")
     except Exception as e:
         logger.warning(f"[启动] Layer2 日线指标缓存初始化失败: {e}")
@@ -79,9 +80,9 @@ async def _lifespan(app: FastAPI):
             # 检查 DB 最新 trade_date 是否为今天
             try:
                 today_str = datetime.date.today().strftime('%Y%m%d')
-                latest = realtime_monitor._get_latest_factor_date()
+                latest = pool_service._get_latest_factor_date()
                 if latest == today_str:
-                    n = realtime_monitor._refresh_daily_factors_cache(pool_id=None)
+                    n = pool_service._refresh_daily_factors_cache(pool_id=None)
                     logger.info(f"[定时] DB 最新数据是今天({today_str})，日线缓存已刷新: {n} 只股票")
                 else:
                     logger.info(f"[定时] DB 最新数据日期={latest}，不是今天({today_str})，跳过刷新")
@@ -90,31 +91,31 @@ async def _lifespan(app: FastAPI):
 
     # 3. 启动 tick 历史持久化线程
     try:
-        realtime_monitor._start_tick_persistence()
+        runtime_jobs._start_tick_persistence()
     except Exception as e:
         logger.warning(f"[启动] tick 持久化线程启动失败: {e}")
 
     # 4. 启动逐笔缓存刷新线程（供 Layer2 主力行为分析用）
     try:
-        realtime_monitor._start_txn_refresher(interval=3.0)
+        runtime_jobs._start_txn_refresher(interval=3.0)
     except Exception as e:
         logger.warning(f"[启动] 逐笔刷新线程启动失败: {e}")
 
     # 5. 启动 T+0 在线质量监控线程
     try:
-        realtime_monitor._start_t0_quality_monitor(interval=1.0)
+        runtime_jobs._start_t0_quality_monitor(interval=1.0)
     except Exception as e:
         logger.warning(f"[启动] T+0 质量监控线程启动失败: {e}")
 
     # 6. 启动 T+0 特征漂移监控线程（每30分钟检测一次）
     try:
-        realtime_monitor._start_drift_monitor(check_interval_min=30.0)
+        runtime_jobs._start_drift_monitor(check_interval_min=30.0)
     except Exception as e:
         logger.warning(f"[启动] T+0 漂移监控线程启动失败: {e}")
 
     # 7. 动态阈值闭环线程
     try:
-        realtime_monitor._start_threshold_closed_loop(interval_min=float(getattr(realtime_monitor, "_CLOSED_LOOP_INTERVAL_MIN", 15.0)))
+        runtime_jobs._start_threshold_closed_loop(interval_min=float(getattr(runtime_jobs, "_CLOSED_LOOP_INTERVAL_MIN", 15.0)))
     except Exception as e:
         logger.warning(f"[启动] 动态阈值闭环线程启动失败: {e}")
 
