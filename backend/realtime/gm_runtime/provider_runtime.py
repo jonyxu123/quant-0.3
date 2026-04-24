@@ -176,7 +176,7 @@ def _start_consumer_thread():
 
                     # 1.5 异步写入持久化队列（Layer3）
                     try:
-                        if gm_common._persist_queue is not None:
+                        if gm_common._TICK_DB_PERSIST_ENABLED and gm_common._persist_queue is not None:
                             gm_common._persist_queue.put_nowait(('tick', ts_code, item, None))
                     except Exception:
                         pass  # 队列满时丢弃，保证消费线程不阻塞
@@ -335,34 +335,54 @@ class GmTickProvider(TickProvider):
             _main_stock_pools[k] = set(v)
         logger.info(f"Layer2 股票池映射已更新: {len(mapping)}")
 
-    def update_stock_industry(self, ts_code: str, industry: str):
-        """更新单只股票行业标签（供动态阈值分桶使用）。"""
+    def update_stock_industry(self, ts_code: str, industry: str, industry_code: str = ""):
+        """????????????????????????????"""
         _main_stock_industry[ts_code] = str(industry or "")
+        _main_stock_industry_code[ts_code] = str(industry_code or "").strip().upper()
 
-    def bulk_update_stock_industry(self, mapping: dict[str, str]):
-        """批量更新股票行业标签。mapping: {ts_code: industry}"""
+    def bulk_update_stock_industry(self, mapping: dict[str, dict | str]):
+        """???????????mapping: {ts_code: industry|{industry_name,industry_code}}"""
         _main_stock_industry.clear()
-        for k, v in (mapping or {}).items():
-            _main_stock_industry[str(k)] = str(v or "")
-        logger.info(f"Layer2 股票行业映射已更新: {len(mapping or {})}")
+        _main_stock_industry_code.clear()
+        for k, payload in (mapping or {}).items():
+            ts_code = str(k or "")
+            if not ts_code:
+                continue
+            if isinstance(payload, dict):
+                industry_name = str(payload.get("industry_name") or payload.get("industry") or "").strip()
+                industry_code = str(payload.get("industry_code") or payload.get("code") or "").strip().upper()
+            else:
+                industry_name = str(payload or "").strip()
+                industry_code = ""
+            _main_stock_industry[ts_code] = industry_name
+            _main_stock_industry_code[ts_code] = industry_code
+        logger.info(f"Layer2 ?????????: {len(mapping or {})}")
 
     def bulk_update_stock_concepts(self, mapping: dict[str, dict | list | tuple | str]):
         """批量更新股票到东方财富概念板块映射。"""
         _main_stock_concepts.clear()
         _main_stock_core_concept.clear()
+        _main_stock_concept_codes.clear()
+        _main_stock_core_concept_code.clear()
         for ts_code, payload in (mapping or {}).items():
             code = str(ts_code or "")
             if not code:
                 continue
             if isinstance(payload, dict):
                 boards = payload.get("concept_boards") if isinstance(payload.get("concept_boards"), list) else payload.get("boards")
+                board_codes = payload.get("concept_codes") if isinstance(payload.get("concept_codes"), list) else payload.get("board_codes")
                 core = payload.get("core_concept_board") or payload.get("core_concept") or payload.get("core")
+                core_code = payload.get("core_concept_code") or payload.get("core_code")
             elif isinstance(payload, (list, tuple, set)):
                 boards = list(payload)
+                board_codes = []
                 core = boards[0] if boards else ""
+                core_code = ""
             else:
                 boards = [payload] if payload else []
+                board_codes = []
                 core = payload
+                core_code = ""
             clean_boards: list[str] = []
             seen: set[str] = set()
             for board in boards or []:
@@ -371,19 +391,51 @@ class GmTickProvider(TickProvider):
                     continue
                 seen.add(name)
                 clean_boards.append(name)
+            clean_codes: list[str] = []
+            seen_codes: set[str] = set()
+            for raw_code in board_codes or []:
+                board_code = str(raw_code or "").strip().upper()
+                if not board_code or board_code in seen_codes:
+                    continue
+                seen_codes.add(board_code)
+                clean_codes.append(board_code)
             _main_stock_concepts[code] = clean_boards
             _main_stock_core_concept[code] = str(core or (clean_boards[0] if clean_boards else "")).strip()
+            _main_stock_concept_codes[code] = clean_codes
+            _main_stock_core_concept_code[code] = str(core_code or (clean_codes[0] if clean_codes else "")).strip().upper()
         logger.info(f"Layer2 东方财富概念映射已更新: {len(mapping or {})}")
 
     def bulk_update_concept_snapshots(self, mapping: dict[str, dict]):
         """批量更新东方财富概念板块生态快照。"""
         _main_concept_snapshot.clear()
         for concept_name, payload in (mapping or {}).items():
-            name = str(concept_name or "").strip()
-            if not name:
+            item = dict(payload or {})
+            name = str(item.get("concept_name") or concept_name or "").strip()
+            board_code = str(item.get("board_code") or "").strip().upper()
+            if not name and not board_code:
                 continue
-            _main_concept_snapshot[name] = dict(payload or {})
+            if name:
+                item["concept_name"] = name
+                _main_concept_snapshot[name] = dict(item)
+            if board_code:
+                item["board_code"] = board_code
+                _main_concept_snapshot[board_code] = dict(item)
         logger.info(f"Layer2 东方财富概念快照已更新: {len(mapping or {})}")
+
+    def bulk_update_industry_snapshots(self, mapping: dict[str, dict]):
+        _main_industry_snapshot.clear()
+        for industry_key, payload in (mapping or {}).items():
+            item = dict(payload or {})
+            key = str(industry_key or "").strip()
+            name = str(item.get("industry_name") or key or "").strip()
+            if not key and not name:
+                continue
+            if name:
+                item["industry_name"] = name
+                _main_industry_snapshot[name] = dict(item)
+            if key:
+                _main_industry_snapshot[key] = dict(item)
+        logger.info(f"Layer2 ??????? {len(mapping or {})}")
 
     def update_instrument_profile(self, ts_code: str, profile: dict):
         """更新单只股票的制度画像。"""

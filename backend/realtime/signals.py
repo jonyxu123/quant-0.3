@@ -150,13 +150,26 @@ _P1_LEFT_RECLAIM_CFG = _P1_CFG.get('left_reclaim', {}) if isinstance(_P1_CFG, di
 _P1_LEFT_RECLAIM_ENABLED = bool(_P1_LEFT_RECLAIM_CFG.get('enabled', True))
 _P1_LEFT_RECLAIM_BELOW_MIN_CONFIRMS = int(_P1_LEFT_RECLAIM_CFG.get('below_lower_min_confirms', 2) or 2)
 _P1_LEFT_RECLAIM_NEAR_MIN_CONFIRMS = int(_P1_LEFT_RECLAIM_CFG.get('near_lower_min_confirms', 1) or 1)
+_P1_LEFT_RECLAIM_BIAS_VWAP_DEEP_THRESHOLD_PCT = float(_P1_LEFT_RECLAIM_CFG.get('bias_vwap_deep_threshold_pct', -1.20) or -1.20)
+_P1_LEFT_RECLAIM_LEFT_TAIL_ZSCORE_THRESHOLD = float(_P1_LEFT_RECLAIM_CFG.get('left_tail_zscore_threshold', -1.60) or -1.60)
 _P1_LEFT_RECLAIM_BIDASK_MIN = float(_P1_LEFT_RECLAIM_CFG.get('bid_ask_ratio_min', 1.05) or 1.05)
 _P1_LEFT_RECLAIM_ASK_ABSORB_MIN = float(_P1_LEFT_RECLAIM_CFG.get('ask_wall_absorb_ratio_min', 0.55) or 0.55)
 _P1_LEFT_RECLAIM_SUPER_INFLOW_BPS_MIN = float(_P1_LEFT_RECLAIM_CFG.get('super_net_inflow_bps_min', 20) or 20)
+_P1_LEFT_RECLAIM_HIGH_POSITION_DROP_PCT = float(_P1_LEFT_RECLAIM_CFG.get('high_position_drop_pct', -2.50) or -2.50)
+_P1_LEFT_RECLAIM_HIGH_POSITION_MIDLINE_BUFFER_PCT = float(_P1_LEFT_RECLAIM_CFG.get('high_position_midline_buffer_pct', 0.20) or 0.20) / 100.0
+_P1_LEFT_RECLAIM_DISTRIBUTION_BID_ASK_MAX = float(_P1_LEFT_RECLAIM_CFG.get('distribution_bid_ask_max', 0.95) or 0.95)
+_P1_LEFT_RECLAIM_DISTRIBUTION_ASK_ABSORB_MAX = float(_P1_LEFT_RECLAIM_CFG.get('distribution_ask_absorb_max', 0.35) or 0.35)
+_P1_LEFT_RECLAIM_DISTRIBUTION_SUPER_OUT_BPS = float(_P1_LEFT_RECLAIM_CFG.get('distribution_super_out_bps', -30) or -30)
 _P1_LEFT_RECLAIM_PRICE_BUFFER_PCT = float(_P1_LEFT_RECLAIM_CFG.get('price_reclaim_buffer_pct', 0.10) or 0.10) / 100.0
+_P1_LEFT_RECLAIM_INTRADAY_AVWAP_RECLAIM_BUFFER_PCT = float(
+    _P1_LEFT_RECLAIM_CFG.get('intraday_avwap_reclaim_buffer_pct', 0.05) or 0.05
+) / 100.0
 _P1_LEFT_RECLAIM_LOOKBACK_BARS = int(_P1_LEFT_RECLAIM_CFG.get('recent_break_lookback_bars', 5) or 5)
 _P1_LEFT_RECLAIM_BREAK_EPS_PCT = float(_P1_LEFT_RECLAIM_CFG.get('recent_break_eps_pct', 0.20) or 0.20) / 100.0
 _P1_LEFT_RECLAIM_HIGHER_LOW_RISE_PCT = float(_P1_LEFT_RECLAIM_CFG.get('higher_low_min_rise_pct', 0.05) or 0.05) / 100.0
+_P1_LEFT_RECLAIM_HIGHER_LOW_3M_RISE_PCT = float(
+    _P1_LEFT_RECLAIM_CFG.get('higher_low_3m_min_rise_pct', 0.08) or 0.08
+) / 100.0
 _P1_LEFT_RECLAIM_SCORE_BONUS = int(_P1_LEFT_RECLAIM_CFG.get('score_bonus_per_confirm', 4) or 4)
 _P1_LEFT_RECLAIM_MAX_BONUS = int(_P1_LEFT_RECLAIM_CFG.get('max_confirm_bonus', 12) or 12)
 _P1_VETO_CFG = _P1_CFG.get('veto', {}) if isinstance(_P1_CFG, dict) else {}
@@ -199,6 +212,12 @@ _P1_EXIT_ANCHOR_CFG = _P1_CFG.get('exit_anchor', {}) if isinstance(_P1_CFG, dict
 _P1_EXIT_ANCHOR_ENABLED = bool(_P1_EXIT_ANCHOR_CFG.get('enabled', True))
 _P1_EXIT_ENTRY_COST_BREAK_PCT = float(_P1_EXIT_ANCHOR_CFG.get('entry_cost_break_pct', 1.20) or 1.20)
 _P1_EXIT_ENTRY_AVWAP_BREAK_PCT = float(_P1_EXIT_ANCHOR_CFG.get('entry_avwap_break_pct', 0.35) or 0.35)
+_P1_EXIT_ENTRY_AVWAP_REDUCE_RATIO = float(_P1_EXIT_ANCHOR_CFG.get('entry_avwap_reduce_ratio', 1.00) or 1.00)
+_P1_EXIT_BREAKOUT_AVWAP_REDUCE_RATIO = float(_P1_EXIT_ANCHOR_CFG.get('breakout_avwap_reduce_ratio', 0.50) or 0.50)
+_P1_EXIT_EVENT_AVWAP_REDUCE_RATIO = float(_P1_EXIT_ANCHOR_CFG.get('event_avwap_reduce_ratio', 0.40) or 0.40)
+_P1_EXIT_SESSION_AVWAP_REDUCE_RATIO = float(_P1_EXIT_ANCHOR_CFG.get('session_avwap_reduce_ratio', 0.20) or 0.20)
+_P1_EXIT_ENTRY_COST_REDUCE_RATIO = float(_P1_EXIT_ANCHOR_CFG.get('entry_cost_reduce_ratio', 0.25) or 0.25)
+_P1_EXIT_AVWAP_SOFT_WEAK_REDUCE_RATIO = float(_P1_EXIT_ANCHOR_CFG.get('avwap_soft_weak_reduce_ratio', 0.15) or 0.15)
 _P1_EXIT_TAKE_PROFIT_COST_PREMIUM_PCT = float(
     _P1_EXIT_ANCHOR_CFG.get('take_profit_cost_premium_pct', 6.0) or 6.0
 )
@@ -206,6 +225,8 @@ _P1_EXIT_BETA_REDUCE_COST_PREMIUM_PCT = float(
     _P1_EXIT_ANCHOR_CFG.get('beta_reduce_cost_premium_pct', 3.5) or 3.5
 )
 _P1_EXIT_INTRADAY_AVWAP_MIN_BARS = int(_P1_EXIT_ANCHOR_CFG.get('intraday_avwap_min_bars', 8) or 8)
+_P1_EXIT_SESSION_AVWAP_ENABLED = bool(_P1_EXIT_ANCHOR_CFG.get('session_avwap_enabled', True))
+_P1_EXIT_TIMING_CLEAR_AVWAP_FLOW_REQUIRED = bool(_P1_EXIT_ANCHOR_CFG.get('timing_clear_avwap_flow_required', True))
 _P1_BREAKOUT_ANCHOR_CFG = _P1_CFG.get('breakout_anchor', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_BREAKOUT_ANCHOR_ENABLED = bool(_P1_BREAKOUT_ANCHOR_CFG.get('enabled', True))
 _P1_BREAKOUT_ANCHOR_LOOKBACK_BARS = int(_P1_BREAKOUT_ANCHOR_CFG.get('lookback_bars', 30) or 30)
@@ -219,6 +240,12 @@ _P1_BREAKOUT_ANCHOR_AVWAP_BREAK_PCT = float(
 )
 _P1_BREAKOUT_ANCHOR_BETA_REDUCE_PREMIUM_PCT = float(
     _P1_BREAKOUT_ANCHOR_CFG.get('beta_reduce_premium_pct', 2.50) or 2.50
+)
+_P1_BREAKOUT_ANCHOR_REQUIRE_AVWAP_CONTROL = bool(_P1_BREAKOUT_ANCHOR_CFG.get('require_avwap_control', True))
+_P1_BREAKOUT_ANCHOR_MIN_CONTROL_COUNT = int(_P1_BREAKOUT_ANCHOR_CFG.get('min_control_count', 1) or 1)
+_P1_BREAKOUT_ANCHOR_ALLOW_MISSING_STACK = bool(_P1_BREAKOUT_ANCHOR_CFG.get('allow_missing_stack', True))
+_P1_BREAKOUT_ANCHOR_ALLOW_SESSION_AVWAP_CONTROL = bool(
+    _P1_BREAKOUT_ANCHOR_CFG.get('allow_session_avwap_control', True)
 )
 _P1_EVENT_ANCHOR_CFG = _P1_CFG.get('event_anchor', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_EVENT_ANCHOR_ENABLED = bool(_P1_EVENT_ANCHOR_CFG.get('enabled', True))
@@ -247,16 +274,49 @@ _P1_VOL_RIGHT_EXPAND_BONUS = int(_P1_VOL_PACE_CFG.get('right_expand_bonus', 6) o
 _P1_VOL_RIGHT_SURGE_BONUS = int(_P1_VOL_PACE_CFG.get('right_surge_bonus', 8) or 8)
 _P1_CONCEPT_ECOLOGY_CFG = _P1_CFG.get('concept_ecology', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_CONCEPT_ECOLOGY_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('enabled', False))
+_P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('hard_gate_enabled', True))
+_P1_CONCEPT_ECOLOGY_BLOCK_ON_RETREAT = bool(_P1_CONCEPT_ECOLOGY_CFG.get('block_on_retreat', True))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_HARD_WEAK = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_hard_weak', True))
+_P1_CONCEPT_ECOLOGY_HARD_RETREAT_THRESHOLD = float(
+    _P1_CONCEPT_ECOLOGY_CFG.get('hard_retreat_threshold', _P1_CONCEPT_ECOLOGY_CFG.get('retreat_score_max', -20.0)) or -20.0
+)
+_P1_CONCEPT_ECOLOGY_HARD_WEAK_THRESHOLD = float(
+    _P1_CONCEPT_ECOLOGY_CFG.get('hard_weak_threshold', _P1_CONCEPT_ECOLOGY_CFG.get('weak_score_max', 5.0)) or 5.0
+)
+_P1_CONCEPT_ECOLOGY_HARD_STRONG_THRESHOLD = float(
+    _P1_CONCEPT_ECOLOGY_CFG.get('hard_strong_threshold', _P1_CONCEPT_ECOLOGY_CFG.get('strong_score_min', 30.0)) or 30.0
+)
+_P1_CONCEPT_ECOLOGY_SCORE_BOARD_WEIGHT = float(_P1_CONCEPT_ECOLOGY_CFG.get('score_board_weight', 30.0) or 30.0)
+_P1_CONCEPT_ECOLOGY_SCORE_LEADER_WEIGHT = float(_P1_CONCEPT_ECOLOGY_CFG.get('score_leader_weight', 25.0) or 25.0)
+_P1_CONCEPT_ECOLOGY_SCORE_BREADTH_WEIGHT = float(_P1_CONCEPT_ECOLOGY_CFG.get('score_breadth_weight', 20.0) or 20.0)
+_P1_CONCEPT_ECOLOGY_SCORE_FUND_FLOW_WEIGHT = float(_P1_CONCEPT_ECOLOGY_CFG.get('score_fund_flow_weight', 15.0) or 15.0)
+_P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT = float(_P1_CONCEPT_ECOLOGY_CFG.get('score_core_weight', 10.0) or 10.0)
 _P1_CONCEPT_ECOLOGY_OBSERVE_ON_RETREAT = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_retreat', True))
 _P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_weak', False))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_HEAT_CLIFF = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_heat_cliff', True))
 _P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('retreat_score_max', -20.0) or -20.0)
 _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('weak_score_max', 5.0) or 5.0)
+_P1_CONCEPT_ECOLOGY_HEAT_CLIFF_SCORE_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('heat_cliff_score_max', -8.0) or -8.0)
+_P1_CONCEPT_ECOLOGY_HEAT_CLIFF_BREADTH_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('heat_cliff_breadth_max', 0.38) or 0.38)
+_P1_CONCEPT_ECOLOGY_HEAT_CLIFF_LEADER_PCT_MAX = float(_P1_CONCEPT_ECOLOGY_CFG.get('heat_cliff_leader_pct_max', 1.5) or 1.5)
 _P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN = float(_P1_CONCEPT_ECOLOGY_CFG.get('strong_score_min', 30.0) or 30.0)
 _P1_CONCEPT_ECOLOGY_EXPAND_SCORE_MIN = float(_P1_CONCEPT_ECOLOGY_CFG.get('expand_score_min', 45.0) or 45.0)
 _P1_CONCEPT_ECOLOGY_STRONG_BONUS = int(_P1_CONCEPT_ECOLOGY_CFG.get('strong_bonus', 4) or 4)
 _P1_CONCEPT_ECOLOGY_EXPAND_BONUS = int(_P1_CONCEPT_ECOLOGY_CFG.get('expand_bonus', 6) or 6)
 _P1_CONCEPT_ECOLOGY_WEAK_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('weak_penalty', 5) or 5)
 _P1_CONCEPT_ECOLOGY_RETREAT_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('retreat_penalty', 10) or 10)
+_P1_CONCEPT_ECOLOGY_JOINT_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('joint_enabled', True))
+_P1_CONCEPT_ECOLOGY_INDUSTRY_CONTEXT_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('industry_context_enabled', True))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_JOINT_RETREAT = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_joint_retreat', True))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK_NO_SUPPORT = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_weak_no_support', True))
+_P1_CONCEPT_ECOLOGY_JOINT_RETREAT_MIN_COUNT = int(_P1_CONCEPT_ECOLOGY_CFG.get('joint_retreat_min_count', 2) or 2)
+_P1_CONCEPT_ECOLOGY_SECONDARY_SUPPORT_MIN_COUNT = int(_P1_CONCEPT_ECOLOGY_CFG.get('secondary_support_min_count', 1) or 1)
+_P1_CONCEPT_ECOLOGY_SECONDARY_SUPPORT_BONUS = int(_P1_CONCEPT_ECOLOGY_CFG.get('secondary_support_bonus', 3) or 3)
+_P1_CONCEPT_ECOLOGY_JOINT_RETREAT_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('joint_retreat_penalty', 6) or 6)
+_P1_CONCEPT_ECOLOGY_WEAK_NO_SUPPORT_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('weak_no_support_penalty', 4) or 4)
+_P1_CONCEPT_ECOLOGY_INDUSTRY_SUPPORT_BONUS = int(_P1_CONCEPT_ECOLOGY_CFG.get('industry_support_bonus', 3) or 3)
+_P1_CONCEPT_ECOLOGY_INDUSTRY_JOINT_WEAK_PENALTY = int(_P1_CONCEPT_ECOLOGY_CFG.get('industry_joint_weak_penalty', 5) or 5)
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_INDUSTRY_JOINT_WEAK = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_industry_joint_weak', True))
 _P1_LEFT_STREAK_CFG = _P1_CFG.get('left_streak_guard', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_LEFT_STREAK_ENABLED = bool(_P1_LEFT_STREAK_CFG.get('enabled', True))
 _P1_LEFT_STREAK_ONLY_LEFT = bool(_P1_LEFT_STREAK_CFG.get('only_left_side_buy', True))
@@ -609,6 +669,7 @@ def _compute_pool1_entry_anchor(
     last_buy_price: Optional[float] = None,
     last_buy_at: Optional[int] = None,
     minute_bars_1m: Optional[list[dict]] = None,
+    session_avwap: Optional[float] = None,
 ) -> dict:
     info = {
         'enabled': bool(_P1_EXIT_ANCHOR_ENABLED),
@@ -626,6 +687,11 @@ def _compute_pool1_entry_anchor(
         'entry_avwap_lost': False,
         'entry_avwap_premium_pct': None,
         'entry_avwap_bars': 0,
+        'has_session_avwap': False,
+        'session_avwap': None,
+        'session_avwap_premium_pct': None,
+        'session_avwap_bars': 0,
+        'current_above_session_avwap': False,
         'has_breakout_anchor': False,
         'breakout_anchor_reason': 'disabled',
         'breakout_anchor_index': None,
@@ -654,6 +720,16 @@ def _compute_pool1_entry_anchor(
         'support_anchor_type': '',
         'support_anchor_line': None,
         'support_anchor_lost': False,
+        'current_above_entry_avwap': False,
+        'current_above_breakout_avwap': False,
+        'current_above_event_avwap': False,
+        'avwap_stack_ready': False,
+        'avwap_control_count': 0,
+        'avwap_control_labels': [],
+        'avwap_loss_count': 0,
+        'avwap_loss_labels': [],
+        'holding_avwap_control_count': 0,
+        'holding_avwap_control_labels': [],
     }
     if not _P1_EXIT_ANCHOR_ENABLED:
         return info
@@ -675,6 +751,68 @@ def _compute_pool1_entry_anchor(
     except Exception:
         buy_at = 0
 
+    bars_norm: list[dict] = []
+    if isinstance(minute_bars_1m, list):
+        for bar in minute_bars_1m:
+            ts = _parse_minute_bar_ts(bar)
+            if ts is None:
+                continue
+            try:
+                close = float(bar.get('close', 0) or 0)
+            except Exception:
+                close = 0.0
+            if close <= 0:
+                continue
+            try:
+                high = float(bar.get('high', close) or close)
+            except Exception:
+                high = close
+            try:
+                volume = float(bar.get('volume', 0) or 0)
+            except Exception:
+                volume = 0.0
+            try:
+                amount = float(bar.get('amount', 0) or 0)
+            except Exception:
+                amount = 0.0
+            if amount <= 0 and volume > 0:
+                amount = close * volume
+            bars_norm.append(
+                {
+                    'timestamp': ts,
+                    'close': close,
+                    'high': high if high > 0 else close,
+                    'volume': max(0.0, volume),
+                    'amount': max(0.0, amount),
+                }
+            )
+    bars_norm.sort(key=lambda x: int(x.get('timestamp', 0) or 0))
+
+    session_avwap_val = None
+    try:
+        session_avwap_val = float(session_avwap) if session_avwap is not None else None
+    except Exception:
+        session_avwap_val = None
+    if (session_avwap_val is None or session_avwap_val <= 0) and _P1_EXIT_SESSION_AVWAP_ENABLED and bars_norm:
+        info['session_avwap_bars'] = len(bars_norm)
+        if len(bars_norm) >= _P1_EXIT_INTRADAY_AVWAP_MIN_BARS:
+            total_volume = sum(float(x.get('volume', 0) or 0) for x in bars_norm)
+            total_amount = sum(float(x.get('amount', 0) or 0) for x in bars_norm)
+            if total_volume > 0 and total_amount > 0:
+                session_avwap_val = total_amount / total_volume
+    elif bars_norm:
+        info['session_avwap_bars'] = len(bars_norm)
+    if session_avwap_val is not None and session_avwap_val > 0:
+        session_premium_pct = (px - session_avwap_val) / session_avwap_val * 100.0
+        info.update(
+            {
+                'has_session_avwap': True,
+                'session_avwap': round(session_avwap_val, 4),
+                'session_avwap_premium_pct': round(session_premium_pct, 4),
+                'current_above_session_avwap': bool(px > session_avwap_val),
+            }
+        )
+
     if buy_price > 0:
         cost_break_line = buy_price * (1 - _P1_EXIT_ENTRY_COST_BREAK_PCT / 100.0)
         premium_pct = (px - buy_price) / buy_price * 100.0
@@ -691,7 +829,6 @@ def _compute_pool1_entry_anchor(
         )
     else:
         info['reason'] = 'missing_entry_cost'
-        return info
 
     if buy_at > 0 and isinstance(minute_bars_1m, list) and minute_bars_1m:
         try:
@@ -747,54 +884,16 @@ def _compute_pool1_entry_anchor(
                             'entry_avwap_break_line': round(avwap_break_line, 4),
                             'entry_avwap_lost': bool(px <= avwap_break_line),
                             'entry_avwap_premium_pct': round(avwap_premium_pct, 4) if avwap_premium_pct is not None else None,
+                            'current_above_entry_avwap': bool(px > entry_avwap),
                         }
                     )
         else:
             info['reason'] = 'entry_day_not_current_session'
 
-    if not _P1_BREAKOUT_ANCHOR_ENABLED:
-        return info
-
-    bars_norm: list[dict] = []
-    if isinstance(minute_bars_1m, list):
-        for bar in minute_bars_1m:
-            ts = _parse_minute_bar_ts(bar)
-            if ts is None:
-                continue
-            try:
-                close = float(bar.get('close', 0) or 0)
-            except Exception:
-                close = 0.0
-            if close <= 0:
-                continue
-            try:
-                high = float(bar.get('high', close) or close)
-            except Exception:
-                high = close
-            try:
-                volume = float(bar.get('volume', 0) or 0)
-            except Exception:
-                volume = 0.0
-            try:
-                amount = float(bar.get('amount', 0) or 0)
-            except Exception:
-                amount = 0.0
-            if amount <= 0 and volume > 0:
-                amount = close * volume
-            bars_norm.append(
-                {
-                    'timestamp': ts,
-                    'close': close,
-                    'high': high if high > 0 else close,
-                    'volume': max(0.0, volume),
-                    'amount': max(0.0, amount),
-                }
-            )
-    bars_norm.sort(key=lambda x: int(x.get('timestamp', 0) or 0))
     bars_breakout = list(bars_norm)
     if _P1_BREAKOUT_ANCHOR_LOOKBACK_BARS > 0 and len(bars_breakout) > _P1_BREAKOUT_ANCHOR_LOOKBACK_BARS:
         bars_breakout = bars_breakout[-_P1_BREAKOUT_ANCHOR_LOOKBACK_BARS:]
-    if len(bars_breakout) >= max(_P1_BREAKOUT_ANCHOR_MIN_BARS, _P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS + 1):
+    if _P1_BREAKOUT_ANCHOR_ENABLED and len(bars_breakout) >= max(_P1_BREAKOUT_ANCHOR_MIN_BARS, _P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS + 1):
         breakout_idx: Optional[int] = None
         for i in range(_P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS, len(bars_breakout)):
             hist = bars_breakout[i - _P1_BREAKOUT_ANCHOR_HIGH_LOOKBACK_BARS:i]
@@ -836,9 +935,10 @@ def _compute_pool1_entry_anchor(
                             'breakout_anchor_lost': bool(px <= breakout_break_line),
                             'breakout_anchor_premium_pct': round(breakout_premium_pct, 4) if breakout_premium_pct is not None else None,
                             'breakout_anchor_bars': len(anchor_bars),
+                            'current_above_breakout_avwap': bool(px > breakout_avwap),
                         }
                     )
-    else:
+    elif _P1_BREAKOUT_ANCHOR_ENABLED:
         info['breakout_anchor_reason'] = 'insufficient_bars'
 
     bars_event = list(bars_norm)
@@ -895,6 +995,7 @@ def _compute_pool1_entry_anchor(
                             'event_anchor_lost': bool(px <= event_break_line),
                             'event_anchor_premium_pct': round(event_premium_pct, 4) if event_premium_pct is not None else None,
                             'event_anchor_bars': len(anchor_bars),
+                            'current_above_event_avwap': bool(px > event_avwap),
                         }
                     )
     elif _P1_EVENT_ANCHOR_ENABLED:
@@ -926,6 +1027,29 @@ def _compute_pool1_entry_anchor(
                 'support_anchor_lost': bool(dominant_anchor[2]),
             }
         )
+    avwap_checks = []
+    holding_checks = []
+    if info.get('has_entry_avwap'):
+        holding_checks.append(('entry_day_avwap', bool(info.get('current_above_entry_avwap'))))
+    if info.get('has_breakout_anchor'):
+        avwap_checks.append(('breakout_day_avwap', bool(info.get('current_above_breakout_avwap'))))
+        holding_checks.append(('breakout_day_avwap', bool(info.get('current_above_breakout_avwap'))))
+    if info.get('has_event_anchor'):
+        avwap_checks.append(('event_day_avwap', bool(info.get('current_above_event_avwap'))))
+        holding_checks.append(('event_day_avwap', bool(info.get('current_above_event_avwap'))))
+    if _P1_BREAKOUT_ANCHOR_ALLOW_SESSION_AVWAP_CONTROL and info.get('has_session_avwap'):
+        avwap_checks.append(('session_avwap', bool(info.get('current_above_session_avwap'))))
+    if avwap_checks:
+        info['avwap_stack_ready'] = True
+        info['avwap_control_count'] = int(sum(1 for _, passed in avwap_checks if passed))
+        info['avwap_control_labels'] = [label for label, passed in avwap_checks if passed]
+        info['avwap_loss_count'] = int(sum(1 for _, passed in avwap_checks if not passed))
+        info['avwap_loss_labels'] = [label for label, passed in avwap_checks if not passed]
+    if holding_checks:
+        info['holding_avwap_control_count'] = int(sum(1 for _, passed in holding_checks if passed))
+        info['holding_avwap_control_labels'] = [label for label, passed in holding_checks if passed]
+    if info.get('avwap_stack_ready'):
+        info['reason'] = 'avwap_stack_ready'
     return info
 
 
@@ -992,6 +1116,10 @@ def _compute_pool1_left_reclaim(
     rsi6: Optional[float],
     rsi_oversold_th: float,
     pct_chg: Optional[float],
+    vwap: Optional[float] = None,
+    bias_vwap: Optional[float] = None,
+    intraday_prices: Optional[list[float]] = None,
+    short_zscore: Optional[float] = None,
     prev_price: Optional[float] = None,
     bid_ask_ratio: Optional[float] = None,
     ask_wall_absorb_ratio: Optional[float] = None,
@@ -1001,18 +1129,43 @@ def _compute_pool1_left_reclaim(
     info = {
         'enabled': bool(_P1_LEFT_RECLAIM_ENABLED),
         'candidate': False,
+        'oversold_pressure': False,
+        'extreme_items': [],
         'current_above_lower': False,
         'recent_break_below_lower': False,
         'reclaimed_lower': False,
+        'has_intraday_avwap': False,
+        'current_above_intraday_avwap': False,
+        'reclaimed_intraday_avwap': False,
         'higher_low_1m': False,
+        'higher_low_3m': False,
+        'vwap': None,
+        'bias_vwap': None,
+        'short_zscore': None,
         'confirm_items': [],
         'required_confirms': 0,
         'confirm_count': 0,
         'score_bonus': 0,
         'reason': '',
+        'stage_a': {
+            'name': 'extreme_deviation',
+            'passed': False,
+            'items': [],
+            'reason': '',
+        },
+        'stage_b': {
+            'name': 'reclaim_confirmation',
+            'passed': False,
+            'items': [],
+            'required_confirms': 0,
+            'confirm_count': 0,
+            'reason': '',
+        },
     }
     if not _P1_LEFT_RECLAIM_ENABLED or price <= 0 or boll_lower <= 0:
         info['reason'] = 'disabled_or_invalid'
+        info['stage_a']['reason'] = 'disabled_or_invalid'
+        info['stage_b']['reason'] = 'disabled_or_invalid'
         return True, info
 
     current_above_lower = bool(price >= boll_lower * (1 - _P1_LEFT_RECLAIM_PRICE_BUFFER_PCT))
@@ -1020,6 +1173,7 @@ def _compute_pool1_left_reclaim(
 
     recent_break = bool(below_lower)
     higher_low = False
+    higher_low_3m = False
     bars = minute_bars_1m if isinstance(minute_bars_1m, list) else []
     valid_lows: list[float] = []
     if bars:
@@ -1039,8 +1193,22 @@ def _compute_pool1_left_reclaim(
                 recent_lows[-2] <= recent_lows[-3]
                 and recent_lows[-1] >= recent_lows[-2] * (1 + _P1_LEFT_RECLAIM_HIGHER_LOW_RISE_PCT)
             )
+        if len(valid_lows) >= 9:
+            grouped_lows: list[float] = []
+            recent_valid_lows = valid_lows[-9:]
+            for idx in range(0, len(recent_valid_lows), 3):
+                chunk = [x for x in recent_valid_lows[idx: idx + 3] if x > 0]
+                if chunk:
+                    grouped_lows.append(min(chunk))
+            if len(grouped_lows) >= 3:
+                recent_grouped_lows = grouped_lows[-3:]
+                higher_low_3m = bool(
+                    recent_grouped_lows[-2] <= recent_grouped_lows[-3]
+                    and recent_grouped_lows[-1] >= recent_grouped_lows[-2] * (1 + _P1_LEFT_RECLAIM_HIGHER_LOW_3M_RISE_PCT)
+                )
     info['recent_break_below_lower'] = recent_break
     info['higher_low_1m'] = higher_low
+    info['higher_low_3m'] = higher_low_3m
 
     try:
         rsi_val = float(rsi6) if rsi6 is not None else None
@@ -1050,15 +1218,70 @@ def _compute_pool1_left_reclaim(
         pct_val = float(pct_chg) if pct_chg is not None else None
     except Exception:
         pct_val = None
+    try:
+        vwap_val = float(vwap) if vwap is not None else None
+    except Exception:
+        vwap_val = None
+    try:
+        bias_vwap_val = float(bias_vwap) if bias_vwap is not None else None
+    except Exception:
+        bias_vwap_val = None
+    if bias_vwap_val is None and vwap_val is not None and vwap_val > 0 and price > 0:
+        try:
+            bias_vwap_val = (float(price) - vwap_val) / vwap_val * 100.0
+        except Exception:
+            bias_vwap_val = None
+    try:
+        short_zscore_val = float(short_zscore) if short_zscore is not None else None
+    except Exception:
+        short_zscore_val = None
+    if short_zscore_val is None and isinstance(intraday_prices, list):
+        valid_prices = []
+        for item in intraday_prices:
+            try:
+                pv = float(item)
+            except Exception:
+                pv = 0.0
+            if pv > 0:
+                valid_prices.append(pv)
+        if len(valid_prices) >= 10:
+            short_zscore_val = _robust_zscore(valid_prices)
+    info['vwap'] = round(vwap_val, 4) if vwap_val is not None and vwap_val > 0 else None
+    info['bias_vwap'] = round(bias_vwap_val, 4) if bias_vwap_val is not None else None
+    info['short_zscore'] = round(short_zscore_val, 4) if short_zscore_val is not None else None
+    info['has_intraday_avwap'] = bool(vwap_val is not None and vwap_val > 0)
     oversold_pressure = bool(
         (rsi_val is not None and rsi_val <= float(rsi_oversold_th))
         or (pct_val is not None and pct_val <= -3.0)
     )
-    candidate = bool(below_lower or recent_break or (near_lower and oversold_pressure))
+    info['oversold_pressure'] = oversold_pressure
+    extreme_items: list[str] = []
+    if below_lower:
+        extreme_items.append('跌破下轨')
+    if recent_break:
+        extreme_items.append('近期有效跌破')
+    if near_lower and oversold_pressure:
+        if rsi_val is not None and rsi_val <= float(rsi_oversold_th):
+            extreme_items.append(f'贴近下轨+RSI超卖({rsi_val:.1f})')
+        elif pct_val is not None and pct_val <= -3.0:
+            extreme_items.append(f'贴近下轨+日内大跌({pct_val:.2f}%)')
+        else:
+            extreme_items.append('贴近下轨+超跌')
+    if bias_vwap_val is not None and bias_vwap_val <= _P1_LEFT_RECLAIM_BIAS_VWAP_DEEP_THRESHOLD_PCT:
+        extreme_items.append(f'VWAP深偏离({bias_vwap_val:.2f}%)')
+    if short_zscore_val is not None and short_zscore_val <= _P1_LEFT_RECLAIM_LEFT_TAIL_ZSCORE_THRESHOLD:
+        extreme_items.append(f'短周期左尾Z({short_zscore_val:.2f})')
+    candidate = bool(extreme_items)
     info['candidate'] = candidate
+    info['extreme_items'] = list(extreme_items)
+    info['stage_a']['passed'] = candidate
+    info['stage_a']['items'] = list(extreme_items)
     if not candidate:
         info['reason'] = 'reclaim_candidate_missing'
+        info['stage_a']['reason'] = 'reclaim_candidate_missing'
+        info['stage_b']['reason'] = 'waiting_stage_a'
         return False, info
+    info['stage_a']['reason'] = 'ok'
 
     reclaimed_lower = bool(
         current_above_lower
@@ -1068,10 +1291,37 @@ def _compute_pool1_left_reclaim(
         )
     )
     info['reclaimed_lower'] = reclaimed_lower
+    current_above_intraday_avwap = bool(
+        vwap_val is not None
+        and vwap_val > 0
+        and price >= vwap_val * (1 + _P1_LEFT_RECLAIM_INTRADAY_AVWAP_RECLAIM_BUFFER_PCT)
+    )
+    intraday_avwap_recent_below = False
+    if vwap_val is not None and vwap_val > 0:
+        if prev_price is not None:
+            try:
+                intraday_avwap_recent_below = float(prev_price) < vwap_val
+            except Exception:
+                intraday_avwap_recent_below = False
+        if not intraday_avwap_recent_below and bars:
+            break_line = vwap_val * (1 - _P1_LEFT_RECLAIM_INTRADAY_AVWAP_RECLAIM_BUFFER_PCT)
+            for b in bars[-max(3, _P1_LEFT_RECLAIM_LOOKBACK_BARS):]:
+                try:
+                    low = float(b.get('low', 0) or 0)
+                except Exception:
+                    low = 0.0
+                if low > 0 and low <= break_line:
+                    intraday_avwap_recent_below = True
+                    break
+    reclaimed_intraday_avwap = bool(current_above_intraday_avwap and intraday_avwap_recent_below)
+    info['current_above_intraday_avwap'] = current_above_intraday_avwap
+    info['reclaimed_intraday_avwap'] = reclaimed_intraday_avwap
 
     confirm_items: list[str] = []
     if reclaimed_lower:
         confirm_items.append('下轨回收')
+    if reclaimed_intraday_avwap:
+        confirm_items.append('日内AVWAP回收')
     if bid_ask_ratio is not None and float(bid_ask_ratio) >= _P1_LEFT_RECLAIM_BIDASK_MIN:
         confirm_items.append(f'承接回暖({float(bid_ask_ratio):.2f})')
     if ask_wall_absorb_ratio is not None and float(ask_wall_absorb_ratio) >= _P1_LEFT_RECLAIM_ASK_ABSORB_MIN:
@@ -1080,6 +1330,8 @@ def _compute_pool1_left_reclaim(
         confirm_items.append(f'超大单回流({float(super_net_flow_bps):+.0f}bps)')
     if higher_low:
         confirm_items.append('1m低点抬高')
+    if higher_low_3m:
+        confirm_items.append('3m低点抬高')
 
     required_confirms = (
         _P1_LEFT_RECLAIM_BELOW_MIN_CONFIRMS if below_lower else _P1_LEFT_RECLAIM_NEAR_MIN_CONFIRMS
@@ -1088,13 +1340,100 @@ def _compute_pool1_left_reclaim(
     info['required_confirms'] = int(required_confirms)
     info['confirm_count'] = int(len(confirm_items))
     info['score_bonus'] = min(_P1_LEFT_RECLAIM_MAX_BONUS, len(confirm_items) * _P1_LEFT_RECLAIM_SCORE_BONUS)
+    info['stage_b']['items'] = list(confirm_items)
+    info['stage_b']['required_confirms'] = int(required_confirms)
+    info['stage_b']['confirm_count'] = int(len(confirm_items))
 
     if len(confirm_items) < required_confirms:
         info['reason'] = 'reclaim_confirm_missing'
+        info['stage_b']['reason'] = 'reclaim_confirm_missing'
         return False, info
 
     info['reason'] = 'ok'
+    info['stage_b']['passed'] = True
+    info['stage_b']['reason'] = 'ok'
     return True, info
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _bounded_component(value: float, weight: float) -> float:
+    return max(-abs(float(weight)), min(abs(float(weight)), float(value)))
+
+
+def _fallback_concept_ecology_components(ecology: dict, state: str) -> dict:
+    try:
+        pct = float(ecology.get('pct_chg', 0.0) or 0.0)
+    except Exception:
+        pct = 0.0
+    try:
+        breadth = float(ecology.get('breadth_ratio', 0.0) or 0.0)
+    except Exception:
+        breadth = 0.0
+    try:
+        leader_pct = float(ecology.get('leader_pct', 0.0) or 0.0)
+    except Exception:
+        leader_pct = 0.0
+    try:
+        fund_flow = float(ecology.get('main_net_inflow') or ecology.get('fund_flow') or 0.0)
+    except Exception:
+        fund_flow = 0.0
+
+    board_score = _bounded_component((pct / 3.0) * _P1_CONCEPT_ECOLOGY_SCORE_BOARD_WEIGHT, _P1_CONCEPT_ECOLOGY_SCORE_BOARD_WEIGHT)
+    breadth_score = _bounded_component(breadth * _P1_CONCEPT_ECOLOGY_SCORE_BREADTH_WEIGHT, _P1_CONCEPT_ECOLOGY_SCORE_BREADTH_WEIGHT)
+    leader_score = _bounded_component((leader_pct / 8.0) * _P1_CONCEPT_ECOLOGY_SCORE_LEADER_WEIGHT, _P1_CONCEPT_ECOLOGY_SCORE_LEADER_WEIGHT)
+    if fund_flow > 0:
+        fund_score = _P1_CONCEPT_ECOLOGY_SCORE_FUND_FLOW_WEIGHT
+    elif fund_flow < 0:
+        fund_score = -_P1_CONCEPT_ECOLOGY_SCORE_FUND_FLOW_WEIGHT
+    else:
+        fund_score = 0.0
+    if state in ('expand', 'strong'):
+        core_score = _P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT
+    elif state == 'retreat':
+        core_score = -_P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT
+    else:
+        core_score = 0.0
+    return {
+        'board_strength': round(board_score, 2),
+        'leader_status': round(leader_score, 2),
+        'strong_breadth': round(breadth_score, 2),
+        'fund_flow': round(fund_score, 2),
+        'core_degree': round(core_score, 2),
+    }
+
+
+def _compute_pool1_concept_hard_score(ecology: dict, state: str) -> tuple[float, dict]:
+    raw_components = ecology.get('score_components')
+    if not isinstance(raw_components, dict):
+        raw_components = ecology.get('ecology_components')
+    components = dict(raw_components) if isinstance(raw_components, dict) else _fallback_concept_ecology_components(ecology, state)
+    normalized = {
+        'board_strength': _safe_float(components.get('board_strength'), 0.0),
+        'leader_status': _safe_float(components.get('leader_status'), 0.0),
+        'strong_breadth': _safe_float(components.get('strong_breadth'), 0.0),
+        'fund_flow': _safe_float(components.get('fund_flow'), 0.0),
+        'core_degree': _safe_float(components.get('core_degree'), 0.0),
+    }
+    try:
+        structured_score = float(ecology.get('structured_score', ecology.get('ecology_score')) or 0.0)
+    except Exception:
+        structured_score = 0.0
+    if structured_score == 0.0 and any(abs(v) > 0 for v in normalized.values()):
+        structured_score = sum(normalized.values())
+    if structured_score == 0.0:
+        try:
+            structured_score = float(ecology.get('score', 0.0) or 0.0)
+        except Exception:
+            structured_score = 0.0
+    return round(float(structured_score), 2), {k: round(float(v), 2) for k, v in normalized.items()}
 
 
 def _compute_pool1_concept_ecology_gate(
@@ -1102,20 +1441,67 @@ def _compute_pool1_concept_ecology_gate(
     core_concept_board: Optional[str],
     concept_boards: Optional[list[str]],
     concept_ecology: Optional[dict],
+    concept_ecology_multi: Optional[list[dict]] = None,
+    industry: Optional[str] = None,
+    industry_ecology: Optional[dict] = None,
 ) -> dict:
     info = {
         'enabled': bool(_P1_CONCEPT_ECOLOGY_ENABLED),
         'core_concept_board': str(core_concept_board or '').strip(),
         'concept_boards': list(concept_boards or []),
+        'industry': str(industry or '').strip(),
         'state': 'unknown',
         'score': 0.0,
+        'hard_score': 0.0,
+        'hard_gate_enabled': bool(_P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED),
+        'hard_thresholds': {
+            'retreat': _P1_CONCEPT_ECOLOGY_HARD_RETREAT_THRESHOLD,
+            'weak': _P1_CONCEPT_ECOLOGY_HARD_WEAK_THRESHOLD,
+            'strong': _P1_CONCEPT_ECOLOGY_HARD_STRONG_THRESHOLD,
+        },
+        'gate_level': 'unknown',
+        'blocked': False,
+        'blocked_reason': '',
+        'score_components': {},
+        'core_degree_method': '',
+        'score_weights': {
+            'board_strength': _P1_CONCEPT_ECOLOGY_SCORE_BOARD_WEIGHT,
+            'leader_status': _P1_CONCEPT_ECOLOGY_SCORE_LEADER_WEIGHT,
+            'strong_breadth': _P1_CONCEPT_ECOLOGY_SCORE_BREADTH_WEIGHT,
+            'fund_flow': _P1_CONCEPT_ECOLOGY_SCORE_FUND_FLOW_WEIGHT,
+            'core_degree': _P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT,
+        },
+        'source': '',
+        'updated_at': None,
+        'updated_at_iso': '',
         'observe_only': False,
         'observe_reason': '',
         'score_adj': 0,
         'reason': '',
+        'concept_ecology_multi': [],
+        'concept_ecology_count': 0,
+        'secondary_support_count': 0,
+        'secondary_weak_count': 0,
+        'retreat_like_count': 0,
+        'joint_retreat': False,
+        'secondary_support': False,
+        'weak_no_secondary_support': False,
+        'industry_state': 'unknown',
+        'industry_score': 0.0,
+        'industry_source': '',
+        'industry_updated_at': None,
+        'industry_updated_at_iso': '',
+        'industry_support': False,
+        'industry_weak': False,
+        'industry_retreat': False,
+        'industry_joint_weak': False,
+        'supporting_concepts': [],
+        'retreat_concepts': [],
+        'industry_ecology': {},
     }
     if not _P1_CONCEPT_ECOLOGY_ENABLED:
         info['reason'] = 'disabled'
+        info['gate_level'] = 'disabled'
         return info
 
     ecology = dict(concept_ecology or {})
@@ -1123,6 +1509,11 @@ def _compute_pool1_concept_ecology_gate(
         info['core_concept_board'] = str(info['concept_boards'][0] or '').strip()
     if not info['core_concept_board']:
         info['reason'] = 'concept_missing'
+        info['gate_level'] = 'missing'
+        return info
+    if not ecology:
+        info['reason'] = 'concept_snapshot_missing'
+        info['gate_level'] = 'snapshot_missing'
         return info
 
     state = str(ecology.get('state') or 'unknown').strip().lower()
@@ -1132,6 +1523,174 @@ def _compute_pool1_concept_ecology_gate(
         score = 0.0
     info['state'] = state or 'unknown'
     info['score'] = round(score, 2)
+    hard_score, score_components = _compute_pool1_concept_hard_score(ecology, info['state'])
+    core_component = float(score_components.get('core_degree', 0.0) or 0.0)
+    if abs(core_component) < 0.001 and info['core_concept_board']:
+        primary_board = str((info['concept_boards'] or [''])[0] or '').strip()
+        if state in ('expand', 'strong'):
+            core_component = _P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT
+        elif state == 'retreat':
+            core_component = -_P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT
+        elif primary_board and primary_board == info['core_concept_board']:
+            core_component = round(_P1_CONCEPT_ECOLOGY_SCORE_CORE_WEIGHT * 0.4, 2)
+        if abs(core_component) >= 0.001:
+            score_components['core_degree'] = round(core_component, 2)
+            hard_score = round(float(hard_score) + core_component, 2)
+            info['core_degree_method'] = 'core_concept_position'
+    info['hard_score'] = round(hard_score, 2)
+    info['score_components'] = score_components
+    for key in ('pct_chg', 'breadth_ratio', 'leader_pct', 'turnover', 'main_net_inflow', 'main_net_inflow_ratio'):
+        if key in ecology:
+            info[key] = ecology.get(key)
+    info['source'] = str(ecology.get('source') or '').strip()
+    info['updated_at'] = ecology.get('updated_at')
+    info['updated_at_iso'] = str(ecology.get('updated_at_iso') or '').strip()
+    industry_info = dict(industry_ecology or {})
+    info['industry_ecology'] = dict(industry_info)
+    industry_state = str(industry_info.get('state') or 'unknown').strip().lower()
+    try:
+        industry_score = float(industry_info.get('score', 0.0) or 0.0)
+    except Exception:
+        industry_score = 0.0
+    info['industry_state'] = industry_state or 'unknown'
+    info['industry_score'] = round(industry_score, 2)
+    info['industry_source'] = str(industry_info.get('source') or '').strip()
+    info['industry_updated_at'] = industry_info.get('updated_at')
+    info['industry_updated_at_iso'] = str(industry_info.get('updated_at_iso') or '').strip()
+
+    ecology_multi_items: list[dict] = []
+    seen_multi: set[str] = set()
+    for raw in concept_ecology_multi or []:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        name = str(item.get('concept_name') or item.get('core_concept_board') or '').strip()
+        code = str(item.get('board_code') or '').strip().upper()
+        key = f'{code}|{name}'
+        if not name and not code:
+            continue
+        if key in seen_multi:
+            continue
+        seen_multi.add(key)
+        if name:
+            item['concept_name'] = name
+        if code:
+            item['board_code'] = code
+        ecology_multi_items.append(item)
+    if not ecology_multi_items and ecology:
+        fallback_item = dict(ecology)
+        if info['core_concept_board'] and not fallback_item.get('concept_name'):
+            fallback_item['concept_name'] = info['core_concept_board']
+        ecology_multi_items.append(fallback_item)
+    info['concept_ecology_multi'] = ecology_multi_items
+    info['concept_ecology_count'] = len(ecology_multi_items)
+
+    if _P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED:
+        hard_score = float(info.get('hard_score', 0.0) or 0.0)
+        retreat_hit = bool(state == 'retreat' or hard_score < _P1_CONCEPT_ECOLOGY_HARD_RETREAT_THRESHOLD)
+        weak_hit = bool(state == 'weak' or hard_score < _P1_CONCEPT_ECOLOGY_HARD_WEAK_THRESHOLD)
+        strong_hit = bool(state in ('expand', 'strong') or hard_score >= _P1_CONCEPT_ECOLOGY_HARD_STRONG_THRESHOLD)
+        if retreat_hit and _P1_CONCEPT_ECOLOGY_BLOCK_ON_RETREAT:
+            info['blocked'] = True
+            info['blocked_reason'] = 'concept_ecology_retreat_block'
+            info['gate_level'] = 'blocked'
+            info['score_adj'] = -abs(_P1_CONCEPT_ECOLOGY_RETREAT_PENALTY)
+            info['reason'] = 'hard_retreat_block'
+            return info
+        if weak_hit:
+            info['gate_level'] = 'observe'
+            info['score_adj'] -= abs(_P1_CONCEPT_ECOLOGY_WEAK_PENALTY)
+            if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_HARD_WEAK:
+                info['observe_only'] = True
+                info['observe_reason'] = 'concept_ecology_weak_observe'
+            info['reason'] = 'hard_weak_observe'
+            return info
+        info['gate_level'] = 'strong' if strong_hit else 'allow'
+    else:
+        info['gate_level'] = 'legacy'
+
+    if ecology_multi_items and _P1_CONCEPT_ECOLOGY_JOINT_ENABLED:
+        retreat_like_count = 0
+        secondary_support_count = 0
+        secondary_weak_count = 0
+        supporting_concepts: list[str] = []
+        retreat_concepts: list[str] = []
+        core_name = str(info['core_concept_board'] or '').strip()
+        for item in ecology_multi_items:
+            item_name = str(item.get('concept_name') or '').strip()
+            item_state = str(item.get('state') or '').strip().lower()
+            try:
+                item_score = float(item.get('score', 0.0) or 0.0)
+            except Exception:
+                item_score = 0.0
+            is_support = item_state in ('expand', 'strong') or item_score >= _P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN
+            is_retreat_like = item_state == 'retreat' or item_score <= _P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX
+            is_weak_like = item_state == 'weak' or item_score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX
+            if is_retreat_like:
+                retreat_like_count += 1
+                if item_name:
+                    retreat_concepts.append(item_name)
+            if item_name and item_name != core_name:
+                if is_support:
+                    secondary_support_count += 1
+                    supporting_concepts.append(item_name)
+                elif is_weak_like:
+                    secondary_weak_count += 1
+        info['retreat_like_count'] = retreat_like_count
+        info['secondary_support_count'] = secondary_support_count
+        info['secondary_weak_count'] = secondary_weak_count
+        info['supporting_concepts'] = supporting_concepts
+        info['retreat_concepts'] = retreat_concepts
+
+        joint_retreat = retreat_like_count >= max(1, _P1_CONCEPT_ECOLOGY_JOINT_RETREAT_MIN_COUNT)
+        secondary_support = secondary_support_count >= max(1, _P1_CONCEPT_ECOLOGY_SECONDARY_SUPPORT_MIN_COUNT)
+        weak_no_secondary_support = (state == 'weak' or score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX) and not secondary_support
+        info['joint_retreat'] = bool(joint_retreat)
+        info['secondary_support'] = bool(secondary_support)
+        info['weak_no_secondary_support'] = bool(weak_no_secondary_support)
+
+        if joint_retreat:
+            info['score_adj'] -= abs(_P1_CONCEPT_ECOLOGY_JOINT_RETREAT_PENALTY)
+            if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_JOINT_RETREAT:
+                info['observe_only'] = True
+                info['observe_reason'] = 'concept_joint_retreat'
+            info['reason'] = 'joint_retreat'
+            return info
+
+        if secondary_support:
+            info['score_adj'] += abs(_P1_CONCEPT_ECOLOGY_SECONDARY_SUPPORT_BONUS)
+
+        if weak_no_secondary_support:
+            info['score_adj'] -= abs(_P1_CONCEPT_ECOLOGY_WEAK_NO_SUPPORT_PENALTY)
+            if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK_NO_SUPPORT:
+                info['observe_only'] = True
+                info['observe_reason'] = 'concept_multi_no_support'
+                info['reason'] = 'weak_no_secondary_support'
+                return info
+
+    industry_support = industry_state in ('expand', 'strong') or industry_score >= _P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN
+    industry_retreat = industry_state == 'retreat' or industry_score <= _P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX
+    industry_weak = industry_state == 'weak' or industry_score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX
+    industry_joint_weak = bool(
+        industry_info
+        and (state in ('weak', 'retreat') or score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX or bool(info.get('joint_retreat')))
+        and (industry_retreat or industry_weak)
+    )
+    info['industry_support'] = bool(industry_support)
+    info['industry_retreat'] = bool(industry_retreat)
+    info['industry_weak'] = bool(industry_weak)
+    info['industry_joint_weak'] = bool(industry_joint_weak)
+
+    if industry_joint_weak:
+        info['score_adj'] -= abs(_P1_CONCEPT_ECOLOGY_INDUSTRY_JOINT_WEAK_PENALTY)
+        if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_INDUSTRY_JOINT_WEAK:
+            info['observe_only'] = True
+            info['observe_reason'] = 'concept_industry_joint_weak'
+        info['reason'] = 'industry_joint_weak'
+        return info
+
+    if industry_support and (state == 'weak' or score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX):
+        info['score_adj'] += abs(_P1_CONCEPT_ECOLOGY_INDUSTRY_SUPPORT_BONUS)
 
     if score <= _P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX or state == 'retreat':
         info['score_adj'] = -abs(_P1_CONCEPT_ECOLOGY_RETREAT_PENALTY)
@@ -1142,24 +1701,34 @@ def _compute_pool1_concept_ecology_gate(
         return info
 
     if score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX or state == 'weak':
-        info['score_adj'] = -abs(_P1_CONCEPT_ECOLOGY_WEAK_PENALTY)
-        if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK:
+        info['score_adj'] += -abs(_P1_CONCEPT_ECOLOGY_WEAK_PENALTY)
+        if _P1_CONCEPT_ECOLOGY_OBSERVE_ON_WEAK and not bool(info.get('secondary_support')) and not industry_support:
             info['observe_only'] = True
             info['observe_reason'] = 'concept_weak'
-        info['reason'] = 'weak'
+        if industry_support:
+            info['reason'] = 'weak_with_industry_support'
+        else:
+            info['reason'] = 'weak_with_secondary_support' if bool(info.get('secondary_support')) else 'weak'
         return info
 
-    if score >= _P1_CONCEPT_ECOLOGY_EXPAND_SCORE_MIN or state == 'expand':
+    hard_score = float(info.get('hard_score', score) or score)
+    if score >= _P1_CONCEPT_ECOLOGY_EXPAND_SCORE_MIN or hard_score >= _P1_CONCEPT_ECOLOGY_EXPAND_SCORE_MIN or state == 'expand':
         info['score_adj'] = abs(_P1_CONCEPT_ECOLOGY_EXPAND_BONUS)
+        if info.get('gate_level') in ('unknown', 'allow'):
+            info['gate_level'] = 'strong'
         info['reason'] = 'expand'
         return info
 
-    if score >= _P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN or state == 'strong':
+    if score >= _P1_CONCEPT_ECOLOGY_STRONG_SCORE_MIN or hard_score >= _P1_CONCEPT_ECOLOGY_HARD_STRONG_THRESHOLD or state == 'strong':
         info['score_adj'] = abs(_P1_CONCEPT_ECOLOGY_STRONG_BONUS)
+        if info.get('gate_level') in ('unknown', 'allow'):
+            info['gate_level'] = 'strong'
         info['reason'] = 'strong'
         return info
 
-    info['reason'] = 'neutral'
+    if info.get('gate_level') in ('unknown', 'legacy'):
+        info['gate_level'] = 'allow'
+    info['reason'] = 'neutral_with_secondary_support' if bool(info.get('secondary_support')) else 'neutral'
     return info
 
 
@@ -1262,6 +1831,202 @@ def _compute_pool1_left_streak_guard(
 
     if not info['observe_only']:
         info['observe_reason'] = ''
+    return info
+
+
+def _compute_pool1_left_stage_c_gate(
+    *,
+    price: float,
+    boll_mid: float,
+    pct_chg: Optional[float],
+    bid_ask_ratio: Optional[float] = None,
+    ask_wall_absorb_ratio: Optional[float] = None,
+    super_net_flow_bps: Optional[float] = None,
+    lure_long: bool = False,
+    wash_trade: bool = False,
+    concept_gate: Optional[dict] = None,
+    left_streak_guard: Optional[dict] = None,
+) -> dict:
+    info = {
+        'name': 'ecology_confirmation',
+        'passed': True,
+        'items': [],
+        'reason': 'ok',
+        'observe_only': False,
+        'observe_reason': '',
+        'high_position_catchdown': False,
+        'distribution_structure': False,
+        'concept_heat_cliff': False,
+        'concept_blocked': False,
+        'concept_gate_level': '',
+        'joint_retreat': False,
+        'weak_no_secondary_support': False,
+        'secondary_support_count': 0,
+        'industry_context': '',
+        'industry_joint_weak': False,
+        'industry_support': False,
+        'industry_retreat': False,
+        'industry_weak': False,
+    }
+
+    items: list[str] = []
+    concept_info = dict(concept_gate or {})
+    streak_info = dict(left_streak_guard or {})
+    concept_state = str(concept_info.get('state') or '').strip().lower()
+    concept_core = str(concept_info.get('core_concept_board') or '').strip()
+    try:
+        concept_score = float(concept_info.get('score', 0.0) or 0.0)
+    except Exception:
+        concept_score = 0.0
+    try:
+        concept_hard_score = float(concept_info.get('hard_score', concept_score) or concept_score)
+    except Exception:
+        concept_hard_score = concept_score
+    try:
+        breadth_ratio = float(concept_info.get('breadth_ratio', 0.0) or 0.0)
+    except Exception:
+        breadth_ratio = 0.0
+    try:
+        leader_pct = float(concept_info.get('leader_pct', 0.0) or 0.0)
+    except Exception:
+        leader_pct = 0.0
+    joint_retreat = bool(concept_info.get('joint_retreat'))
+    concept_blocked = bool(concept_info.get('blocked'))
+    concept_gate_level = str(concept_info.get('gate_level') or '').strip()
+    weak_no_secondary_support = bool(concept_info.get('weak_no_secondary_support'))
+    secondary_support_count = int(concept_info.get('secondary_support_count', 0) or 0)
+    industry_context = str(concept_info.get('industry') or '').strip()
+    industry_state = str(concept_info.get('industry_state') or '').strip().lower()
+    industry_joint_weak = bool(concept_info.get('industry_joint_weak'))
+    industry_support = bool(concept_info.get('industry_support'))
+    industry_retreat = bool(concept_info.get('industry_retreat'))
+    industry_weak = bool(concept_info.get('industry_weak'))
+    if concept_core:
+        if concept_state:
+            items.append(f'概念生态:{concept_core}:{concept_state}')
+        else:
+            items.append(f'概念生态:{concept_core}')
+    if concept_state == 'retreat':
+        items.append('概念退潮主跌段')
+    elif concept_state == 'weak':
+        items.append('概念承接转弱')
+    concept_heat_cliff = bool(
+        concept_core
+        and concept_state not in ('expand', 'strong')
+        and concept_hard_score <= _P1_CONCEPT_ECOLOGY_HEAT_CLIFF_SCORE_MAX
+        and breadth_ratio <= _P1_CONCEPT_ECOLOGY_HEAT_CLIFF_BREADTH_MAX
+        and leader_pct <= _P1_CONCEPT_ECOLOGY_HEAT_CLIFF_LEADER_PCT_MAX
+    )
+    if concept_heat_cliff:
+        items.append('概念热度断崖')
+    if joint_retreat:
+        items.append('多概念共弱')
+    elif weak_no_secondary_support:
+        items.append('次概念未共振')
+    elif secondary_support_count > 0:
+        items.append(f'次概念共振({secondary_support_count})')
+    if industry_joint_weak:
+        items.append('行业+概念共弱')
+    elif industry_retreat:
+        items.append('行业退潮')
+    elif industry_weak:
+        items.append('行业承接转弱')
+    elif industry_support:
+        items.append('行业支撑')
+    if industry_context and _P1_CONCEPT_ECOLOGY_INDUSTRY_CONTEXT_ENABLED:
+        items.append(f'行业语义:{industry_context}:{industry_state or "unknown"}')
+
+    try:
+        pct_val = float(pct_chg) if pct_chg is not None else None
+    except Exception:
+        pct_val = None
+    try:
+        bidask_val = float(bid_ask_ratio) if bid_ask_ratio is not None else None
+    except Exception:
+        bidask_val = None
+    try:
+        absorb_val = float(ask_wall_absorb_ratio) if ask_wall_absorb_ratio is not None else None
+    except Exception:
+        absorb_val = None
+    try:
+        super_flow_val = float(super_net_flow_bps) if super_net_flow_bps is not None else None
+    except Exception:
+        super_flow_val = None
+
+    high_position_catchdown = bool(
+        price > 0
+        and boll_mid > 0
+        and price >= boll_mid * (1 + _P1_LEFT_RECLAIM_HIGH_POSITION_MIDLINE_BUFFER_PCT)
+        and pct_val is not None
+        and pct_val <= _P1_LEFT_RECLAIM_HIGH_POSITION_DROP_PCT
+    )
+    if high_position_catchdown:
+        items.append('高位补跌风险')
+
+    distribution_structure = bool(
+        lure_long
+        or wash_trade
+        or (
+            (absorb_val is None or absorb_val <= _P1_LEFT_RECLAIM_DISTRIBUTION_ASK_ABSORB_MAX)
+            and super_flow_val is not None
+            and super_flow_val <= _P1_LEFT_RECLAIM_DISTRIBUTION_SUPER_OUT_BPS
+            and (
+                (bidask_val is not None and bidask_val <= _P1_LEFT_RECLAIM_DISTRIBUTION_BID_ASK_MAX)
+                or (pct_val is not None and pct_val <= _P1_LEFT_RECLAIM_HIGH_POSITION_DROP_PCT)
+            )
+        )
+    )
+    if distribution_structure:
+        items.append('出货结构风险')
+
+    info['high_position_catchdown'] = high_position_catchdown
+    info['distribution_structure'] = distribution_structure
+    info['concept_heat_cliff'] = concept_heat_cliff
+    info['concept_blocked'] = concept_blocked
+    info['concept_gate_level'] = concept_gate_level
+    info['joint_retreat'] = joint_retreat
+    info['weak_no_secondary_support'] = weak_no_secondary_support
+    info['secondary_support_count'] = secondary_support_count
+    info['industry_context'] = industry_context
+    info['industry_joint_weak'] = industry_joint_weak
+    info['industry_support'] = industry_support
+    info['industry_retreat'] = industry_retreat
+    info['industry_weak'] = industry_weak
+
+    if concept_blocked:
+        info['passed'] = False
+        info['observe_only'] = False
+        info['observe_reason'] = ''
+        info['reason'] = str(concept_info.get('blocked_reason') or 'concept_ecology_blocked')
+    elif bool(concept_info.get('observe_only')):
+        info['passed'] = False
+        info['observe_only'] = True
+        info['observe_reason'] = str(concept_info.get('observe_reason') or 'concept_ecology_gate')
+        info['reason'] = info['observe_reason']
+    elif concept_heat_cliff and _P1_CONCEPT_ECOLOGY_OBSERVE_ON_HEAT_CLIFF:
+        info['passed'] = False
+        info['observe_only'] = True
+        info['observe_reason'] = 'left_concept_heat_cliff'
+        info['reason'] = 'left_concept_heat_cliff'
+    elif bool(streak_info.get('observe_only')):
+        info['passed'] = False
+        info['observe_only'] = True
+        info['observe_reason'] = str(streak_info.get('observe_reason') or 'left_streak_guard')
+        info['reason'] = info['observe_reason']
+    elif high_position_catchdown:
+        info['passed'] = False
+        info['observe_only'] = True
+        info['observe_reason'] = 'left_high_position_catchdown'
+        info['reason'] = 'left_high_position_catchdown'
+    elif distribution_structure:
+        info['passed'] = False
+        info['observe_only'] = True
+        info['observe_reason'] = 'left_distribution_structure'
+        info['reason'] = 'left_distribution_structure'
+
+    if not items:
+        items.append('生态门未见异常')
+    info['items'] = items
     return info
 
 
@@ -1661,6 +2426,10 @@ def detect_left_side_buy(
     boll_lower: float,
     rsi6: Optional[float] = None,
     pct_chg: Optional[float] = None,
+    vwap: Optional[float] = None,
+    bias_vwap: Optional[float] = None,
+    intraday_prices: Optional[list[float]] = None,
+    short_zscore: Optional[float] = None,
     bid_ask_ratio: Optional[float] = None,
     lure_long: bool = False,
     wash_trade: bool = False,
@@ -1674,9 +2443,15 @@ def detect_left_side_buy(
     ask_wall_absorb_ratio: Optional[float] = None,
     super_net_flow_bps: Optional[float] = None,
     minute_bars_1m: Optional[list[dict]] = None,
+    industry: Optional[str] = None,
+    industry_code: Optional[str] = None,
+    industry_ecology: Optional[dict] = None,
     core_concept_board: Optional[str] = None,
     concept_boards: Optional[list[str]] = None,
+    concept_codes: Optional[list[str]] = None,
+    core_concept_code: Optional[str] = None,
     concept_ecology: Optional[dict] = None,
+    concept_ecology_multi: Optional[list[dict]] = None,
     position_state: Optional[dict] = None,
 ) -> dict:
     """
@@ -1729,7 +2504,39 @@ def detect_left_side_buy(
     else:
         rsi_oversold_th = 32 if (pct_chg is not None and pct_chg <= -1.5) else 30
 
-    if _P1_ENABLED_V2 and not (near_lower or below_lower):
+    try:
+        bias_vwap_seed = float(bias_vwap) if bias_vwap is not None else None
+    except Exception:
+        bias_vwap_seed = None
+    if bias_vwap_seed is None:
+        try:
+            vwap_seed = float(vwap) if vwap is not None else None
+        except Exception:
+            vwap_seed = None
+        if vwap_seed is not None and vwap_seed > 0 and price > 0:
+            try:
+                bias_vwap_seed = (float(price) - vwap_seed) / vwap_seed * 100.0
+            except Exception:
+                bias_vwap_seed = None
+    try:
+        short_zscore_seed = float(short_zscore) if short_zscore is not None else None
+    except Exception:
+        short_zscore_seed = None
+    if short_zscore_seed is None and isinstance(intraday_prices, list):
+        try:
+            valid_intraday_prices = [float(p) for p in intraday_prices if float(p or 0) > 0]
+        except Exception:
+            valid_intraday_prices = []
+        if len(valid_intraday_prices) >= 10:
+            short_zscore_seed = _robust_zscore(valid_intraday_prices)
+    stage_a_seed = bool(
+        near_lower
+        or below_lower
+        or (bias_vwap_seed is not None and bias_vwap_seed <= _P1_LEFT_RECLAIM_BIAS_VWAP_DEEP_THRESHOLD_PCT)
+        or (short_zscore_seed is not None and short_zscore_seed <= _P1_LEFT_RECLAIM_LEFT_TAIL_ZSCORE_THRESHOLD)
+    )
+
+    if _P1_ENABLED_V2 and not stage_a_seed:
         return _pool1_reject(result, 'trigger_missing')
 
     reclaim_ok, reclaim_info = _compute_pool1_left_reclaim(
@@ -1740,13 +2547,20 @@ def detect_left_side_buy(
         rsi6=rsi6,
         rsi_oversold_th=rsi_oversold_th,
         pct_chg=pct_chg,
+        vwap=vwap,
+        bias_vwap=bias_vwap,
+        intraday_prices=intraday_prices,
+        short_zscore=short_zscore,
         prev_price=prev_price,
         bid_ask_ratio=bid_ask_ratio,
         ask_wall_absorb_ratio=ask_wall_absorb_ratio,
         super_net_flow_bps=super_net_flow_bps,
         minute_bars_1m=minute_bars_1m,
     )
-    if not reclaim_ok:
+    reclaim_candidate = bool(reclaim_info.get('candidate'))
+    reclaim_reason = str(reclaim_info.get('reason') or 'reclaim_missing')
+    reclaim_pending = bool(reclaim_candidate and not reclaim_ok)
+    if not reclaim_candidate:
         return _pool1_reject(result, str(reclaim_info.get('reason') or 'reclaim_missing'), {
             'left_reclaim': reclaim_info,
             'threshold': th_meta,
@@ -1756,10 +2570,31 @@ def detect_left_side_buy(
         core_concept_board=core_concept_board,
         concept_boards=concept_boards,
         concept_ecology=concept_ecology,
+        concept_ecology_multi=concept_ecology_multi,
+        industry=industry,
+        industry_ecology=industry_ecology,
     )
+    if concept_gate.get('blocked'):
+        return _pool1_reject(result, str(concept_gate.get('blocked_reason') or 'concept_ecology_blocked'), {
+            'left_reclaim': reclaim_info,
+            'concept_ecology': concept_gate,
+            'threshold': th_meta,
+        })
     left_streak_guard = _compute_pool1_left_streak_guard(
         position_state=position_state,
         concept_gate=concept_gate,
+    )
+    stage_c_gate = _compute_pool1_left_stage_c_gate(
+        price=price,
+        boll_mid=boll_mid,
+        pct_chg=pct_chg,
+        bid_ask_ratio=bid_ask_ratio,
+        ask_wall_absorb_ratio=ask_wall_absorb_ratio,
+        super_net_flow_bps=super_net_flow_bps,
+        lure_long=lure_long,
+        wash_trade=wash_trade,
+        concept_gate=concept_gate,
+        left_streak_guard=left_streak_guard,
     )
 
     conditions = []
@@ -1774,9 +2609,16 @@ def detect_left_side_buy(
     reclaim_items = list(reclaim_info.get('confirm_items') or [])
     if reclaim_items:
         conditions.append('回收确认:' + '+'.join(reclaim_items))
+    elif reclaim_pending:
+        extreme_items = list(reclaim_info.get('extreme_items') or [])
+        pending_suffix = '+'.join(extreme_items) if extreme_items else reclaim_reason
+        conditions.append('回收待确认:' + pending_suffix)
     concept_summary = ''
     if concept_gate.get('enabled') and concept_gate.get('core_concept_board'):
-        concept_summary = f"{concept_gate.get('core_concept_board')}:{concept_gate.get('state')}({float(concept_gate.get('score', 0.0)):+.0f})"
+        concept_summary = (
+            f"{concept_gate.get('core_concept_board')}:{concept_gate.get('gate_level') or concept_gate.get('state')}"
+            f"({float(concept_gate.get('hard_score', concept_gate.get('score', 0.0)) or 0.0):+.0f})"
+        )
         conditions.append('概念生态:' + concept_summary)
     if left_streak_guard.get('active'):
         streak_reason = str(left_streak_guard.get('reason') or 'recent_quick_clear')
@@ -1785,18 +2627,32 @@ def detect_left_side_buy(
             conditions.append(f'左侧抑制:{streak_reason}({float(hours_since_clear):.1f}h)')
         else:
             conditions.append(f'左侧抑制:{streak_reason}')
+    if bool(stage_c_gate.get('high_position_catchdown')):
+        conditions.append('生态门:高位补跌')
+    if bool(stage_c_gate.get('distribution_structure')):
+        conditions.append('生态门:出货结构')
+    if bool(stage_c_gate.get('concept_heat_cliff')):
+        conditions.append('生态门:概念热度断崖')
+    if bool(stage_c_gate.get('joint_retreat')):
+        conditions.append('生态门:多概念共弱')
+    elif bool(stage_c_gate.get('weak_no_secondary_support')):
+        conditions.append('生态门:次概念未共振')
+    elif int(stage_c_gate.get('secondary_support_count', 0) or 0) > 0:
+        conditions.append(f"生态门:次概念共振({int(stage_c_gate.get('secondary_support_count', 0) or 0)})")
 
     if _P1_ENABLED_V2:
-        if _P1_RESONANCE_ENABLED and not resonance_60m:
-            return _pool1_reject(result, 'resonance_missing')
         confirm_items = []
+        if _P1_RESONANCE_ENABLED and not resonance_60m:
+            if reclaim_ok:
+                return _pool1_reject(result, 'resonance_missing')
         if bid_ask_ratio is not None and bid_ask_ratio >= _P1_BID_ASK_TH:
             confirm_items.append(f'承接{bid_ask_ratio:.2f}')
         if _P1_RESONANCE_ENABLED and resonance_60m:
             confirm_items.append('60m共振')
-        if not confirm_items:
+        if reclaim_ok and not confirm_items:
             return _pool1_reject(result, 'confirm_missing')
-        conditions.append('确认:' + '+'.join(confirm_items))
+        if confirm_items:
+            conditions.append(('确认:' if reclaim_ok else '附加确认:') + '+'.join(confirm_items))
 
     if not conditions:
         return _pool1_reject(result, 'condition_empty')
@@ -1836,8 +2692,23 @@ def detect_left_side_buy(
     if below_lower and rsi6 is not None and rsi6 <= rsi_oversold_th:
         strength += 10
     strength = max(0, min(100, strength + pace_adj + reclaim_bonus + concept_adj + left_streak_adj))
-    observe_only_gate = bool(concept_gate.get('observe_only')) or bool(left_streak_guard.get('observe_only'))
-    observe_reason = str(left_streak_guard.get('observe_reason') or '') or str(concept_gate.get('observe_reason') or '')
+    observe_only_gate = reclaim_pending or bool(stage_c_gate.get('observe_only'))
+    observe_reason = (
+        (reclaim_reason if reclaim_pending else '')
+        or str(stage_c_gate.get('observe_reason') or '')
+    )
+    left_state_machine = {
+        'name': 'left_side_core_state_machine',
+        'stage_a': dict(reclaim_info.get('stage_a') or {}),
+        'stage_b': dict(reclaim_info.get('stage_b') or {}),
+        'stage_c': dict(stage_c_gate or {}),
+        'reclaim_as_execution_gate': True,
+        'candidate_ready': reclaim_candidate,
+        'reclaim_ready': bool(reclaim_ok),
+        'executable_ready': bool(reclaim_ok) and not observe_only_gate,
+        'observe_only': bool(observe_only_gate),
+        'observe_reason': observe_reason if observe_only_gate else None,
+    }
     return {
         'has_signal': True,
         'type': 'left_side_buy',
@@ -1852,17 +2723,27 @@ def detect_left_side_buy(
             'near_lower_th_pct': near_lower_th,
             'band_width_pct': round(band_width_pct, 2),
             'rsi6': rsi6, 'pct_chg': pct_chg,
+            'vwap': round(float(vwap), 4) if vwap is not None else None,
+            'bias_vwap': round(float(bias_vwap), 4) if bias_vwap is not None else reclaim_info.get('bias_vwap'),
+            'short_zscore': round(float(short_zscore), 4) if short_zscore is not None else reclaim_info.get('short_zscore'),
             'resonance_60m': bool(resonance_60m),
             'volume_pace_ratio': round(pace_ratio_val, 4) if pace_ratio_val is not None else None,
             'volume_pace_state': pace_state,
             'volume_pace_adj': int(pace_adj),
             'left_reclaim': reclaim_info,
+            'left_state_machine': left_state_machine,
             'left_reclaim_bonus': int(reclaim_bonus),
             'concept_board': str(core_concept_board or ''),
             'concept_boards': list(concept_boards or []),
+            'concept_codes': list(concept_codes or []),
+            'core_concept_code': str(core_concept_code or ''),
+            'industry': str(industry or ''),
+            'industry_ecology': dict(industry_ecology or {}),
             'concept_ecology': concept_gate,
+            'concept_ecology_multi': list(concept_ecology_multi or []),
             'concept_ecology_adj': int(concept_adj),
             'left_streak_guard': left_streak_guard,
+            'left_stage_c_gate': stage_c_gate,
             'left_streak_adj': int(left_streak_adj),
             'prev_price': round(float(prev_price), 3) if prev_price is not None else None,
             'ask_wall_absorb_ratio': round(float(ask_wall_absorb_ratio), 3) if ask_wall_absorb_ratio is not None else None,
@@ -1883,6 +2764,7 @@ def detect_right_side_breakout(
     ma5: Optional[float] = None,
     ma10: Optional[float] = None,
     rsi6: Optional[float] = None,
+    vwap: Optional[float] = None,
     prev_price: Optional[float] = None,
     bid_ask_ratio: Optional[float] = None,
     lure_long: bool = False,
@@ -1893,6 +2775,16 @@ def detect_right_side_breakout(
     volume_pace_ratio: Optional[float] = None,
     volume_pace_state: Optional[str] = None,
     thresholds: Optional[dict] = None,
+    minute_bars_1m: Optional[list[dict]] = None,
+    industry: Optional[str] = None,
+    industry_code: Optional[str] = None,
+    industry_ecology: Optional[dict] = None,
+    core_concept_board: Optional[str] = None,
+    concept_boards: Optional[list[str]] = None,
+    concept_codes: Optional[list[str]] = None,
+    core_concept_code: Optional[str] = None,
+    concept_ecology: Optional[dict] = None,
+    concept_ecology_multi: Optional[list[dict]] = None,
 ) -> dict:
     """
     右侧突破信号（顺势突破）
@@ -1989,6 +2881,71 @@ def detect_right_side_breakout(
     if not rsi_ok:
         return _pool1_reject(result, 'rsi_not_ok')
 
+    concept_gate = _compute_pool1_concept_ecology_gate(
+        core_concept_board=core_concept_board,
+        concept_boards=concept_boards,
+        concept_ecology=concept_ecology,
+        concept_ecology_multi=concept_ecology_multi,
+        industry=industry,
+        industry_ecology=industry_ecology,
+    )
+    if concept_gate.get('blocked'):
+        return _pool1_reject(result, str(concept_gate.get('blocked_reason') or 'concept_ecology_blocked'), {
+            'concept_ecology': concept_gate,
+            'threshold': th_meta,
+        })
+    concept_summary = ''
+    if concept_gate.get('enabled') and concept_gate.get('core_concept_board'):
+        concept_summary = (
+            f"{concept_gate.get('core_concept_board')}:{concept_gate.get('gate_level') or concept_gate.get('state')}"
+            f"({float(concept_gate.get('hard_score', concept_gate.get('score', 0.0)) or 0.0):+.0f})"
+        )
+        conditions.append('概念生态:' + concept_summary)
+
+    avwap_stack = _compute_pool1_entry_anchor(
+        price=price,
+        minute_bars_1m=minute_bars_1m,
+        session_avwap=vwap,
+    )
+    avwap_stack_ready = bool(avwap_stack.get('avwap_stack_ready'))
+    avwap_control_count = int(avwap_stack.get('avwap_control_count', 0) or 0)
+    avwap_control_labels = list(avwap_stack.get('avwap_control_labels') or [])
+    if avwap_control_labels:
+        conditions.append('AVWAP维持:' + '+'.join(avwap_control_labels))
+    elif avwap_stack_ready:
+        return _pool1_reject(
+            result,
+            'avwap_stack_not_in_control',
+            {
+                'avwap_stack': avwap_stack,
+                'threshold': th_meta,
+            },
+        )
+    elif not _P1_BREAKOUT_ANCHOR_ALLOW_MISSING_STACK and _P1_BREAKOUT_ANCHOR_REQUIRE_AVWAP_CONTROL:
+        return _pool1_reject(
+            result,
+            'avwap_stack_missing',
+            {
+                'avwap_stack': avwap_stack,
+                'threshold': th_meta,
+            },
+        )
+    elif not avwap_stack_ready:
+        conditions.append('AVWAP栈待就绪')
+    if (
+        _P1_BREAKOUT_ANCHOR_REQUIRE_AVWAP_CONTROL
+        and avwap_stack_ready
+        and avwap_control_count < max(1, _P1_BREAKOUT_ANCHOR_MIN_CONTROL_COUNT)
+    ):
+        return _pool1_reject(
+            result,
+            'avwap_control_not_enough',
+            {
+                'avwap_stack': avwap_stack,
+                'threshold': th_meta,
+            },
+        )
+
     pace_state = _resolve_volume_pace_state(
         volume_pace_ratio,
         volume_pace_state,
@@ -2018,6 +2975,10 @@ def detect_right_side_breakout(
             pace_adj += _P1_VOL_RIGHT_EXPAND_BONUS
         elif pace_state == 'surge':
             pace_adj += _P1_VOL_RIGHT_SURGE_BONUS
+    concept_adj = int(concept_gate.get('score_adj', 0) or 0)
+    avwap_adj = min(12, max(0, avwap_control_count) * 4) if avwap_stack_ready else 0
+    observe_only_gate = bool(concept_gate.get('observe_only'))
+    observe_reason = str(concept_gate.get('observe_reason') or '') if observe_only_gate else ''
 
     strength = 0
     if break_mid:
@@ -2030,7 +2991,7 @@ def detect_right_side_breakout(
         strength += 10
     if rsi6 is not None and rsi_ok:
         strength += 10
-    strength = max(0, min(100, strength + pace_adj))
+    strength = max(0, min(100, strength + pace_adj + concept_adj + avwap_adj))
     return {
         'has_signal': True,
         'type': 'right_side_breakout',
@@ -2048,6 +3009,23 @@ def detect_right_side_breakout(
             'volume_pace_ratio': round(pace_ratio_val, 4) if pace_ratio_val is not None else None,
             'volume_pace_state': pace_state,
             'volume_pace_adj': int(pace_adj),
+            'vwap': round(float(vwap), 4) if vwap is not None else None,
+            'avwap_stack': avwap_stack,
+            'avwap_control_count': int(avwap_control_count),
+            'avwap_control_labels': avwap_control_labels,
+            'avwap_adj': int(avwap_adj),
+            'concept_board': str(core_concept_board or ''),
+            'concept_boards': list(concept_boards or []),
+            'concept_codes': list(concept_codes or []),
+            'core_concept_code': str(core_concept_code or ''),
+            'industry': str(industry or ''),
+            'industry_code': str(industry_code or ''),
+            'industry_ecology': dict(industry_ecology or {}),
+            'concept_ecology': concept_gate,
+            'concept_ecology_multi': list(concept_ecology_multi or []),
+            'concept_ecology_adj': int(concept_adj),
+            'observe_only': observe_only_gate,
+            'observe_reason': observe_reason if observe_only_gate else None,
             'threshold': th_meta,
         },
     }
@@ -2069,6 +3047,7 @@ def detect_timing_clear(
     volume_ratio: Optional[float] = None,
     bid_ask_ratio: Optional[float] = None,
     resonance_60m: Optional[bool] = None,
+    vwap: Optional[float] = None,
     big_order_bias: Optional[float] = None,
     super_order_bias: Optional[float] = None,
     big_net_flow_bps: Optional[float] = None,
@@ -2112,6 +3091,7 @@ def detect_timing_clear(
         last_buy_price=last_buy_price,
         last_buy_at=last_buy_at,
         minute_bars_1m=minute_bars_1m,
+        session_avwap=vwap,
     )
     try:
         atr_val = float(atr_14) if atr_14 is not None else None
@@ -2165,6 +3145,21 @@ def detect_timing_clear(
         event_anchor_premium_val is not None
         and event_anchor_premium_val >= _P1_EVENT_ANCHOR_BETA_REDUCE_PREMIUM_PCT
     )
+    avwap_stack_ready = bool(entry_anchor.get('avwap_stack_ready'))
+    avwap_control_count = int(entry_anchor.get('avwap_control_count', 0) or 0)
+    avwap_control_labels = list(entry_anchor.get('avwap_control_labels') or [])
+    avwap_loss_labels = list(entry_anchor.get('avwap_loss_labels') or [])
+    holding_anchor_lost_labels: list[str] = []
+    if entry_avwap_lost:
+        holding_anchor_lost_labels.append('entry_day_avwap')
+    if breakout_anchor_lost:
+        holding_anchor_lost_labels.append('breakout_day_avwap')
+    if event_anchor_lost:
+        holding_anchor_lost_labels.append('event_day_avwap')
+    holding_anchor_loss_count = len(holding_anchor_lost_labels)
+    current_above_session_avwap = bool(entry_anchor.get('current_above_session_avwap', False))
+    has_session_avwap = bool(entry_anchor.get('has_session_avwap', False))
+    session_avwap_lost = bool(has_session_avwap and (not current_above_session_avwap))
 
     break_mid = bool(boll_mid and boll_mid > 0 and price < boll_mid * 0.998)
     break_ma10 = bool(ma10 and ma10 > 0 and price < ma10 * 0.998)
@@ -2198,11 +3193,99 @@ def detect_timing_clear(
     mild_flow = bool(
         mild_bid_ask_weak or mild_big_out or mild_super_out or mild_big_bias_sell or mild_super_bias_sell
     )
+    avwap_flow_shift = bool(
+        (
+            entry_avwap_lost
+            or breakout_anchor_lost
+            or event_anchor_lost
+            or (avwap_stack_ready and avwap_control_count <= 0)
+        )
+        and (
+            (not _P1_EXIT_TIMING_CLEAR_AVWAP_FLOW_REQUIRED)
+            or mild_flow
+            or severe_flow
+            or resonance_60m is False
+            or session_avwap_lost
+        )
+    )
+    avwap_stack_soft_weak = bool(
+        avwap_stack_ready
+        and avwap_control_count <= 0
+        and holding_anchor_loss_count <= 0
+        and not session_avwap_lost
+    )
     early_risk_exit = bool(
         hard_drop
         or (break_ma20 and vol_down)
         or (atr_bucket == 'high' and break_ma10 and vol_down and mild_flow)
     )
+    weak_tape = bool(
+        mild_flow
+        or severe_flow
+        or resonance_60m is False
+        or break_mid
+        or break_ma10
+    )
+    strong_tape_break = bool(
+        hard_drop
+        or break_ma20
+        or trend_reversal
+        or severe_flow
+        or support_anchor_lost
+    )
+    avwap_exit_tier = ''
+    avwap_exit_reason = ''
+    if (
+        (entry_avwap_lost and (strong_tape_break or breakout_anchor_lost or event_anchor_lost or session_avwap_lost or avwap_flow_shift))
+        or (holding_anchor_loss_count >= 2 and (weak_tape or session_avwap_lost or lost_anchor_count >= 2))
+    ):
+        avwap_exit_tier = 'full'
+        avwap_exit_reason = 'entry_or_multi_anchor_lost'
+    elif entry_avwap_lost or breakout_anchor_lost or event_anchor_lost or avwap_flow_shift:
+        avwap_exit_tier = 'partial'
+        avwap_exit_reason = 'secondary_or_flow_shift'
+    elif entry_cost_lost or session_avwap_lost or avwap_stack_soft_weak:
+        avwap_exit_tier = 'observe'
+        avwap_exit_reason = 'soft_avwap_warning'
+    reduce_ratio_components: list[dict] = []
+    if entry_avwap_lost:
+        reduce_ratio_components.append(
+            {'source': 'entry_day_avwap', 'ratio': round(float(_P1_EXIT_ENTRY_AVWAP_REDUCE_RATIO), 4)}
+        )
+    if breakout_anchor_lost:
+        reduce_ratio_components.append(
+            {'source': 'breakout_day_avwap', 'ratio': round(float(_P1_EXIT_BREAKOUT_AVWAP_REDUCE_RATIO), 4)}
+        )
+    if event_anchor_lost:
+        reduce_ratio_components.append(
+            {'source': 'event_day_avwap', 'ratio': round(float(_P1_EXIT_EVENT_AVWAP_REDUCE_RATIO), 4)}
+        )
+    if session_avwap_lost:
+        reduce_ratio_components.append(
+            {'source': 'session_avwap', 'ratio': round(float(_P1_EXIT_SESSION_AVWAP_REDUCE_RATIO), 4)}
+        )
+    if entry_cost_lost:
+        reduce_ratio_components.append(
+            {'source': 'entry_cost_anchor', 'ratio': round(float(_P1_EXIT_ENTRY_COST_REDUCE_RATIO), 4)}
+        )
+    if avwap_stack_soft_weak:
+        reduce_ratio_components.append(
+            {'source': 'avwap_soft_weak', 'ratio': round(float(_P1_EXIT_AVWAP_SOFT_WEAK_REDUCE_RATIO), 4)}
+        )
+    anchor_ratio_sources = {
+        'entry_day_avwap',
+        'breakout_day_avwap',
+        'event_day_avwap',
+        'session_avwap',
+    }
+    if avwap_flow_shift and not any(str(x.get('source') or '') in anchor_ratio_sources for x in reduce_ratio_components):
+        reduce_ratio_components.append(
+            {'source': 'avwap_flow_shift', 'ratio': round(float(_P1_EXIT_PARTIAL_REDUCE_RATIO), 4)}
+        )
+    reduce_ratio_component_sum = float(
+        sum(float(x.get('ratio', 0.0) or 0.0) for x in reduce_ratio_components)
+    )
+    reduce_ratio_source = '+'.join(str(x.get('source') or '') for x in reduce_ratio_components if x.get('source')) or ''
 
     if hold_days < _P1_EXIT_MIN_HOLD_DAYS and not (_P1_EXIT_ALLOW_EARLY_RISK and early_risk_exit):
         return _pool1_reject(
@@ -2246,6 +3329,14 @@ def detect_timing_clear(
         trigger_items.append('失守突破AVWAP')
     if event_anchor_lost:
         trigger_items.append('失守事件AVWAP')
+    if session_avwap_lost:
+        trigger_items.append('失守日内AVWAP')
+    if avwap_stack_ready and avwap_control_count > 0:
+        trigger_items.append('AVWAP维持:' + '+'.join(avwap_control_labels[:3]))
+    if avwap_stack_soft_weak:
+        trigger_items.append('AVWAP控盘转弱')
+    if avwap_flow_shift:
+        trigger_items.append('AVWAP主导权转移')
     if lost_anchor_count >= 2:
         trigger_items.append(f'多锚失守({lost_anchor_count})')
     if anchor_take_profit_ready:
@@ -2258,8 +3349,11 @@ def detect_timing_clear(
     major_break = bool(break_ma20 or (break_ma10 and break_mid) or trend_reversal)
     defense_candidate = bool(
         early_risk_exit
+        or avwap_flow_shift
         or entry_cost_lost
         or entry_avwap_lost
+        or session_avwap_lost
+        or avwap_stack_soft_weak
         or (breakout_anchor_lost and (break_mid or mild_flow or resonance_60m is False))
         or (event_anchor_lost and (break_mid or mild_flow or resonance_60m is False))
         or (lost_anchor_count >= 2 and (break_mid or mild_flow or support_anchor_lost))
@@ -2315,6 +3409,14 @@ def detect_timing_clear(
         confirm_items.append('突破锚失守')
     if event_anchor_lost:
         confirm_items.append('事件锚失守')
+    if session_avwap_lost:
+        confirm_items.append('日内AVWAP失守')
+    if avwap_stack_soft_weak:
+        confirm_items.append('AVWAP控盘转弱')
+    if avwap_flow_shift:
+        confirm_items.append('AVWAP+资金转弱')
+    elif avwap_stack_ready and avwap_control_count <= 0:
+        confirm_items.append('AVWAP控制丢失')
     if lost_anchor_count >= 2:
         confirm_items.append(f'多锚失守({lost_anchor_count})')
     if near_upper:
@@ -2332,8 +3434,20 @@ def detect_timing_clear(
     suggest_reduce_ratio = 1.0
     if defense_candidate:
         clear_family = 'defense'
-        clear_level_hint = 'full'
-        suggest_reduce_ratio = 1.0
+        if avwap_exit_tier == 'observe':
+            clear_level_hint = 'observe'
+        elif avwap_exit_tier == 'partial':
+            clear_level_hint = 'partial'
+        else:
+            clear_level_hint = 'full'
+        if clear_level_hint == 'full':
+            suggest_reduce_ratio = 1.0
+        elif clear_level_hint == 'partial':
+            suggest_reduce_ratio = reduce_ratio_component_sum if reduce_ratio_component_sum > 0 else _P1_EXIT_PARTIAL_REDUCE_RATIO
+            suggest_reduce_ratio = min(0.95, max(0.10, float(suggest_reduce_ratio)))
+        else:
+            suggest_reduce_ratio = reduce_ratio_component_sum if reduce_ratio_component_sum > 0 else _P1_EXIT_OBSERVE_REDUCE_RATIO
+            suggest_reduce_ratio = min(float(_P1_EXIT_PARTIAL_REDUCE_RATIO), max(0.05, float(suggest_reduce_ratio)))
     elif take_profit_candidate:
         clear_family = 'take_profit'
         clear_level_hint = 'partial'
@@ -2344,10 +3458,15 @@ def detect_timing_clear(
         suggest_reduce_ratio = _P1_EXIT_BETA_REDUCE_RATIO
 
     if clear_family == 'defense':
-        min_confirm = 1 if early_risk_exit else 2
+        if clear_level_hint == 'observe':
+            min_confirm = 1
+        elif clear_level_hint == 'partial':
+            min_confirm = 1 if (early_risk_exit or avwap_flow_shift or entry_avwap_lost) else 2
+        else:
+            min_confirm = 1 if (early_risk_exit or avwap_flow_shift) else 2
         if long_hold and not early_risk_exit:
             min_confirm = max(2, _P1_EXIT_LONG_HOLD_MIN_CONFIRM)
-            if not (hard_drop or break_ma20 or trend_reversal):
+            if not (hard_drop or break_ma20 or trend_reversal or bool(avwap_exit_tier)):
                 return _pool1_reject(
                     result,
                     'long_hold_weak_exit',
@@ -2369,7 +3488,14 @@ def detect_timing_clear(
 
     observe_only_hint = False
     if len(confirm_items) < min_confirm:
-        if clear_family in ('take_profit', 'beta_reduce') and len(confirm_items) >= 1:
+        if clear_family == 'defense' and clear_level_hint in ('observe', 'partial') and len(confirm_items) >= 1:
+            clear_level_hint = 'observe'
+            observe_only_hint = True
+            if reduce_ratio_component_sum > 0:
+                suggest_reduce_ratio = min(float(_P1_EXIT_PARTIAL_REDUCE_RATIO), max(0.05, float(reduce_ratio_component_sum)))
+            else:
+                suggest_reduce_ratio = _P1_EXIT_OBSERVE_REDUCE_RATIO
+        elif clear_family in ('take_profit', 'beta_reduce') and len(confirm_items) >= 1:
             clear_level_hint = 'observe'
             observe_only_hint = True
             suggest_reduce_ratio = _P1_EXIT_OBSERVE_REDUCE_RATIO
@@ -2403,6 +3529,14 @@ def detect_timing_clear(
             strength += 12
         if event_anchor_lost:
             strength += 10
+        if avwap_flow_shift:
+            strength += 12
+        elif avwap_stack_ready and avwap_control_count <= 0:
+            strength += 8
+        if clear_level_hint == 'partial':
+            strength -= 8
+        elif clear_level_hint == 'observe':
+            strength -= 14
         if lost_anchor_count >= 2:
             strength += 10 + min(6, (lost_anchor_count - 2) * 3)
         if trend_reversal:
@@ -2482,7 +3616,12 @@ def detect_timing_clear(
     strength = min(100, max(0, int(round(strength))))
 
     if clear_family == 'defense':
-        msg_head = '防守清仓信号'
+        if clear_level_hint == 'observe':
+            msg_head = '防守观察信号'
+        elif clear_level_hint == 'partial':
+            msg_head = '防守减仓信号'
+        else:
+            msg_head = '防守清仓信号'
     elif clear_family == 'take_profit':
         msg_head = '分批止盈信号' if clear_level_hint != 'observe' else '止盈观察信号'
     else:
@@ -2518,13 +3657,27 @@ def detect_timing_clear(
             'clear_family': clear_family,
             'clear_level_hint': clear_level_hint,
             'suggest_reduce_ratio': round(float(suggest_reduce_ratio), 2),
+            'reduce_ratio_source': reduce_ratio_source or None,
+            'reduce_ratio_components': reduce_ratio_components,
             'vol_down': vol_down,
             'rsi6': rsi6,
             'pct_chg': pct_chg,
             'atr_14': atr_val,
             'atr_pct': round(float(atr_pct), 4) if atr_pct is not None else None,
             'atr_bucket': atr_bucket,
+            'vwap': round(float(vwap), 4) if vwap is not None else None,
             'entry_anchor': entry_anchor,
+            'avwap_stack': entry_anchor,
+            'avwap_stack_ready': bool(avwap_stack_ready),
+            'avwap_control_count': int(avwap_control_count),
+            'avwap_control_labels': avwap_control_labels,
+            'avwap_loss_labels': avwap_loss_labels,
+            'avwap_flow_shift': bool(avwap_flow_shift),
+            'avwap_exit_tier': avwap_exit_tier or None,
+            'avwap_exit_reason': avwap_exit_reason or None,
+            'holding_anchor_loss_count': int(holding_anchor_loss_count),
+            'holding_anchor_lost_labels': holding_anchor_lost_labels,
+            'session_avwap_lost': bool(session_avwap_lost),
             'volume_ratio': volume_ratio,
             'bid_ask_ratio': bid_ask_ratio,
             'resonance_60m': resonance_60m,
@@ -3124,13 +4277,17 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                     'vol_20': m.get('vol_20'),
                     'atr_14': m.get('atr_14'),
                     'industry': m.get('industry'),
+                    'industry_ecology': m.get('industry_ecology'),
                     'regime_hint': m.get('regime_hint'),
                     'name': m.get('name'),
                     'market_name': m.get('market_name'),
                     'list_date': m.get('list_date'),
                     'concept_boards': m.get('concept_boards'),
+                    'concept_codes': m.get('concept_codes'),
                     'core_concept_board': m.get('core_concept_board'),
+                    'core_concept_code': m.get('core_concept_code'),
                     'concept_ecology': m.get('concept_ecology'),
+                    'concept_ecology_multi': m.get('concept_ecology_multi'),
                     'instrument_profile': m.get('instrument_profile'),
                 },
             )
@@ -3200,6 +4357,8 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                     boll_lower=m.get('boll_lower', 0),
                     rsi6=m.get('rsi6'),
                     pct_chg=m.get('pct_chg'),
+                    vwap=m.get('vwap'),
+                    intraday_prices=m.get('intraday_prices'),
                     bid_ask_ratio=m.get('bid_ask_ratio'),
                     lure_long=m.get('lure_long', False),
                     wash_trade=m.get('wash_trade', False),
@@ -3213,9 +4372,14 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                     ask_wall_absorb_ratio=m.get('ask_wall_absorb_ratio'),
                     super_net_flow_bps=m.get('super_net_flow_bps'),
                     minute_bars_1m=m.get('minute_bars_1m'),
+                    industry=m.get('industry'),
+                    industry_ecology=m.get('industry_ecology'),
                     core_concept_board=m.get('core_concept_board'),
                     concept_boards=m.get('concept_boards'),
+                    concept_codes=m.get('concept_codes'),
+                    core_concept_code=m.get('core_concept_code'),
                     concept_ecology=m.get('concept_ecology'),
+                    concept_ecology_multi=m.get('concept_ecology_multi'),
                     position_state={
                         'status': m.get('pool1_position_status'),
                         'last_buy_at': m.get('pool1_last_buy_at'),
@@ -3236,10 +4400,21 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                     m.get('price', 0), m.get('boll_upper', 0),
                     m.get('boll_mid', 0), m.get('boll_lower', 0),
                     m.get('volume_ratio'), m.get('ma5'), m.get('ma10'), m.get('rsi6'),
+                    m.get('vwap'),
                     m.get('prev_price'), m.get('bid_ask_ratio'), m.get('lure_long', False), m.get('wash_trade', False),
                     m.get('up_limit'), m.get('down_limit'), bool(resonance_60m_val),
                     m.get('volume_pace_ratio'), m.get('volume_pace_state'),
                     thresholds=p1_right_th,
+                    minute_bars_1m=m.get('minute_bars_1m'),
+                    industry=m.get('industry'),
+                    industry_code=m.get('industry_code'),
+                    industry_ecology=m.get('industry_ecology'),
+                    core_concept_board=m.get('core_concept_board'),
+                    concept_boards=m.get('concept_boards'),
+                    concept_codes=m.get('concept_codes'),
+                    core_concept_code=m.get('core_concept_code'),
+                    concept_ecology=m.get('concept_ecology'),
+                    concept_ecology_multi=m.get('concept_ecology_multi'),
                 )
                 if s2['has_signal']:
                     s2 = finalize_pool1_signal(s2, thresholds=p1_right_th)
@@ -3260,6 +4435,7 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                 volume_ratio=m.get('volume_ratio'),
                 bid_ask_ratio=m.get('bid_ask_ratio'),
                 resonance_60m=bool(resonance_60m_val),
+                vwap=m.get('vwap'),
                 big_order_bias=m.get('big_order_bias'),
                 super_order_bias=m.get('super_order_bias'),
                 big_net_flow_bps=m.get('big_net_flow_bps'),

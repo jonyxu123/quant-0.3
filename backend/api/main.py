@@ -101,6 +101,13 @@ async def _lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[启动] 逐笔刷新线程启动失败: {e}")
 
+    # 4.5 启动东方财富概念生态快照刷新线程（供快路径信号直接复用运行态缓存）
+    try:
+        runtime_jobs._start_concept_snapshot_refresher()
+        runtime_jobs._start_industry_snapshot_refresher()
+    except Exception as e:
+        logger.warning(f"[启动] 概念生态快照刷新线程启动失败: {e}")
+
     # 5. 启动 T+0 在线质量监控线程
     try:
         runtime_jobs._start_t0_quality_monitor(interval=1.0)

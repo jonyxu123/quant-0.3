@@ -19,6 +19,9 @@ def _pool1_position_empty(now_ts: Optional[int] = None) -> dict:
         'last_reduce_price': 0.0,
         'last_reduce_type': '',
         'last_reduce_ratio': 0.0,
+        'last_reduce_source': '',
+        'last_reduce_avwap_tier': '',
+        'last_reduce_avwap_reason': '',
         'reduce_streak': 0,
         'reduce_ratio_cum': 0.0,
         'last_rebuild_at': 0,
@@ -26,11 +29,19 @@ def _pool1_position_empty(now_ts: Optional[int] = None) -> dict:
         'last_rebuild_type': '',
         'last_rebuild_transition': '',
         'last_rebuild_add_ratio': 0.0,
+        'last_rebuild_add_ratio_base': 0.0,
+        'last_rebuild_add_ratio_bias': 0.0,
         'last_rebuild_from_partial_count': 0,
         'last_rebuild_from_partial_ratio': 0.0,
+        'last_rebuild_from_partial_source': '',
+        'last_rebuild_from_partial_avwap_tier': '',
+        'last_rebuild_from_partial_avwap_reason': '',
         'last_exit_after_partial': False,
         'last_exit_partial_count': 0,
         'last_exit_reduce_ratio_cum': 0.0,
+        'last_exit_reduce_source': '',
+        'last_exit_reduce_avwap_tier': '',
+        'last_exit_reduce_avwap_reason': '',
         'left_quick_clear_streak': 0,
         'last_left_quick_clear_at': 0,
         'signal_seq': 0,
@@ -107,6 +118,9 @@ def _normalize_pool1_position_entry(item: dict, now_ts: Optional[int] = None) ->
                 'last_reduce_price': float(item.get('last_reduce_price', 0.0) or 0.0),
                 'last_reduce_type': str(item.get('last_reduce_type') or ''),
                 'last_reduce_ratio': float(item.get('last_reduce_ratio', 0.0) or 0.0),
+                'last_reduce_source': str(item.get('last_reduce_source') or ''),
+                'last_reduce_avwap_tier': str(item.get('last_reduce_avwap_tier') or ''),
+                'last_reduce_avwap_reason': str(item.get('last_reduce_avwap_reason') or ''),
                 'reduce_streak': int(item.get('reduce_streak', 0) or 0),
                 'reduce_ratio_cum': float(item.get('reduce_ratio_cum', 0.0) or 0.0),
                 'last_rebuild_at': int(item.get('last_rebuild_at', 0) or 0),
@@ -114,11 +128,19 @@ def _normalize_pool1_position_entry(item: dict, now_ts: Optional[int] = None) ->
                 'last_rebuild_type': str(item.get('last_rebuild_type') or ''),
                 'last_rebuild_transition': str(item.get('last_rebuild_transition') or ''),
                 'last_rebuild_add_ratio': float(item.get('last_rebuild_add_ratio', 0.0) or 0.0),
+                'last_rebuild_add_ratio_base': float(item.get('last_rebuild_add_ratio_base', 0.0) or 0.0),
+                'last_rebuild_add_ratio_bias': float(item.get('last_rebuild_add_ratio_bias', 0.0) or 0.0),
                 'last_rebuild_from_partial_count': int(item.get('last_rebuild_from_partial_count', 0) or 0),
                 'last_rebuild_from_partial_ratio': float(item.get('last_rebuild_from_partial_ratio', 0.0) or 0.0),
+                'last_rebuild_from_partial_source': str(item.get('last_rebuild_from_partial_source') or ''),
+                'last_rebuild_from_partial_avwap_tier': str(item.get('last_rebuild_from_partial_avwap_tier') or ''),
+                'last_rebuild_from_partial_avwap_reason': str(item.get('last_rebuild_from_partial_avwap_reason') or ''),
                 'last_exit_after_partial': bool(item.get('last_exit_after_partial', False)),
                 'last_exit_partial_count': int(item.get('last_exit_partial_count', 0) or 0),
                 'last_exit_reduce_ratio_cum': float(item.get('last_exit_reduce_ratio_cum', 0.0) or 0.0),
+                'last_exit_reduce_source': str(item.get('last_exit_reduce_source') or ''),
+                'last_exit_reduce_avwap_tier': str(item.get('last_exit_reduce_avwap_tier') or ''),
+                'last_exit_reduce_avwap_reason': str(item.get('last_exit_reduce_avwap_reason') or ''),
                 'left_quick_clear_streak': int(item.get('left_quick_clear_streak', 0) or 0),
                 'last_left_quick_clear_at': int(item.get('last_left_quick_clear_at', 0) or 0),
                 'signal_seq': int(item.get('signal_seq', 0) or 0),
@@ -297,6 +319,8 @@ def _pool1_set_position_state(
     clear_level: str = '',
     reduce_ratio: Optional[float] = None,
     rebuild_ratio: Optional[float] = None,
+    reduce_meta: Optional[dict] = None,
+    rebuild_meta: Optional[dict] = None,
 ) -> dict:
     _load_pool1_position_state()
     code = str(ts_code or '')
@@ -320,6 +344,13 @@ def _pool1_set_position_state(
         ent['signal_seq'] = int(ent.get('signal_seq', 0) or 0) + 1
         px = float(signal_price or 0.0)
         clear_level_norm = str(clear_level or '').strip().lower()
+        reduce_meta = reduce_meta if isinstance(reduce_meta, dict) else {}
+        rebuild_meta = rebuild_meta if isinstance(rebuild_meta, dict) else {}
+        reduce_source = str(reduce_meta.get('source') or '').strip()
+        reduce_avwap_tier = str(reduce_meta.get('avwap_tier') or '').strip().lower()
+        reduce_avwap_reason = str(reduce_meta.get('avwap_reason') or '').strip()
+        rebuild_add_ratio_base = float(rebuild_meta.get('base_add_ratio', 0.0) or 0.0)
+        rebuild_add_ratio_bias = float(rebuild_meta.get('add_ratio_bias', 0.0) or 0.0)
         try:
             reduce_ratio_val = float(reduce_ratio) if reduce_ratio is not None else 0.0
         except Exception:
@@ -352,6 +383,9 @@ def _pool1_set_position_state(
             ent['last_reduce_price'] = px
             ent['last_reduce_type'] = str(signal_type or '')
             ent['last_reduce_ratio'] = round(reduce_ratio_val, 4)
+            ent['last_reduce_source'] = reduce_source
+            ent['last_reduce_avwap_tier'] = reduce_avwap_tier
+            ent['last_reduce_avwap_reason'] = reduce_avwap_reason
             ent['reduce_streak'] = max(0, prev_reduce_streak) + 1
             ent['reduce_ratio_cum'] = round(max(0.0, min(1.0, prev_reduce_ratio_cum + reduce_ratio_val)), 4)
             if ent['status'] == 'observe':
@@ -361,6 +395,9 @@ def _pool1_set_position_state(
                 ent['last_exit_after_partial'] = True
                 ent['last_exit_partial_count'] = int(ent.get('reduce_streak', 0) or 0)
                 ent['last_exit_reduce_ratio_cum'] = round(float(ent.get('reduce_ratio_cum', 0.0) or 0.0), 4)
+                ent['last_exit_reduce_source'] = str(ent.get('last_reduce_source') or '')
+                ent['last_exit_reduce_avwap_tier'] = str(ent.get('last_reduce_avwap_tier') or '')
+                ent['last_exit_reduce_avwap_reason'] = str(ent.get('last_reduce_avwap_reason') or '')
                 ent['reduce_streak'] = 0
                 ent['reduce_ratio_cum'] = 0.0
         elif is_inplace_rebuild:
@@ -373,11 +410,19 @@ def _pool1_set_position_state(
             ent['last_rebuild_type'] = str(signal_type or '')
             ent['last_rebuild_transition'] = 'holding->holding(rebuild)'
             ent['last_rebuild_add_ratio'] = round(rebuild_ratio_val, 4)
+            ent['last_rebuild_add_ratio_base'] = round(rebuild_add_ratio_base, 4)
+            ent['last_rebuild_add_ratio_bias'] = round(rebuild_add_ratio_bias, 4)
             ent['last_rebuild_from_partial_count'] = max(0, prev_reduce_streak)
             ent['last_rebuild_from_partial_ratio'] = round(max(0.0, min(1.0, prev_reduce_ratio_cum)), 4)
+            ent['last_rebuild_from_partial_source'] = str(ent.get('last_reduce_source') or '')
+            ent['last_rebuild_from_partial_avwap_tier'] = str(ent.get('last_reduce_avwap_tier') or '')
+            ent['last_rebuild_from_partial_avwap_reason'] = str(ent.get('last_reduce_avwap_reason') or '')
             ent['last_exit_after_partial'] = False
             ent['last_exit_partial_count'] = 0
             ent['last_exit_reduce_ratio_cum'] = 0.0
+            ent['last_exit_reduce_source'] = ''
+            ent['last_exit_reduce_avwap_tier'] = ''
+            ent['last_exit_reduce_avwap_reason'] = ''
             ent['reduce_streak'] = 0
             ent['reduce_ratio_cum'] = 0.0
         elif st == 'holding':
@@ -396,19 +441,35 @@ def _pool1_set_position_state(
                 ent['last_rebuild_type'] = str(signal_type or '')
                 ent['last_rebuild_transition'] = 'observe->holding(rebuild_after_partial)'
                 ent['last_rebuild_add_ratio'] = 1.0
+                ent['last_rebuild_add_ratio_base'] = round(rebuild_add_ratio_base, 4)
+                ent['last_rebuild_add_ratio_bias'] = round(rebuild_add_ratio_bias, 4)
                 ent['last_rebuild_from_partial_count'] = int(ent.get('last_exit_partial_count', 0) or 0)
                 ent['last_rebuild_from_partial_ratio'] = round(float(ent.get('last_exit_reduce_ratio_cum', 0.0) or 0.0), 4)
+                ent['last_rebuild_from_partial_source'] = str(ent.get('last_exit_reduce_source') or '')
+                ent['last_rebuild_from_partial_avwap_tier'] = str(ent.get('last_exit_reduce_avwap_tier') or '')
+                ent['last_rebuild_from_partial_avwap_reason'] = str(ent.get('last_exit_reduce_avwap_reason') or '')
             else:
                 ent['last_rebuild_at'] = 0
                 ent['last_rebuild_price'] = 0.0
                 ent['last_rebuild_type'] = ''
                 ent['last_rebuild_transition'] = ''
                 ent['last_rebuild_add_ratio'] = 0.0
+                ent['last_rebuild_add_ratio_base'] = 0.0
+                ent['last_rebuild_add_ratio_bias'] = 0.0
                 ent['last_rebuild_from_partial_count'] = 0
                 ent['last_rebuild_from_partial_ratio'] = 0.0
+                ent['last_rebuild_from_partial_source'] = ''
+                ent['last_rebuild_from_partial_avwap_tier'] = ''
+                ent['last_rebuild_from_partial_avwap_reason'] = ''
+                ent['last_reduce_source'] = ''
+                ent['last_reduce_avwap_tier'] = ''
+                ent['last_reduce_avwap_reason'] = ''
             ent['last_exit_after_partial'] = False
             ent['last_exit_partial_count'] = 0
             ent['last_exit_reduce_ratio_cum'] = 0.0
+            ent['last_exit_reduce_source'] = ''
+            ent['last_exit_reduce_avwap_tier'] = ''
+            ent['last_exit_reduce_avwap_reason'] = ''
             ent['reduce_streak'] = 0
             ent['reduce_ratio_cum'] = 0.0
         else:
@@ -419,6 +480,9 @@ def _pool1_set_position_state(
             ent['last_exit_after_partial'] = prev_reduce_streak > 0 or prev_reduce_ratio_cum > 0
             ent['last_exit_partial_count'] = max(0, prev_reduce_streak)
             ent['last_exit_reduce_ratio_cum'] = round(max(0.0, min(1.0, prev_reduce_ratio_cum)), 4)
+            ent['last_exit_reduce_source'] = str(ent.get('last_reduce_source') or '')
+            ent['last_exit_reduce_avwap_tier'] = str(ent.get('last_reduce_avwap_tier') or '')
+            ent['last_exit_reduce_avwap_reason'] = str(ent.get('last_reduce_avwap_reason') or '')
             ent['reduce_streak'] = 0
             ent['reduce_ratio_cum'] = 0.0
             hold_days = max(0.0, float(ts - prev_last_buy_at) / 86400.0) if prev_last_buy_at > 0 else 0.0

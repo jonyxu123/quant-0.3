@@ -110,6 +110,9 @@ class TickProvider(ABC):
         """批量更新东方财富概念板块生态快照。默认空实现。"""
         pass
 
+    def bulk_update_industry_snapshots(self, mapping: dict):
+        pass
+
     def bulk_update_instrument_profiles(self, mapping: dict):
         """???????????"""
         pass

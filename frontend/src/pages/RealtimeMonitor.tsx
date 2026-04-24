@@ -22,12 +22,46 @@ type Pool1ObserveUiThresholds = {
   sampleRecommendMin: number
 }
 
+type Pool1RebuildUiConfig = {
+  enabled: boolean
+  requireStage1Pass: boolean
+  minPositionGap: number
+  minMinutesAfterReduce: number
+  minSignalStrength: number
+  addRatio: number
+  observeTierAddRatioBias: number
+  fullTierAddRatioBias: number
+  softSourceAddRatioBias: number
+  coreSourceAddRatioBias: number
+  fullTierExtraDelayMinutes: number
+  coreSourceExtraDelayMinutes: number
+  allowLeftSideBuy: boolean
+  allowRightSideBreakout: boolean
+}
+
 const POOL1_OBSERVE_UI_DEFAULT: Pool1ObserveUiThresholds = {
   observePollSec: 10,
   staleWarnSec: 30,
   staleErrorSec: 120,
   sampleWarnMin: 50,
   sampleRecommendMin: 200,
+}
+
+const POOL1_REBUILD_UI_DEFAULT: Pool1RebuildUiConfig = {
+  enabled: true,
+  requireStage1Pass: true,
+  minPositionGap: 0.12,
+  minMinutesAfterReduce: 20,
+  minSignalStrength: 78,
+  addRatio: 0.5,
+  observeTierAddRatioBias: 0.15,
+  fullTierAddRatioBias: -0.15,
+  softSourceAddRatioBias: 0.10,
+  coreSourceAddRatioBias: -0.15,
+  fullTierExtraDelayMinutes: 20,
+  coreSourceExtraDelayMinutes: 15,
+  allowLeftSideBuy: true,
+  allowRightSideBreakout: true,
 }
 
 const UI_CONFIG_CACHE_TTL_MS = 60_000
@@ -70,6 +104,10 @@ interface SignalRow {
   pool1_last_reduce_at?: number
   pool1_last_reduce_type?: string
   pool1_last_reduce_ratio?: number
+  pool1_last_reduce_source?: string
+  pool1_last_reduce_avwap_tier?: string
+  pool1_reduce_source?: string
+  pool1_reduce_avwap_tier?: string
   pool1_decision?: 'build' | 'hold' | 'clear' | 'observe' | string
   pool1_decision_label?: string
   pool1_decision_reason?: string
@@ -83,6 +121,7 @@ interface Txn { time: string; price: number; volume: number; direction: number }
 interface MarketStatus { is_open: boolean; status: string; desc?: string }
 type SortKey = 'default' | 'pct_chg' | 'signal_strength' | 'amount'
 type Pool1HighRiskMode = 'all' | 'suppressed' | 'repeat'
+type IndustryCoverageCardMode = 'all' | 'fallback' | 'unmatched'
 interface QualityByType {
   count: number
   precision_1m?: number | null
@@ -236,17 +275,27 @@ interface Pool1DecisionSummaryItem {
   clear_level?: string
   clear_family?: string
   reduce_ratio?: number
+  reduce_source?: string
+  reduce_avwap_tier?: string
+  last_reduce_source?: string
+  last_reduce_avwap_tier?: string
   reduce_streak?: number
   reduce_ratio_cum?: number
   last_rebuild_at?: number
   last_rebuild_type?: string
   last_rebuild_transition?: string
   last_rebuild_add_ratio?: number
+  last_rebuild_add_ratio_base?: number
+  last_rebuild_add_ratio_bias?: number
   last_rebuild_from_partial_count?: number
   last_rebuild_from_partial_ratio?: number
+  last_rebuild_from_partial_source?: string
+  last_rebuild_from_partial_avwap_tier?: string
   last_exit_after_partial?: boolean
   last_exit_partial_count?: number
   last_exit_reduce_ratio_cum?: number
+  last_exit_reduce_source?: string
+  last_exit_reduce_avwap_tier?: string
   holding_days?: number
   signal_types?: string[]
   industry?: string
@@ -268,15 +317,23 @@ interface Pool1DecisionTransition {
   signal_type?: string
   signal_price?: number
   reduce_ratio?: number
+  reduce_source?: string
+  reduce_avwap_tier?: string
   reduce_streak?: number
   reduce_ratio_cum?: number
   rebuild_after_partial?: boolean
   rebuild_add_ratio?: number
+  rebuild_add_ratio_base?: number
+  rebuild_add_ratio_bias?: number
   rebuild_from_partial_count?: number
   rebuild_from_partial_ratio?: number
+  rebuild_from_partial_source?: string
+  rebuild_from_partial_avwap_tier?: string
   exit_after_partial?: boolean
   exit_partial_count?: number
   exit_reduce_ratio_cum?: number
+  exit_reduce_source?: string
+  exit_reduce_avwap_tier?: string
   current_position_status?: 'holding' | 'observe' | string
   current_position_ratio?: number
   current_decision?: 'build' | 'hold' | 'clear' | 'observe' | string
@@ -475,6 +532,81 @@ interface RuntimeHealthResp {
   summary?: { green: number; yellow: number; red: number }
   items: RuntimeHealthItem[]
 }
+interface ConceptSnapshotStateNode {
+  count?: number
+  updated_at?: number | null
+  updated_at_iso?: string | null
+  age_sec?: number | null
+  sources?: string[]
+  error?: string | null
+  fresh?: boolean
+  enabled?: boolean
+  ready?: boolean
+}
+interface ConceptSnapshotStatusResp {
+  ok: boolean
+  checked_at: string
+  refresh_ttl_sec?: number
+  off_session_refresh_sec?: number
+  active_source?: string | null
+  active_updated_at?: number | null
+  active_updated_at_iso?: string | null
+  cache?: ConceptSnapshotStateNode | null
+  runtime?: ConceptSnapshotStateNode | null
+  redis?: ConceptSnapshotStateNode | null
+}
+interface IndustryMappingCoverageItem {
+  pool_id: number
+  ts_code: string
+  name: string
+  source: string
+  pool_industry?: string
+  stock_basic_industry?: string
+  em_industry_name?: string
+  em_industry_code?: string
+  effective_industry?: string
+  effective_code?: string
+  match_method?: string
+  resolved_industry?: string
+  resolved_code?: string
+  resolved_state?: string
+}
+interface IndustryMappingCoverageResp {
+  ok: boolean
+  checked_at: string
+  pool_scope?: number | null
+  totals?: {
+    member_count?: number
+    unique_ts_count?: number
+    pool_count?: number
+    pool_breakdown?: Record<string, number>
+  }
+  em_tables?: {
+    board_count?: number
+    member_count?: number
+    mapped_name_count?: number
+    mapped_code_count?: number
+  }
+  source_counts?: Record<string, number>
+  match_counts?: Record<string, number>
+  coverage?: {
+    matched?: number
+    unmatched?: number
+    match_rate?: number
+    code_first_count?: number
+    code_first_rate?: number
+  }
+  snapshot?: {
+    count?: number
+    updated_at?: number | null
+    updated_at_iso?: string | null
+    age_sec?: number | null
+    sources?: string[]
+    error?: string
+  }
+  unmatched_items?: IndustryMappingCoverageItem[]
+  fallback_items?: IndustryMappingCoverageItem[]
+}
 interface RealtimeUiConfigResp {
   data?: {
     pool1_observe_ui?: {
@@ -483,6 +615,22 @@ interface RealtimeUiConfigResp {
       stale_error_sec?: number
       sample_warn_min?: number
       sample_recommend_min?: number
+    }
+    pool1_rebuild_ui?: {
+      enabled?: boolean
+      require_stage1_pass?: boolean
+      min_position_gap?: number
+      min_minutes_after_reduce?: number
+      min_signal_strength?: number
+      add_ratio?: number
+      observe_tier_add_ratio_bias?: number
+      full_tier_add_ratio_bias?: number
+      soft_source_add_ratio_bias?: number
+      core_source_add_ratio_bias?: number
+      full_tier_extra_delay_minutes?: number
+      core_source_extra_delay_minutes?: number
+      allow_left_side_buy?: boolean
+      allow_right_side_breakout?: boolean
     }
   }
 }
@@ -800,6 +948,7 @@ function buildPool1DecisionView(
   industryFilter: string,
   conceptFilter: string,
   riskHotwordFilter: string = 'all',
+  signalRowMap?: Map<string, SignalRow>,
 ) {
   const buildList = Array.isArray(summary?.decision_examples?.build) ? (summary?.decision_examples?.build || []) : []
   const clearList = Array.isArray(summary?.decision_examples?.clear) ? (summary?.decision_examples?.clear || []) : []
@@ -1037,6 +1186,58 @@ function buildPool1DecisionView(
       })
   })()
   const historyTradeDates = Array.from(new Set(filteredHistoryEvents.map(evt => String(evt.trade_date || '')).filter(Boolean))).sort()
+  const leftStateHeat = (() => {
+    const stats = {
+      stageAReady: 0,
+      stageBPending: 0,
+      stageCObserve: 0,
+      highPositionCatchdown: 0,
+      distributionStructure: 0,
+      conceptRetreatMain: 0,
+      conceptWeakMain: 0,
+      conceptHeatCliff: 0,
+      conceptJointWeak: 0,
+      conceptNoSupport: 0,
+      industryJointWeak: 0,
+      industryRetreat: 0,
+      industryWeak: 0,
+      industrySupport: 0,
+    }
+    baseFilteredCandidates.forEach((item) => {
+      const tags = derivePool1GuardTags(signalRowMap?.get(item.ts_code)?.signals || [])
+      const has = (text: string) => tags.some(tag => tag.text === text)
+      if (has('A到位')) stats.stageAReady += 1
+      if (has('B未成')) stats.stageBPending += 1
+      if (has('C观察')) stats.stageCObserve += 1
+      if (has('高位补跌')) stats.highPositionCatchdown += 1
+      if (has('出货结构')) stats.distributionStructure += 1
+      if (has('概念退潮主跌段')) stats.conceptRetreatMain += 1
+      if (has('概念承接转弱')) stats.conceptWeakMain += 1
+      if (has('概念热度断崖')) stats.conceptHeatCliff += 1
+      if (has('多概念共弱')) stats.conceptJointWeak += 1
+      if (has('次概念未共振')) stats.conceptNoSupport += 1
+      if (has('行业+概念共弱')) stats.industryJointWeak += 1
+      if (has('行业退潮')) stats.industryRetreat += 1
+      if (has('行业承接转弱')) stats.industryWeak += 1
+      if (has('行业支撑')) stats.industrySupport += 1
+    })
+    let leadTag = ''
+    if (stats.industryJointWeak > 0) leadTag = '行业+概念共弱'
+    else if (stats.industryRetreat > 0) leadTag = '行业退潮'
+    else if (stats.conceptHeatCliff > 0) leadTag = '概念热度断崖'
+    else if (stats.conceptJointWeak > 0) leadTag = '多概念共弱'
+    else if (stats.conceptRetreatMain > 0) leadTag = '概念退潮主跌段'
+    else if (stats.conceptNoSupport > 0) leadTag = '次概念未共振'
+    else if (stats.highPositionCatchdown > 0) leadTag = '高位补跌'
+    else if (stats.distributionStructure > 0) leadTag = '出货结构'
+    else if (stats.industryWeak > 0) leadTag = '行业承接转弱'
+    else if (stats.conceptWeakMain > 0) leadTag = '概念承接转弱'
+    else if (stats.stageBPending > 0) leadTag = 'B未成'
+    else if (stats.stageCObserve > 0) leadTag = 'C观察'
+    else if (stats.industrySupport > 0) leadTag = '行业支撑'
+    else if (stats.stageAReady > 0) leadTag = 'A到位'
+    return { ...stats, leadTag }
+  })()
 
   const aggregateRanking = (
     items: Pool1DecisionHistoryEvent[],
@@ -1359,6 +1560,45 @@ function buildPool1DecisionView(
       : `最新清仓占比 ${(trendStrength.latestClearRatio * 100).toFixed(1)}%`
     const reason = trendStrength.reasons[0] || '近5日处于均衡震荡'
     const conceptText = conceptHeat.leadTag ? `，题材侧出现「${conceptHeat.leadTag}」` : ''
+    const leftStateText = (() => {
+      if (leftStateHeat.industryJointWeak > 0) {
+        return `，左侧有${leftStateHeat.industryJointWeak}只已经进入行业+概念共弱`
+      }
+      if (leftStateHeat.industryRetreat > 0) {
+        return `，左侧有${leftStateHeat.industryRetreat}只处在行业退潮`
+      }
+      if (leftStateHeat.conceptHeatCliff > 0) {
+        return `，左侧有${leftStateHeat.conceptHeatCliff}只已落入概念热度断崖`
+      }
+      if (leftStateHeat.conceptJointWeak > 0) {
+        return `，左侧有${leftStateHeat.conceptJointWeak}只已经进入多概念共弱`
+      }
+      if (leftStateHeat.conceptRetreatMain > 0) {
+        return `，左侧有${leftStateHeat.conceptRetreatMain}只处在概念退潮主跌段`
+      }
+      if (leftStateHeat.conceptNoSupport > 0) {
+        return `，左侧有${leftStateHeat.conceptNoSupport}只处在次概念未共振`
+      }
+      if (leftStateHeat.industryWeak > 0) {
+        return `，左侧有${leftStateHeat.industryWeak}只处在行业承接转弱`
+      }
+      if (leftStateHeat.conceptWeakMain > 0) {
+        return `，左侧有${leftStateHeat.conceptWeakMain}只处在概念承接转弱`
+      }
+      if (leftStateHeat.stageBPending > 0) {
+        return `，左侧A到位${leftStateHeat.stageAReady}只，其中${leftStateHeat.stageBPending}只仍卡在B回收确认`
+      }
+      if (leftStateHeat.stageCObserve > 0) {
+        return `，左侧有${leftStateHeat.stageCObserve}只仍在C生态观察`
+      }
+      if (leftStateHeat.industrySupport > 0) {
+        return `，左侧有${leftStateHeat.industrySupport}只仍得到行业支撑`
+      }
+      if (leftStateHeat.stageAReady > 0) {
+        return `，左侧A到位样本${leftStateHeat.stageAReady}只`
+      }
+      return ''
+    })()
     const rebuildText = rebuildHeat.hasRebuildRepair
       ? `，盘中出现${rebuildHeat.rebuildToday}次回补修复`
       : rebuildHeat.hasChainReduce
@@ -1366,7 +1606,7 @@ function buildPool1DecisionView(
         : rebuildHeat.hasReduceThenClear
           ? `，存在减仓后清仓${rebuildHeat.clearAfterPartialToday}次`
           : ''
-    return `${scope}：主线${trendStrength.label}（${trendStrength.score}分），${ratioText}，${reason}${conceptText}${rebuildText}。`
+    return `${scope}：主线${trendStrength.label}（${trendStrength.score}分），${ratioText}，${reason}${conceptText}${leftStateText}${rebuildText}。`
   })()
   const summaryRisk = (() => {
     if (!trendStrength) {
@@ -1375,10 +1615,64 @@ function buildPool1DecisionView(
         color: C.dim,
       }
     }
+    if (leftStateHeat.industryJointWeak > 0) {
+      return {
+        text: `风险提示：当前左侧样本里有 ${leftStateHeat.industryJointWeak} 只已经进入“行业+概念共弱”，行业和题材同步转弱时，左侧更容易从B未成直接滑向继续阴跌。`,
+        color: C.red,
+      }
+    }
+    if (leftStateHeat.industryRetreat > 0) {
+      return {
+        text: `风险提示：当前左侧样本里有 ${leftStateHeat.industryRetreat} 只已经落入“行业退潮”，即使个股出现深偏离，也更适合继续观察，别急着把观察样本当执行样本。`,
+        color: C.red,
+      }
+    }
+    if (leftStateHeat.conceptRetreatMain > 0) {
+      return {
+        text: `风险提示：当前左侧样本里有 ${leftStateHeat.conceptRetreatMain} 只已经落入“概念退潮主跌段”，这类票即使深偏离也更容易继续阴跌，优先保持观察。`,
+        color: C.red,
+      }
+    }
+    if (leftStateHeat.conceptJointWeak > 0) {
+      return {
+        text: `风险提示：当前左侧样本里有 ${leftStateHeat.conceptJointWeak} 只已经进入“多概念共弱”，主概念和次概念同步走弱时，左侧更容易从B未成直接滑向继续阴跌。`,
+        color: C.red,
+      }
+    }
+    if (leftStateHeat.conceptHeatCliff > 0) {
+      return {
+        text: `风险提示：当前左侧样本里有 ${leftStateHeat.conceptHeatCliff} 只已经出现“概念热度断崖”，广度、龙头强度和题材分数同步走弱，这类票更要等C段修复再考虑执行。`,
+        color: C.red,
+      }
+    }
+    if (leftStateHeat.conceptNoSupport > 0) {
+      return {
+        text: `风险提示：当前左侧样本里有 ${leftStateHeat.conceptNoSupport} 只处在“次概念未共振”，主概念偏弱且没有次概念补位，这类票更适合继续观察。`,
+        color: C.yellow,
+      }
+    }
     if (conceptHeat.hasRetreat) {
       return {
         text: '风险提示：当前已有东方财富概念退潮压制，左侧抄底即使触发也更适合先看“仅观察”，避免在题材退潮主段连续抄底。',
         color: C.red,
+      }
+    }
+    if (leftStateHeat.highPositionCatchdown > 0 || leftStateHeat.distributionStructure > 0) {
+      return {
+        text: `风险提示：当前左侧里仍有 ${leftStateHeat.highPositionCatchdown} 只高位补跌、${leftStateHeat.distributionStructure} 只出货结构票，抄底前要先区分是真修复还是高位补跌延续。`,
+        color: C.red,
+      }
+    }
+    if (leftStateHeat.stageBPending > 0) {
+      return {
+        text: `风险提示：左侧已有 ${leftStateHeat.stageBPending} 只停在“B未成”，说明极限偏离已经出现，但回收确认还没走完，更适合等站回下轨/日内AVWAP后再看执行。`,
+        color: C.yellow,
+      }
+    }
+    if (leftStateHeat.stageCObserve > 0 || leftStateHeat.industryWeak > 0 || leftStateHeat.conceptWeakMain > 0) {
+      return {
+        text: `风险提示：左侧里仍有 ${Math.max(leftStateHeat.stageCObserve, leftStateHeat.industryWeak, leftStateHeat.conceptWeakMain)} 只卡在生态观察，行业或题材承接还不够稳，先去弱留强，别急着把观察样本当执行样本。`,
+        color: C.yellow,
       }
     }
     if (rebuildHeat.hasReduceThenClear && rebuildHeat.clearAfterPartialToday >= rebuildHeat.rebuildToday) {
@@ -1497,65 +1791,6 @@ function buildPool1DecisionView(
       color: C.yellow,
     }
   })()
-  const riskHotwords = (() => {
-    const tags: Array<{ text: string; color: string; weight: number }> = []
-    if (!trendStrength || filteredDailyRows.length <= 0) {
-      return tags
-    }
-    const latest = filteredDailyRows[filteredDailyRows.length - 1]
-    const prev = filteredDailyRows.length >= 2 ? filteredDailyRows[filteredDailyRows.length - 2] : null
-    const latestActionable = Math.max(1, Number(latest.actionable_total || 0))
-    const latestBuildRatio = Number(latest.build_actionable || 0) / latestActionable
-    const latestClearRatio = Number(latest.clear_actionable || 0) / latestActionable
-    const prevActionable = Math.max(1, Number(prev?.actionable_total || 0))
-    const prevClearRatio = prev ? (Number(prev.clear_actionable || 0) / prevActionable) : 0
-    const prevBuildRatio = prev ? (Number(prev.build_actionable || 0) / prevActionable) : 0
-    if (trendStrength.score >= 68 && latestBuildRatio >= 0.6 && Number(latest.net_build_actionable || 0) >= 2) {
-      tags.push({ text: '建仓扩散', color: C.green, weight: 100 })
-    }
-    if (latestClearRatio >= 0.45 && latestClearRatio - prevClearRatio >= 0.12) {
-      tags.push({ text: '清仓回流', color: C.red, weight: 95 })
-    }
-    if (trendStrength.score >= 56 && latestBuildRatio > 0.56 && latestClearRatio > 0.28) {
-      tags.push({ text: '追高风险回升', color: C.yellow, weight: 88 })
-    }
-    if (prev && latestBuildRatio - prevBuildRatio >= 0.12 && Number(latest.net_build_actionable || 0) > 0) {
-      tags.push({ text: '扩张提速', color: C.cyan, weight: 84 })
-    }
-    if (trendStrength.score < 44 && latestClearRatio >= 0.52) {
-      tags.push({ text: '防守收缩', color: C.red, weight: 90 })
-    }
-    if (conceptHeat.hasExpand) {
-      tags.push({ text: '概念扩张共振', color: C.green, weight: 93 })
-    }
-    if (conceptHeat.hasRetreat) {
-      tags.push({ text: '概念退潮抑制', color: C.red, weight: 97 })
-    }
-    if (conceptHeat.hasWeak) {
-      tags.push({ text: '题材承接转弱', color: C.yellow, weight: 89 })
-    }
-    if (rebuildHeat.hasRebuildRepair) {
-      tags.push({ text: '回补修复', color: C.cyan, weight: 92 })
-    }
-    if (rebuildHeat.hasChainReduce) {
-      tags.push({ text: '连减收缩', color: C.yellow, weight: 91 })
-    }
-    if (rebuildHeat.hasReduceThenClear) {
-      tags.push({ text: '减后清仓', color: C.red, weight: 94 })
-    }
-    const reasonText = baseFilteredCandidates.map(item => String(item.decision_reason || '')).join(' || ')
-    if (reasonText.includes('左侧抑制:repeat_retreat_after_quick_clear')) {
-      tags.push({ text: '左侧重复退潮', color: C.red, weight: 99 })
-    } else if (reasonText.includes('左侧抑制:retreat_after_quick_clear')) {
-      tags.push({ text: '左侧退潮抑制', color: C.red, weight: 94 })
-    }
-    if (reasonText.includes('左侧抑制:repeat_weak_after_quick_clear')) {
-      tags.push({ text: '左侧重复转弱', color: C.yellow, weight: 91 })
-    } else if (reasonText.includes('左侧抑制:weak_after_quick_clear')) {
-      tags.push({ text: '左侧转弱抑制', color: C.yellow, weight: 87 })
-    }
-    return tags
-  })()
   const candidateRiskTagMap = new Map<string, Array<{ text: string; color: string }>>()
   baseFilteredCandidates.forEach((item) => {
     const tags: Array<{ text: string; color: string }> = []
@@ -1610,8 +1845,107 @@ function buildPool1DecisionView(
     if (Boolean(item.last_exit_after_partial) || Number(item.last_exit_partial_count || 0) > 0) {
       pushTag('减后清仓', C.red)
     }
+    const liveSignalTags = signalRowMap?.get(item.ts_code)?.signals
+      ? derivePool1GuardTags(signalRowMap.get(item.ts_code)?.signals || [])
+      : []
+    liveSignalTags.forEach(tag => pushTag(tag.text, tag.color))
     candidateRiskTagMap.set(item.ts_code, tags)
   })
+  const countCandidatesByRiskTag = (text: string) => baseFilteredCandidates.reduce((acc, item) => {
+    const tags = candidateRiskTagMap.get(item.ts_code) || []
+    return acc + (tags.some(tag => tag.text === text) ? 1 : 0)
+  }, 0)
+  const riskHotwords = (() => {
+    const tags: Array<{ text: string; color: string; weight: number }> = []
+    if (trendStrength && filteredDailyRows.length > 0) {
+      const latest = filteredDailyRows[filteredDailyRows.length - 1]
+      const prev = filteredDailyRows.length >= 2 ? filteredDailyRows[filteredDailyRows.length - 2] : null
+      const latestActionable = Math.max(1, Number(latest.actionable_total || 0))
+      const latestBuildRatio = Number(latest.build_actionable || 0) / latestActionable
+      const latestClearRatio = Number(latest.clear_actionable || 0) / latestActionable
+      const prevActionable = Math.max(1, Number(prev?.actionable_total || 0))
+      const prevClearRatio = prev ? (Number(prev.clear_actionable || 0) / prevActionable) : 0
+      const prevBuildRatio = prev ? (Number(prev.build_actionable || 0) / prevActionable) : 0
+      if (trendStrength.score >= 68 && latestBuildRatio >= 0.6 && Number(latest.net_build_actionable || 0) >= 2) {
+        tags.push({ text: '建仓扩散', color: C.green, weight: 100 })
+      }
+      if (latestClearRatio >= 0.45 && latestClearRatio - prevClearRatio >= 0.12) {
+        tags.push({ text: '清仓回流', color: C.red, weight: 95 })
+      }
+      if (trendStrength.score >= 56 && latestBuildRatio > 0.56 && latestClearRatio > 0.28) {
+        tags.push({ text: '追高风险回升', color: C.yellow, weight: 88 })
+      }
+      if (prev && latestBuildRatio - prevBuildRatio >= 0.12 && Number(latest.net_build_actionable || 0) > 0) {
+        tags.push({ text: '扩张提速', color: C.cyan, weight: 84 })
+      }
+      if (trendStrength.score < 44 && latestClearRatio >= 0.52) {
+        tags.push({ text: '防守收缩', color: C.red, weight: 90 })
+      }
+    }
+    if (conceptHeat.hasExpand) {
+      tags.push({ text: '概念扩张共振', color: C.green, weight: 93 })
+    }
+    if (conceptHeat.hasRetreat) {
+      tags.push({ text: '概念退潮抑制', color: C.red, weight: 97 })
+    }
+    if (conceptHeat.hasWeak) {
+      tags.push({ text: '题材承接转弱', color: C.yellow, weight: 89 })
+    }
+    if (rebuildHeat.hasRebuildRepair) {
+      tags.push({ text: '回补修复', color: C.cyan, weight: 92 })
+    }
+    if (rebuildHeat.hasChainReduce) {
+      tags.push({ text: '连减收缩', color: C.yellow, weight: 91 })
+    }
+    if (rebuildHeat.hasReduceThenClear) {
+      tags.push({ text: '减后清仓', color: C.red, weight: 94 })
+    }
+    const reasonText = baseFilteredCandidates.map(item => String(item.decision_reason || '')).join(' || ')
+    if (reasonText.includes('左侧抑制:repeat_retreat_after_quick_clear')) {
+      tags.push({ text: '左侧重复退潮', color: C.red, weight: 99 })
+    } else if (reasonText.includes('左侧抑制:retreat_after_quick_clear')) {
+      tags.push({ text: '左侧退潮抑制', color: C.red, weight: 94 })
+    }
+    if (reasonText.includes('左侧抑制:repeat_weak_after_quick_clear')) {
+      tags.push({ text: '左侧重复转弱', color: C.yellow, weight: 91 })
+    } else if (reasonText.includes('左侧抑制:weak_after_quick_clear')) {
+      tags.push({ text: '左侧转弱抑制', color: C.yellow, weight: 87 })
+    }
+    if (countCandidatesByRiskTag('A到位') > 0) {
+      tags.push({ text: 'A到位', color: C.cyan, weight: 82 })
+    }
+    if (countCandidatesByRiskTag('B未成') > 0) {
+      tags.push({ text: 'B未成', color: C.yellow, weight: 90 })
+    }
+    if (countCandidatesByRiskTag('C观察') > 0) {
+      tags.push({ text: 'C观察', color: C.yellow, weight: 88 })
+    }
+    if (countCandidatesByRiskTag('高位补跌') > 0) {
+      tags.push({ text: '高位补跌', color: C.red, weight: 96 })
+    }
+    if (countCandidatesByRiskTag('出货结构') > 0) {
+      tags.push({ text: '出货结构', color: C.red, weight: 98 })
+    }
+    if (countCandidatesByRiskTag('概念热度断崖') > 0) {
+      tags.push({ text: '概念热度断崖', color: C.red, weight: 100 })
+    }
+    if (countCandidatesByRiskTag('多概念共弱') > 0) {
+      tags.push({ text: '多概念共弱', color: C.red, weight: 99 })
+    }
+    if (countCandidatesByRiskTag('概念退潮主跌段') > 0) {
+      tags.push({ text: '概念退潮主跌段', color: C.red, weight: 97 })
+    }
+    if (countCandidatesByRiskTag('概念承接转弱') > 0) {
+      tags.push({ text: '概念承接转弱', color: C.yellow, weight: 89 })
+    }
+    if (countCandidatesByRiskTag('次概念未共振') > 0) {
+      tags.push({ text: '次概念未共振', color: C.yellow, weight: 88 })
+    }
+    if (countCandidatesByRiskTag('次概念共振') > 0) {
+      tags.push({ text: '次概念共振', color: C.green, weight: 84 })
+    }
+    return tags
+  })()
   const candidateRiskCounts = new Map<string, number>()
   riskHotwords.forEach((tag) => {
     const count = baseFilteredCandidates.reduce((acc, item) => {
@@ -1628,7 +1962,7 @@ function buildPool1DecisionView(
       if (b.count !== a.count) return b.count - a.count
       return a.text.localeCompare(b.text, 'zh-CN')
     })
-    .slice(0, 4)
+    .slice(0, 6)
   const filteredCandidates = baseFilteredCandidates.filter(item => {
     if (riskHotwordFilter === 'all') return true
     const tags = candidateRiskTagMap.get(item.ts_code) || []
@@ -1713,10 +2047,78 @@ function derivePool1GuardTags(signals: Signal[]): Array<{ text: string; color: s
   for (const sig of signals || []) {
     const details = sig?.details && typeof sig.details === 'object' ? sig.details as Record<string, any> : {}
     const observeReason = String(details.observe_reason || '').trim()
+    const leftStateMachine = details.left_state_machine && typeof details.left_state_machine === 'object'
+      ? details.left_state_machine as Record<string, any>
+      : null
+    const stageA = leftStateMachine?.stage_a && typeof leftStateMachine.stage_a === 'object'
+      ? leftStateMachine.stage_a as Record<string, any>
+      : null
+    const stageB = leftStateMachine?.stage_b && typeof leftStateMachine.stage_b === 'object'
+      ? leftStateMachine.stage_b as Record<string, any>
+      : null
+    const stageC = leftStateMachine?.stage_c && typeof leftStateMachine.stage_c === 'object'
+      ? leftStateMachine.stage_c as Record<string, any>
+      : null
     const conceptEcology = details.concept_ecology && typeof details.concept_ecology === 'object'
       ? details.concept_ecology as Record<string, any>
       : null
     const conceptState = String(conceptEcology?.state || '').trim().toLowerCase()
+    const conceptGateLevel = String(conceptEcology?.gate_level || '').trim().toLowerCase()
+    if (conceptGateLevel === 'observe') {
+      pushTag('概念硬门观察', C.yellow)
+    } else if (conceptGateLevel === 'strong') {
+      pushTag('概念硬门强', C.green)
+    } else if (conceptGateLevel === 'blocked' || Boolean(conceptEcology?.blocked)) {
+      pushTag('概念硬门阻断', C.red)
+    }
+    if (sig.type === 'left_side_buy') {
+      if (stageA?.passed) {
+        pushTag('A到位', C.cyan)
+      }
+      if (stageA?.passed && !stageB?.passed) {
+        pushTag('B未成', C.yellow)
+      }
+      if (stageA?.passed && stageB?.passed && (!stageC?.passed || Boolean(stageC?.observe_only))) {
+        pushTag('C观察', C.yellow)
+      }
+      if (Boolean(stageC?.high_position_catchdown)) {
+        pushTag('高位补跌', C.red)
+      }
+      if (Boolean(stageC?.distribution_structure)) {
+        pushTag('出货结构', C.red)
+      }
+      const stageCItems = Array.isArray(stageC?.items) ? stageC.items.map((item) => String(item || '').trim()) : []
+      if (stageCItems.includes('概念退潮主跌段')) {
+        pushTag('概念退潮主跌段', C.red)
+      }
+      if (stageCItems.includes('概念承接转弱')) {
+        pushTag('概念承接转弱', C.yellow)
+      }
+      if (stageCItems.includes('概念热度断崖')) {
+        pushTag('概念热度断崖', C.red)
+      }
+      if (stageCItems.includes('多概念共弱')) {
+        pushTag('多概念共弱', C.red)
+      }
+      if (stageCItems.includes('次概念未共振')) {
+        pushTag('次概念未共振', C.yellow)
+      }
+      if (stageCItems.some((item) => item.startsWith('次概念共振('))) {
+        pushTag('次概念共振', C.green)
+      }
+      if (stageCItems.includes('行业+概念共弱')) {
+        pushTag('行业+概念共弱', C.red)
+      }
+      if (stageCItems.includes('行业退潮')) {
+        pushTag('行业退潮', C.red)
+      }
+      if (stageCItems.includes('行业承接转弱')) {
+        pushTag('行业承接转弱', C.yellow)
+      }
+      if (stageCItems.includes('行业支撑')) {
+        pushTag('行业支撑', C.green)
+      }
+    }
     if (observeReason === 'left_side_repeat_retreat') pushTag('左侧重复退潮', C.red)
     else if (observeReason === 'left_side_streak_retreat') pushTag('左侧退潮抑制', C.red)
     else if (observeReason === 'left_side_repeat_weak') pushTag('左侧重复转弱', C.yellow)
@@ -1730,6 +2132,38 @@ function derivePool1GuardTags(signals: Signal[]): Array<{ text: string; color: s
     }
   }
   return out
+}
+
+function pool1GuardTagTitle(text: string): string {
+  const map: Record<string, string> = {
+    'A到位': '左侧阶段A已满足，极限偏离候选已经到位。',
+    'B未成': '左侧阶段A已到位，但阶段B回收确认仍未完成，暂不进入可执行。',
+    'C观察': '左侧阶段A/B已具备，但生态确认阶段仍未放行，先保持观察。',
+    '高位补跌': '当前更像高位补跌风险，左侧抄底容易接到继续回撤。',
+    '出货结构': '当前存在出货结构风险，承接和资金结构不支持左侧执行。',
+    '概念退潮主跌段': '当前主概念处在退潮主跌段，左侧抄底容易遇到持续性补跌。',
+    '概念承接转弱': '当前主概念承接开始明显转弱，左侧信号更适合先观察。',
+    '概念热度断崖': '当前主概念热度已经出现断崖，广度、龙头强度和生态分数都不支持左侧执行。',
+    '多概念共弱': '主概念和次概念同时走弱，说明题材生态不是局部问题，左侧更要先观察。',
+    '次概念未共振': '主概念偏弱且次概念没有形成补位共振，当前左侧缺少生态支持。',
+    '次概念共振': '虽然主概念未到最强，但次概念仍有扩张或强势支持，左侧生态相对更稳。',
+    '行业+概念共弱': '行业和主概念同步走弱，说明这不是单一题材波动，左侧更容易继续阴跌。',
+    '行业退潮': '所属行业已经进入退潮或主跌段，左侧更适合继续观察而不是直接执行。',
+    '行业承接转弱': '所属行业承接开始走弱，即使个股深偏离，也更适合先等行业侧稳住。',
+    '行业支撑': '所属行业仍有扩张或强势支撑，左侧生态相对更稳一些。',
+    '概念硬门观察': '概念生态分数未达到放行区，信号只进入观察，不进入可执行。',
+    '概念硬门强': '概念生态分数达到强势区，买点可以获得生态侧确认。',
+    '概念硬门阻断': '概念生态处于退潮阻断区，买入信号被硬门拦截。',
+    '左侧重复退潮': '左侧连续失败且题材退潮，当前属于最强抑制档。',
+    '左侧退潮抑制': '左侧近期失败后叠加题材退潮，当前只适合观察。',
+    '左侧重复转弱': '左侧连续失败且题材转弱，当前不适合再次执行。',
+    '左侧转弱抑制': '左侧近期失败后题材承接转弱，先观察后续修复。',
+    '概念退潮': '主概念处于退潮状态，左侧信号会被明显压制。',
+    '题材转弱': '主概念承接开始转弱，左侧和追价都要更谨慎。',
+    '概念扩张': '主概念处于扩张阶段，执行级左侧/右侧更容易得到共振支持。',
+    '概念走强': '主概念整体偏强，但未到最强扩张档。',
+  }
+  return map[text] || text
 }
 
 function derivePool1CooldownBadge(signals: Signal[]): { text: string; color: string; title?: string } | null {
@@ -2382,6 +2816,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [drift, setDrift] = useState<DriftStatus | null>(null)
   const [pool1Observe, setPool1Observe] = useState<Pool1ObserveResp | null>(null)
   const [pool1ObserveUi, setPool1ObserveUi] = useState(POOL1_OBSERVE_UI_DEFAULT)
+  const [pool1RebuildUi, setPool1RebuildUi] = useState(POOL1_REBUILD_UI_DEFAULT)
   const [pool1ObserveFailCount, setPool1ObserveFailCount] = useState(0)
   const [pool1DecisionSummary, setPool1DecisionSummary] = useState<Pool1DecisionSummaryResp | null>(null)
   const [pool1DecisionOpen, setPool1DecisionOpen] = useState(false)
@@ -2391,6 +2826,8 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [pool1DecisionConceptFilter, setPool1DecisionConceptFilter] = useState('all')
   const [pool1RiskHotwordFilter, setPool1RiskHotwordFilter] = useState('all')
   const [pool1HighRiskMode, setPool1HighRiskMode] = useState<Pool1HighRiskMode>('all')
+  const [industryCoverageCardMode, setIndustryCoverageCardMode] = useState<IndustryCoverageCardMode>('all')
+  const [industryCoverageIndustryFilter, setIndustryCoverageIndustryFilter] = useState('all')
   const [pool1CandidateGroupOpen, setPool1CandidateGroupOpen] = useState<Record<string, boolean>>({})
   const [pool1CandidateGroupExpanded, setPool1CandidateGroupExpanded] = useState<Record<string, boolean>>({})
   const [pool1CandidateGroupModeFilter, setPool1CandidateGroupModeFilter] = useState<Record<string, 'all' | 'actionable' | 'watch'>>({})
@@ -2407,6 +2844,11 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [healthOpen, setHealthOpen] = useState(false)
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResp | null>(null)
   const [runtimeHealthLoading, setRuntimeHealthLoading] = useState(false)
+  const [conceptSnapshotStatus, setConceptSnapshotStatus] = useState<ConceptSnapshotStatusResp | null>(null)
+  const [conceptSnapshotLoading, setConceptSnapshotLoading] = useState(false)
+  const [conceptSnapshotRefreshLoading, setConceptSnapshotRefreshLoading] = useState(false)
+  const [industryMappingCoverage, setIndustryMappingCoverage] = useState<IndustryMappingCoverageResp | null>(null)
+  const [industryMappingCoverageLoading, setIndustryMappingCoverageLoading] = useState(false)
   const pool1ObserveReqInFlight = useRef(false)
   const pool1ObserveReqSeq = useRef(0)
   const pool1DecisionReqInFlight = useRef(false)
@@ -2434,15 +2876,35 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
 
   useEffect(() => {
     const applyUiConfig = (resp: RealtimeUiConfigResp | null) => {
-      const cfg = resp?.data?.pool1_observe_ui
-      if (!cfg) return
-      setPool1ObserveUi({
-        observePollSec: Number(cfg.observe_poll_sec ?? POOL1_OBSERVE_UI_DEFAULT.observePollSec),
-        staleWarnSec: Number(cfg.stale_warn_sec ?? POOL1_OBSERVE_UI_DEFAULT.staleWarnSec),
-        staleErrorSec: Number(cfg.stale_error_sec ?? POOL1_OBSERVE_UI_DEFAULT.staleErrorSec),
-        sampleWarnMin: Number(cfg.sample_warn_min ?? POOL1_OBSERVE_UI_DEFAULT.sampleWarnMin),
-        sampleRecommendMin: Number(cfg.sample_recommend_min ?? POOL1_OBSERVE_UI_DEFAULT.sampleRecommendMin),
-      })
+      const observeCfg = resp?.data?.pool1_observe_ui
+      if (observeCfg) {
+        setPool1ObserveUi({
+          observePollSec: Number(observeCfg.observe_poll_sec ?? POOL1_OBSERVE_UI_DEFAULT.observePollSec),
+          staleWarnSec: Number(observeCfg.stale_warn_sec ?? POOL1_OBSERVE_UI_DEFAULT.staleWarnSec),
+          staleErrorSec: Number(observeCfg.stale_error_sec ?? POOL1_OBSERVE_UI_DEFAULT.staleErrorSec),
+          sampleWarnMin: Number(observeCfg.sample_warn_min ?? POOL1_OBSERVE_UI_DEFAULT.sampleWarnMin),
+          sampleRecommendMin: Number(observeCfg.sample_recommend_min ?? POOL1_OBSERVE_UI_DEFAULT.sampleRecommendMin),
+        })
+      }
+      const rebuildCfg = resp?.data?.pool1_rebuild_ui
+      if (rebuildCfg) {
+        setPool1RebuildUi({
+          enabled: Boolean(rebuildCfg.enabled ?? POOL1_REBUILD_UI_DEFAULT.enabled),
+          requireStage1Pass: Boolean(rebuildCfg.require_stage1_pass ?? POOL1_REBUILD_UI_DEFAULT.requireStage1Pass),
+          minPositionGap: Number(rebuildCfg.min_position_gap ?? POOL1_REBUILD_UI_DEFAULT.minPositionGap),
+          minMinutesAfterReduce: Number(rebuildCfg.min_minutes_after_reduce ?? POOL1_REBUILD_UI_DEFAULT.minMinutesAfterReduce),
+          minSignalStrength: Number(rebuildCfg.min_signal_strength ?? POOL1_REBUILD_UI_DEFAULT.minSignalStrength),
+          addRatio: Number(rebuildCfg.add_ratio ?? POOL1_REBUILD_UI_DEFAULT.addRatio),
+          observeTierAddRatioBias: Number(rebuildCfg.observe_tier_add_ratio_bias ?? POOL1_REBUILD_UI_DEFAULT.observeTierAddRatioBias),
+          fullTierAddRatioBias: Number(rebuildCfg.full_tier_add_ratio_bias ?? POOL1_REBUILD_UI_DEFAULT.fullTierAddRatioBias),
+          softSourceAddRatioBias: Number(rebuildCfg.soft_source_add_ratio_bias ?? POOL1_REBUILD_UI_DEFAULT.softSourceAddRatioBias),
+          coreSourceAddRatioBias: Number(rebuildCfg.core_source_add_ratio_bias ?? POOL1_REBUILD_UI_DEFAULT.coreSourceAddRatioBias),
+          fullTierExtraDelayMinutes: Number(rebuildCfg.full_tier_extra_delay_minutes ?? POOL1_REBUILD_UI_DEFAULT.fullTierExtraDelayMinutes),
+          coreSourceExtraDelayMinutes: Number(rebuildCfg.core_source_extra_delay_minutes ?? POOL1_REBUILD_UI_DEFAULT.coreSourceExtraDelayMinutes),
+          allowLeftSideBuy: Boolean(rebuildCfg.allow_left_side_buy ?? POOL1_REBUILD_UI_DEFAULT.allowLeftSideBuy),
+          allowRightSideBreakout: Boolean(rebuildCfg.allow_right_side_breakout ?? POOL1_REBUILD_UI_DEFAULT.allowRightSideBreakout),
+        })
+      }
     }
 
     const now = Date.now()
@@ -2561,6 +3023,115 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       .finally(() => setRuntimeHealthLoading(false))
   }, [])
 
+  const loadConceptSnapshotStatus = useCallback(() => {
+    setConceptSnapshotLoading(true)
+    axios.get(`${API}/api/realtime/runtime/concept_snapshot_status`)
+      .then(r => setConceptSnapshotStatus(r.data || null))
+      .catch(() => {})
+      .finally(() => setConceptSnapshotLoading(false))
+  }, [])
+
+  const loadIndustryMappingCoverage = useCallback(() => {
+    setIndustryMappingCoverageLoading(true)
+    axios.get(`${API}/api/realtime/runtime/industry_mapping_coverage`, {
+      params: { pool_id: pool.pool_id, limit_unmatched: 500 },
+    })
+      .then(r => setIndustryMappingCoverage(r.data || null))
+      .catch(() => {})
+      .finally(() => setIndustryMappingCoverageLoading(false))
+  }, [pool.pool_id])
+
+  const exportIndustryCoverageCsv = useCallback((kind: 'fallback' | 'unmatched') => {
+    const items = kind === 'fallback'
+      ? (industryMappingCoverage?.fallback_items || [])
+      : (industryMappingCoverage?.unmatched_items || [])
+    if (!items || items.length <= 0) return
+    downloadCsv(
+      `industry_mapping_${kind}_${pool.pool_id}_${Date.now()}.csv`,
+      [
+        'pool_id',
+        'ts_code',
+        'name',
+        'source',
+        'pool_industry',
+        'stock_basic_industry',
+        'em_industry_name',
+        'em_industry_code',
+        'effective_industry',
+        'effective_code',
+        'match_method',
+        'resolved_industry',
+        'resolved_code',
+        'resolved_state',
+      ],
+      items.map((it) => [
+        it.pool_id,
+        it.ts_code,
+        it.name,
+        it.source,
+        it.pool_industry || '',
+        it.stock_basic_industry || '',
+        it.em_industry_name || '',
+        it.em_industry_code || '',
+        it.effective_industry || '',
+        it.effective_code || '',
+        it.match_method || '',
+        it.resolved_industry || '',
+        it.resolved_code || '',
+        it.resolved_state || '',
+      ]),
+    )
+  }, [industryMappingCoverage, pool.pool_id])
+
+  const exportUnmatchedIndustryGroupCsv = useCallback(() => {
+    const items = industryMappingCoverage?.unmatched_items || []
+    if (!items || items.length <= 0) return
+    const grouped = new Map<string, { count: number; sampleTsCode: string; sampleName: string }>()
+    items.forEach((it) => {
+      const key = String(it.effective_industry || it.pool_industry || it.stock_basic_industry || '--').trim() || '--'
+      const prev = grouped.get(key)
+      if (prev) {
+        prev.count += 1
+      } else {
+        grouped.set(key, {
+          count: 1,
+          sampleTsCode: String(it.ts_code || '').trim().toUpperCase(),
+          sampleName: String(it.name || '').trim(),
+        })
+      }
+    })
+    const rows = [...grouped.entries()]
+      .map(([industry, meta]) => ({ industry, ...meta }))
+      .sort((a, b) => b.count - a.count || a.industry.localeCompare(b.industry, 'zh-CN'))
+    if (rows.length <= 0) return
+    downloadCsv(
+      `industry_unmatched_groups_${pool.pool_id}_${Date.now()}.csv`,
+      ['industry', 'count', 'sample_ts_code', 'sample_name'],
+      rows.map((row) => [
+        row.industry,
+        row.count,
+        row.sampleTsCode,
+        row.sampleName,
+      ]),
+    )
+  }, [industryMappingCoverage, pool.pool_id])
+
+  const refreshConceptSnapshot = useCallback(() => {
+    setConceptSnapshotRefreshLoading(true)
+    axios.post(`${API}/api/realtime/runtime/concept_snapshot_refresh`)
+      .then(r => {
+        const payload = r.data || {}
+        if (payload.status) {
+          setConceptSnapshotStatus(payload.status as ConceptSnapshotStatusResp)
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setConceptSnapshotRefreshLoading(false)
+        loadConceptSnapshotStatus()
+      })
+  }, [loadConceptSnapshotStatus])
+
   useEffect(() => {
     if (!diffOpen) return
     loadFastSlowDiff()
@@ -2576,14 +3147,20 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
 
   useEffect(() => {
     loadRuntimeHealth()
+    loadConceptSnapshotStatus()
+    loadIndustryMappingCoverage()
     const preAuction = isPreAuctionStatus(marketStatus.status)
     const baseMs = healthOpen
       ? (preAuction ? 90_000 : (marketStatus.is_open ? 30_000 : 90_000))
       : (preAuction ? 180_000 : (marketStatus.is_open ? 90_000 : 180_000))
     const visFactor = pageVisible ? 1 : 2
-    const timer = setInterval(loadRuntimeHealth, Math.max(15_000, baseMs * visFactor))
+    const timer = setInterval(() => {
+      loadRuntimeHealth()
+      loadConceptSnapshotStatus()
+      loadIndustryMappingCoverage()
+    }, Math.max(15_000, baseMs * visFactor))
     return () => clearInterval(timer)
-  }, [loadRuntimeHealth, healthOpen, marketStatus.is_open, marketStatus.status, pageVisible])
+  }, [loadRuntimeHealth, loadConceptSnapshotStatus, loadIndustryMappingCoverage, healthOpen, marketStatus.is_open, marketStatus.status, pageVisible])
 
   const diffSignalTypeOptions = useMemo(() => {
     const st = new Set<string>()
@@ -2630,6 +3207,8 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     )
   }, [fastSlowDiff, diffRowsFiltered, pool.pool_id])
 
+  const signalMap = new Map(signalRows.map(r => [r.ts_code, r]))
+
   const exportPool1DecisionCsv = useCallback(() => {
     if (pool.pool_id !== 1 || !pool1DecisionSummary) return
     const view = buildPool1DecisionView(
@@ -2639,6 +3218,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       pool1DecisionIndustryFilter,
       pool1DecisionConceptFilter,
       pool1RiskHotwordFilter,
+      signalMap,
     )
     const rows: (string | number | boolean | null | undefined)[][] = []
     view.filteredCandidates.forEach(item => {
@@ -2711,11 +3291,18 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
         item.transition || '',
         item.at_iso || '',
         item.reduce_ratio != null ? `${(Number(item.reduce_ratio) * 100).toFixed(0)}%` : '',
+        item.reduce_source || '',
+        item.reduce_avwap_tier || '',
         item.rebuild_add_ratio != null ? `${(Number(item.rebuild_add_ratio) * 100).toFixed(0)}%` : '',
+        item.rebuild_from_partial_source || '',
+        item.rebuild_from_partial_avwap_tier || '',
+        item.rebuild_add_ratio_bias != null ? `${(Number(item.rebuild_add_ratio_bias) * 100).toFixed(0)}%` : '',
         item.rebuild_after_partial ? 'Y' : '',
         item.rebuild_from_partial_count || '',
         item.exit_after_partial ? 'Y' : '',
         item.exit_partial_count || '',
+        item.exit_reduce_source || '',
+        item.exit_reduce_avwap_tier || '',
         '',
         '',
         '',
@@ -2761,6 +3348,12 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
         '',
         '',
         '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
         item.build_actionable,
         item.build_watch,
         item.clear_actionable,
@@ -2781,12 +3374,12 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
         'row_type', 'trade_date', 'ts_code', 'name', 'board_segment', 'industry', 'core_concept_board',
         'decision', 'decision_label', 'decision_mode', 'decision_mode_label', 'decision_strength', 'position_status', 'position_ratio',
         'reduce_streak', 'reduce_ratio_cum_pct', 'signal_info', 'reason', 'price', 'pct_chg',
-        'transition', 'triggered_at', 'reduce_ratio_pct', 'rebuild_add_ratio_pct', 'rebuild_after_partial', 'rebuild_from_partial_count', 'exit_after_partial', 'exit_partial_count',
+        'transition', 'triggered_at', 'reduce_ratio_pct', 'reduce_source', 'reduce_avwap_tier', 'rebuild_add_ratio_pct', 'rebuild_from_partial_source', 'rebuild_from_partial_avwap_tier', 'rebuild_add_ratio_bias_pct', 'rebuild_after_partial', 'rebuild_from_partial_count', 'exit_after_partial', 'exit_partial_count', 'exit_reduce_source', 'exit_reduce_avwap_tier',
         'build_actionable', 'build_watch', 'clear_actionable', 'clear_watch', 'partial_actionable', 'partial_watch', 'partial_reduce_ratio_sum', 'net_build_actionable', 'net_exposure_change', 'build_ratio_pct', 'clear_ratio_pct',
       ],
       rows,
     )
-  }, [pool.pool_id, pool1DecisionSummary, pool1DecisionFilter, pool1DecisionBoardFilter, pool1DecisionIndustryFilter, pool1DecisionConceptFilter, pool1RiskHotwordFilter])
+  }, [pool.pool_id, pool1DecisionSummary, pool1DecisionFilter, pool1DecisionBoardFilter, pool1DecisionIndustryFilter, pool1DecisionConceptFilter, pool1RiskHotwordFilter, signalMap])
 
   const loadMembers = useCallback(() => {
     axios.get(`${API}/api/realtime/pool/${pool.pool_id}/members`)
@@ -2815,8 +3408,6 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     axios.put(`${API}/api/realtime/pool/${pool.pool_id}/note/${ts_code}`, null, { params: { note } })
       .then(() => loadMembers()).catch(() => {})
   }
-
-  const signalMap = new Map(signalRows.map(r => [r.ts_code, r]))
   const pool1CardRiskTagMap = useMemo(() => {
     if (pool.pool_id !== 1 || !pool1DecisionSummary) {
       return new Map<string, Array<{ text: string; color: string }>>()
@@ -2828,9 +3419,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       pool1DecisionIndustryFilter,
       pool1DecisionConceptFilter,
       'all',
+      signalMap,
     )
     return view.candidateRiskTagMap as Map<string, Array<{ text: string; color: string }>>
-  }, [pool.pool_id, pool1DecisionSummary, pool1DecisionBoardFilter, pool1DecisionIndustryFilter, pool1DecisionConceptFilter])
+  }, [pool.pool_id, pool1DecisionSummary, pool1DecisionBoardFilter, pool1DecisionIndustryFilter, pool1DecisionConceptFilter, signalMap])
 
   const pool1HighRiskBuckets = useMemo(() => {
     const repeatCodes = new Set<string>()
@@ -2845,6 +3437,16 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       '左侧转弱抑制',
       '概念退潮',
       '题材转弱',
+      '高位补跌',
+      '出货结构',
+      '概念热度断崖',
+      '多概念共弱',
+      '行业+概念共弱',
+      '行业退潮',
+      '行业承接转弱',
+      '概念退潮主跌段',
+      '概念承接转弱',
+      '次概念未共振',
     ])
     const repeatTags = new Set([
       '左侧重复退潮',
@@ -2888,10 +3490,49 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       cooldownRatio: suppressedTotal > 0 ? (cooldownCount / suppressedTotal) : 0,
     }
   }, [members, pool1HighRiskBuckets.suppressedCodes, signalMap])
+  const pool1LeftStateStats = useMemo(() => {
+    const stats = {
+      stageAReady: 0,
+      stageBPending: 0,
+      stageCObserve: 0,
+      highPositionCatchdown: 0,
+      distributionStructure: 0,
+      conceptRetreatMain: 0,
+      conceptWeakMain: 0,
+      conceptHeatCliff: 0,
+      conceptJointWeak: 0,
+      conceptNoSupport: 0,
+      industryJointWeak: 0,
+      industryRetreat: 0,
+      industryWeak: 0,
+      industrySupport: 0,
+    }
+    members.forEach((member) => {
+      const tags = derivePool1GuardTags(signalMap.get(member.ts_code)?.signals || [])
+      const has = (text: string) => tags.some(tag => tag.text === text)
+      if (has('A到位')) stats.stageAReady += 1
+      if (has('B未成')) stats.stageBPending += 1
+      if (has('C观察')) stats.stageCObserve += 1
+      if (has('高位补跌')) stats.highPositionCatchdown += 1
+      if (has('出货结构')) stats.distributionStructure += 1
+      if (has('概念退潮主跌段')) stats.conceptRetreatMain += 1
+      if (has('概念承接转弱')) stats.conceptWeakMain += 1
+      if (has('概念热度断崖')) stats.conceptHeatCliff += 1
+      if (has('多概念共弱')) stats.conceptJointWeak += 1
+      if (has('次概念未共振')) stats.conceptNoSupport += 1
+      if (has('行业+概念共弱')) stats.industryJointWeak += 1
+      if (has('行业退潮')) stats.industryRetreat += 1
+      if (has('行业承接转弱')) stats.industryWeak += 1
+      if (has('行业支撑')) stats.industrySupport += 1
+    })
+    return stats
+  }, [members, signalMap])
   const locateMemberCard = useCallback((tsCode: string) => {
     if (!tsCode) return
     setFilterSignal(false)
     setPool1HighRiskMode('all')
+    setIndustryCoverageCardMode('all')
+    setIndustryCoverageIndustryFilter('all')
     setLocateTsCode(tsCode)
     if (locateTimerRef.current) clearTimeout(locateTimerRef.current)
     const tryLocate = (attempt: number) => {
@@ -2906,6 +3547,62 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     }
     window.setTimeout(() => tryLocate(0), 40)
     locateTimerRef.current = setTimeout(() => setLocateTsCode(prev => prev === tsCode ? '' : prev), 3200)
+  }, [])
+
+  const openIndustryCoverageCardView = useCallback((mode: IndustryCoverageCardMode) => {
+    setFilterSignal(false)
+    setPool1HighRiskMode('all')
+    setIndustryCoverageCardMode(mode)
+    setIndustryCoverageIndustryFilter('all')
+    const fallbackItems = industryMappingCoverage?.fallback_items || []
+    const unmatchedItems = industryMappingCoverage?.unmatched_items || []
+    const targetCode = mode === 'fallback'
+      ? String(fallbackItems[0]?.ts_code || '')
+      : mode === 'unmatched'
+        ? String(unmatchedItems[0]?.ts_code || '')
+        : ''
+    if (targetCode) {
+      setLocateTsCode(targetCode)
+      if (locateTimerRef.current) clearTimeout(locateTimerRef.current)
+      const tryLocate = (attempt: number) => {
+        const el = cardRefs.current[targetCode]
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (attempt < 4) window.setTimeout(() => tryLocate(attempt + 1), 120)
+      }
+      window.setTimeout(() => tryLocate(0), 40)
+      locateTimerRef.current = setTimeout(() => setLocateTsCode(prev => prev === targetCode ? '' : prev), 3200)
+    }
+  }, [industryMappingCoverage])
+
+  const openIndustryCoverageIndustryView = useCallback((industry: string, sampleTsCode?: string) => {
+    const targetIndustry = String(industry || '').trim()
+    if (!targetIndustry || targetIndustry === 'all') {
+      setIndustryCoverageCardMode('all')
+      setIndustryCoverageIndustryFilter('all')
+      return
+    }
+    setFilterSignal(false)
+    setPool1HighRiskMode('all')
+    setIndustryCoverageCardMode('unmatched')
+    setIndustryCoverageIndustryFilter(targetIndustry)
+    const targetCode = String(sampleTsCode || '').trim().toUpperCase()
+    if (targetCode) {
+      setLocateTsCode(targetCode)
+      if (locateTimerRef.current) clearTimeout(locateTimerRef.current)
+      const tryLocate = (attempt: number) => {
+        const el = cardRefs.current[targetCode]
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (attempt < 4) window.setTimeout(() => tryLocate(attempt + 1), 120)
+      }
+      window.setTimeout(() => tryLocate(0), 40)
+      locateTimerRef.current = setTimeout(() => setLocateTsCode(prev => prev === targetCode ? '' : prev), 3200)
+    }
   }, [])
 
   const focusPool1Section = useCallback((target: { board?: string; industry?: string; concept?: string }, anchor: 'trajectory' | 'candidate' = 'trajectory') => {
@@ -3012,6 +3709,9 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       if (pool1HighRiskMode === 'repeat' && !pool1HighRiskBuckets.repeatCodes.has(m.ts_code)) return false
       if (pool1HighRiskMode === 'suppressed' && !pool1HighRiskBuckets.suppressedCodes.has(m.ts_code)) return false
     }
+    if (industryCoverageCardMode === 'fallback' && !industryCoverageFallbackCodes.has(m.ts_code)) return false
+    if (industryCoverageCardMode === 'unmatched' && !industryCoverageUnmatchedCodes.has(m.ts_code)) return false
+    if (industryCoverageIndustryFilter !== 'all' && !industryCoverageFilteredCodes.has(m.ts_code)) return false
     return true
   })
 
@@ -3021,6 +3721,80 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   ]
   const healthLevel = runtimeHealth?.level || 'green'
   const healthColor = healthLevel === 'red' ? C.red : healthLevel === 'yellow' ? C.yellow : C.green
+  const conceptSnapshotSource = String(conceptSnapshotStatus?.active_source || '')
+  const conceptSnapshotFresh = Boolean(
+    conceptSnapshotStatus?.runtime?.fresh
+    || conceptSnapshotStatus?.cache?.fresh
+    || conceptSnapshotStatus?.redis?.fresh
+  )
+  const conceptSnapshotColor = !conceptSnapshotStatus
+    ? C.dim
+    : (conceptSnapshotStatus.ok
+      ? (conceptSnapshotFresh ? C.green : C.yellow)
+      : C.red)
+  const conceptSnapshotCount = Number(
+    conceptSnapshotStatus?.runtime?.count
+    || conceptSnapshotStatus?.cache?.count
+    || conceptSnapshotStatus?.redis?.count
+    || 0
+  )
+  const conceptSnapshotUpdatedAt = Number(
+    conceptSnapshotStatus?.active_updated_at
+    || conceptSnapshotStatus?.runtime?.updated_at
+    || conceptSnapshotStatus?.cache?.updated_at
+    || conceptSnapshotStatus?.redis?.updated_at
+    || 0
+  )
+  const industryCoverage = industryMappingCoverage?.coverage || {}
+  const industryCoverageSnapshot = industryMappingCoverage?.snapshot || {}
+  const industryCoverageTables = industryMappingCoverage?.em_tables || {}
+  const industryCoverageMatched = Number(industryCoverage.matched || 0)
+  const industryCoverageUnmatched = Number(industryCoverage.unmatched || 0)
+  const industryCoverageMatchRate = Number(industryCoverage.match_rate || 0)
+  const industryCoverageCodeFirstRate = Number(industryCoverage.code_first_rate || 0)
+  const industryCoverageSourceCounts = industryMappingCoverage?.source_counts || {}
+  const industryCoverageMatchCounts = industryMappingCoverage?.match_counts || {}
+  const industryCoverageUpdatedAt = Number(industryCoverageSnapshot.updated_at || 0)
+  const industryCoverageSource = Array.isArray(industryCoverageSnapshot.sources) && industryCoverageSnapshot.sources.length > 0
+    ? industryCoverageSnapshot.sources.join(', ')
+    : '--'
+  const industryCoverageFallbackItems = industryMappingCoverage?.fallback_items || []
+  const industryCoverageUnmatchedItems = industryMappingCoverage?.unmatched_items || []
+  const industryCoverageFallbackCodes = useMemo(() => new Set(industryCoverageFallbackItems.map((it) => String(it.ts_code || '').trim().toUpperCase()).filter(Boolean)), [industryCoverageFallbackItems])
+  const industryCoverageUnmatchedCodes = useMemo(() => new Set(industryCoverageUnmatchedItems.map((it) => String(it.ts_code || '').trim().toUpperCase()).filter(Boolean)), [industryCoverageUnmatchedItems])
+  const unmatchedIndustryGroups = useMemo(() => {
+    const grouped = new Map<string, { count: number; sampleTsCode: string; sampleName: string }>()
+    industryCoverageUnmatchedItems.forEach((it) => {
+      const key = String(it.effective_industry || it.pool_industry || it.stock_basic_industry || '--').trim() || '--'
+      const prev = grouped.get(key)
+      if (prev) {
+        prev.count += 1
+      } else {
+        grouped.set(key, {
+          count: 1,
+          sampleTsCode: String(it.ts_code || '').trim().toUpperCase(),
+          sampleName: String(it.name || '').trim(),
+        })
+      }
+    })
+    return [...grouped.entries()]
+      .map(([industry, meta]) => ({ industry, ...meta }))
+      .sort((a, b) => b.count - a.count || a.industry.localeCompare(b.industry, 'zh-CN'))
+  }, [industryCoverageUnmatchedItems])
+  const industryCoverageFilteredCodes = useMemo(() => {
+    if (industryCoverageIndustryFilter === 'all') return new Set<string>()
+    return new Set(
+      industryCoverageUnmatchedItems
+        .filter((it) => String(it.effective_industry || it.pool_industry || it.stock_basic_industry || '--').trim() === industryCoverageIndustryFilter)
+        .map((it) => String(it.ts_code || '').trim().toUpperCase())
+        .filter(Boolean),
+    )
+  }, [industryCoverageIndustryFilter, industryCoverageUnmatchedItems])
+  const industryCoverageColor = !industryMappingCoverage
+    ? C.dim
+    : (industryCoverageUnmatched > 0
+      ? (industryCoverageMatchRate >= 95 ? C.yellow : C.red)
+      : C.green)
   const fastSlowHealthItem = (runtimeHealth?.items || []).find((x) => typeof x?.name === 'string' && x.name.startsWith('fast_slow_consistency_pool'))
   const fastSlowHealthDetail = (fastSlowHealthItem && typeof fastSlowHealthItem.detail === 'object')
     ? (fastSlowHealthItem.detail as Record<string, any>)
@@ -3069,6 +3843,22 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
         <div style={{ color: C.dim, fontSize: 11 }}>
           评估: {lastEvalAt ? new Date(lastEvalAt).toLocaleTimeString() : '--'}
         </div>
+        {pool.pool_id === 1 && (
+          <Link
+            to="/realtime-pool1-left-replay"
+            style={{
+              fontSize: 11,
+              color: C.cyan,
+              textDecoration: 'none',
+              border: `1px solid ${C.cyan}`,
+              borderRadius: 4,
+              padding: '2px 8px',
+              background: C.cyanBg,
+            }}
+          >
+            左侧回放页
+          </Link>
+        )}
         {pool.pool_id === 2 && (
           <Link
             to="/realtime-t0-replay"
@@ -3207,6 +3997,9 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             const thObs = pool1Observe.data.threshold_observe || {}
             const thLeft = thObs.left_side_buy || {}
             const thRight = thObs.right_side_breakout || {}
+            const rebuildText = pool1RebuildUi.enabled
+              ? `基准${(pool1RebuildUi.addRatio * 100).toFixed(0)}% · 缺口>=${(pool1RebuildUi.minPositionGap * 100).toFixed(0)}% · 延迟${pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m · 强度>=${pool1RebuildUi.minSignalStrength.toFixed(0)} · 观察${pool1RebuildUi.observeTierAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.observeTierAddRatioBias * 100).toFixed(0)}% · 全清${pool1RebuildUi.fullTierAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.fullTierAddRatioBias * 100).toFixed(0)}% · 软源${pool1RebuildUi.softSourceAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.softSourceAddRatioBias * 100).toFixed(0)}% · 核心${pool1RebuildUi.coreSourceAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.coreSourceAddRatioBias * 100).toFixed(0)}% · 全清延迟+${pool1RebuildUi.fullTierExtraDelayMinutes.toFixed(0)}m · 核心延迟+${pool1RebuildUi.coreSourceExtraDelayMinutes.toFixed(0)}m`
+              : '未启用'
             const thresholdText = (x: any): string => {
               const cur = (x?.current || {}) as Record<string, any>
               const bucket = String(cur.bucket || x?.top_bucket || '--')
@@ -3272,6 +4065,9 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                 <span style={{ color: C.dim, fontSize: 10 }}>
                   阈值: <span style={{ color: C.yellow }}>左{thresholdText(thLeft)}</span> / <span style={{ color: C.yellow }}>右{thresholdText(thRight)}</span>
                 </span>
+                <span style={{ color: C.dim, fontSize: 10 }}>
+                  回补: <span style={{ color: pool1RebuildUi.enabled ? C.cyan : C.dim }}>{rebuildText}</span>
+                </span>
                 {(pool1Observe.trade_date || pool1Observe.updated_at) && (
                   <span style={{ color: freshnessColor, fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span style={{ width: 6, height: 6, borderRadius: 3, background: freshnessColor, display: 'inline-block' }} />
@@ -3313,6 +4109,20 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             const rebuildClearedAgainToday = Number(s.rebuild_cleared_again_today || 0)
             const rebuildSuccessRate = Number(s.rebuild_success_rate || 0)
             const rebuildReduceAgainRate = Number(s.rebuild_reduce_again_rate || 0)
+            const stageAReadyCount = Number(pool1LeftStateStats.stageAReady || 0)
+            const stageBPendingCount = Number(pool1LeftStateStats.stageBPending || 0)
+            const stageCObserveCount = Number(pool1LeftStateStats.stageCObserve || 0)
+            const highCatchdownCount = Number(pool1LeftStateStats.highPositionCatchdown || 0)
+            const distributionStructureCount = Number(pool1LeftStateStats.distributionStructure || 0)
+            const conceptHeatCliffCount = Number(pool1LeftStateStats.conceptHeatCliff || 0)
+            const conceptJointWeakCount = Number(pool1LeftStateStats.conceptJointWeak || 0)
+            const conceptRetreatMainCount = Number(pool1LeftStateStats.conceptRetreatMain || 0)
+            const conceptNoSupportCount = Number(pool1LeftStateStats.conceptNoSupport || 0)
+            const conceptWeakMainCount = Number(pool1LeftStateStats.conceptWeakMain || 0)
+            const industryJointWeakCount = Number(pool1LeftStateStats.industryJointWeak || 0)
+            const industryRetreatCount = Number(pool1LeftStateStats.industryRetreat || 0)
+            const industryWeakCount = Number(pool1LeftStateStats.industryWeak || 0)
+            const industrySupportCount = Number(pool1LeftStateStats.industrySupport || 0)
             const titleParts = [
               `成员:${s.member_count}`,
               `建仓:${s.build_count}`,
@@ -3330,6 +4140,20 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
               `观察级:${s.watch_count}`,
               leftSuppressedCount > 0 ? `左侧抑制:${leftSuppressedCount}(${(leftSuppressedRatio * 100).toFixed(1)}%)` : '',
               leftRepeatSuppressedCount > 0 ? `重复抑制:${leftRepeatSuppressedCount}` : '',
+              stageAReadyCount > 0 ? `A到位:${stageAReadyCount}` : '',
+              stageBPendingCount > 0 ? `B未成:${stageBPendingCount}` : '',
+              stageCObserveCount > 0 ? `C观察:${stageCObserveCount}` : '',
+              highCatchdownCount > 0 ? `高位补跌:${highCatchdownCount}` : '',
+              distributionStructureCount > 0 ? `出货结构:${distributionStructureCount}` : '',
+              conceptHeatCliffCount > 0 ? `概念热度断崖:${conceptHeatCliffCount}` : '',
+              conceptJointWeakCount > 0 ? `多概念共弱:${conceptJointWeakCount}` : '',
+              industryJointWeakCount > 0 ? `行业+概念共弱:${industryJointWeakCount}` : '',
+              industryRetreatCount > 0 ? `行业退潮:${industryRetreatCount}` : '',
+              conceptRetreatMainCount > 0 ? `概念退潮主跌段:${conceptRetreatMainCount}` : '',
+              conceptNoSupportCount > 0 ? `次概念未共振:${conceptNoSupportCount}` : '',
+              industryWeakCount > 0 ? `行业承接转弱:${industryWeakCount}` : '',
+              conceptWeakMainCount > 0 ? `概念承接转弱:${conceptWeakMainCount}` : '',
+              industrySupportCount > 0 ? `行业支撑:${industrySupportCount}` : '',
               cooldownCount > 0 ? `冷却中:${cooldownCount}(${(cooldownRatio * 100).toFixed(1)}%)` : '',
               expiringSoonCount > 0 ? `冷却将尽:${expiringSoonCount}` : '',
               conceptRetreatWatchCount > 0 ? `概念退潮观察:${conceptRetreatWatchCount}` : '',
@@ -3462,6 +4286,248 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                     )}
                   </span>
                 )}
+                {(stageAReadyCount > 0 || stageBPendingCount > 0 || stageCObserveCount > 0 || highCatchdownCount > 0 || distributionStructureCount > 0 || conceptHeatCliffCount > 0 || conceptJointWeakCount > 0 || conceptRetreatMainCount > 0 || conceptNoSupportCount > 0 || conceptWeakMainCount > 0 || industryJointWeakCount > 0 || industryRetreatCount > 0 || industryWeakCount > 0 || industrySupportCount > 0) && (
+                  <span style={{ color: C.dim, fontSize: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {stageAReadyCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('A到位')}
+                        title={pool1GuardTagTitle('A到位')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === 'A到位' ? `${C.cyan}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === 'A到位' ? C.cyan : C.border}`,
+                          color: pool1RiskHotwordFilter === 'A到位' ? C.cyan : C.dim,
+                        }}
+                      >
+                        A到位 {stageAReadyCount}
+                      </button>
+                    )}
+                    {stageBPendingCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('B未成')}
+                        title={pool1GuardTagTitle('B未成')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === 'B未成' ? `${C.yellow}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === 'B未成' ? C.yellow : C.border}`,
+                          color: pool1RiskHotwordFilter === 'B未成' ? C.yellow : C.dim,
+                        }}
+                      >
+                        B未成 {stageBPendingCount}
+                      </button>
+                    )}
+                    {stageCObserveCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('C观察')}
+                        title={pool1GuardTagTitle('C观察')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === 'C观察' ? `${C.yellow}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === 'C观察' ? C.yellow : C.border}`,
+                          color: pool1RiskHotwordFilter === 'C观察' ? C.yellow : C.dim,
+                        }}
+                      >
+                        C观察 {stageCObserveCount}
+                      </button>
+                    )}
+                    {highCatchdownCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('高位补跌')}
+                        title={pool1GuardTagTitle('高位补跌')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '高位补跌' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '高位补跌' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '高位补跌' ? C.red : C.dim,
+                        }}
+                      >
+                        高位补跌 {highCatchdownCount}
+                      </button>
+                    )}
+                    {distributionStructureCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('出货结构')}
+                        title={pool1GuardTagTitle('出货结构')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '出货结构' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '出货结构' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '出货结构' ? C.red : C.dim,
+                        }}
+                      >
+                        出货结构 {distributionStructureCount}
+                      </button>
+                    )}
+                    {conceptHeatCliffCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('概念热度断崖')}
+                        title={pool1GuardTagTitle('概念热度断崖')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '概念热度断崖' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '概念热度断崖' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '概念热度断崖' ? C.red : C.dim,
+                        }}
+                      >
+                        概念热度断崖 {conceptHeatCliffCount}
+                      </button>
+                    )}
+                    {conceptJointWeakCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('多概念共弱')}
+                        title={pool1GuardTagTitle('多概念共弱')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '多概念共弱' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '多概念共弱' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '多概念共弱' ? C.red : C.dim,
+                        }}
+                      >
+                        多概念共弱 {conceptJointWeakCount}
+                      </button>
+                    )}
+                    {industryJointWeakCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('行业+概念共弱')}
+                        title={pool1GuardTagTitle('行业+概念共弱')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '行业+概念共弱' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '行业+概念共弱' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '行业+概念共弱' ? C.red : C.dim,
+                        }}
+                      >
+                        行业+概念共弱 {industryJointWeakCount}
+                      </button>
+                    )}
+                    {industryRetreatCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('行业退潮')}
+                        title={pool1GuardTagTitle('行业退潮')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '行业退潮' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '行业退潮' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '行业退潮' ? C.red : C.dim,
+                        }}
+                      >
+                        行业退潮 {industryRetreatCount}
+                      </button>
+                    )}
+                    {conceptRetreatMainCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('概念退潮主跌段')}
+                        title={pool1GuardTagTitle('概念退潮主跌段')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '概念退潮主跌段' ? `${C.red}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '概念退潮主跌段' ? C.red : C.border}`,
+                          color: pool1RiskHotwordFilter === '概念退潮主跌段' ? C.red : C.dim,
+                        }}
+                      >
+                        概念退潮主跌段 {conceptRetreatMainCount}
+                      </button>
+                    )}
+                    {conceptNoSupportCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('次概念未共振')}
+                        title={pool1GuardTagTitle('次概念未共振')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '次概念未共振' ? `${C.yellow}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '次概念未共振' ? C.yellow : C.border}`,
+                          color: pool1RiskHotwordFilter === '次概念未共振' ? C.yellow : C.dim,
+                        }}
+                      >
+                        次概念未共振 {conceptNoSupportCount}
+                      </button>
+                    )}
+                    {conceptWeakMainCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('概念承接转弱')}
+                        title={pool1GuardTagTitle('概念承接转弱')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '概念承接转弱' ? `${C.yellow}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '概念承接转弱' ? C.yellow : C.border}`,
+                          color: pool1RiskHotwordFilter === '概念承接转弱' ? C.yellow : C.dim,
+                        }}
+                      >
+                        概念承接转弱 {conceptWeakMainCount}
+                      </button>
+                    )}
+                    {industryWeakCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('行业承接转弱')}
+                        title={pool1GuardTagTitle('行业承接转弱')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '行业承接转弱' ? `${C.yellow}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '行业承接转弱' ? C.yellow : C.border}`,
+                          color: pool1RiskHotwordFilter === '行业承接转弱' ? C.yellow : C.dim,
+                        }}
+                      >
+                        行业承接转弱 {industryWeakCount}
+                      </button>
+                    )}
+                    {industrySupportCount > 0 && (
+                      <button
+                        onClick={() => openPool1RiskHotwordFromCard('行业支撑')}
+                        title={pool1GuardTagTitle('行业支撑')}
+                        style={{
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                          borderRadius: 999,
+                          background: pool1RiskHotwordFilter === '行业支撑' ? `${C.green}12` : C.bg,
+                          border: `1px solid ${pool1RiskHotwordFilter === '行业支撑' ? C.green : C.border}`,
+                          color: pool1RiskHotwordFilter === '行业支撑' ? C.green : C.dim,
+                        }}
+                      >
+                        行业支撑 {industrySupportCount}
+                      </button>
+                    )}
+                  </span>
+                )}
                 {checkedAtTs > 0 && (
                   <span style={{ color: C.dim, fontSize: 10 }}>
                     {new Date(checkedAtTs * 1000).toLocaleTimeString()} · {formatAgeText(checkedAtTs)}
@@ -3545,6 +4611,62 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             </button>
           </>
         )}
+        <button
+          onClick={() => {
+            setIndustryCoverageIndustryFilter('all')
+            setIndustryCoverageCardMode(prev => prev === 'fallback' ? 'all' : 'fallback')
+          }}
+          style={{
+            padding: '3px 8px',
+            fontSize: 11,
+            cursor: 'pointer',
+            borderRadius: 4,
+            background: industryCoverageCardMode === 'fallback' ? 'rgba(0,200,200,0.10)' : C.bg,
+            border: `1px solid ${industryCoverageCardMode === 'fallback' ? C.cyan : C.border}`,
+            color: industryCoverageCardMode === 'fallback' ? C.cyan : C.dim,
+          }}
+          title={`只看行业映射 fallback 股票卡片，当前 ${industryCoverageFallbackCodes.size} 只`}
+        >
+          fallback卡片 {industryCoverageFallbackCodes.size}
+        </button>
+        <button
+          onClick={() => {
+            setIndustryCoverageIndustryFilter('all')
+            setIndustryCoverageCardMode(prev => prev === 'unmatched' ? 'all' : 'unmatched')
+          }}
+          style={{
+            padding: '3px 8px',
+            fontSize: 11,
+            cursor: 'pointer',
+            borderRadius: 4,
+            background: industryCoverageCardMode === 'unmatched' ? 'rgba(234,179,8,0.10)' : C.bg,
+            border: `1px solid ${industryCoverageCardMode === 'unmatched' ? C.yellow : C.border}`,
+            color: industryCoverageCardMode === 'unmatched' ? C.yellow : C.dim,
+          }}
+          title={`只看行业映射未命中股票卡片，当前 ${industryCoverageUnmatchedCodes.size} 只`}
+        >
+          未命中卡片 {industryCoverageUnmatchedCodes.size}
+        </button>
+        {industryCoverageIndustryFilter !== 'all' && (
+          <button
+            onClick={() => {
+              setIndustryCoverageIndustryFilter('all')
+              setIndustryCoverageCardMode('all')
+            }}
+            style={{
+              padding: '3px 8px',
+              fontSize: 11,
+              cursor: 'pointer',
+              borderRadius: 4,
+              background: 'rgba(234,179,8,0.10)',
+              border: `1px solid ${C.yellow}`,
+              color: C.yellow,
+            }}
+            title="清除未命中行业视角"
+          >
+            行业视角:{industryCoverageIndustryFilter}
+          </button>
+        )}
         <button onClick={() => setCompact(!compact)}
           style={{ padding: '3px 8px', fontSize: 11, cursor: 'pointer', borderRadius: 4, background: C.bg, border: `1px solid ${C.border}`, color: compact ? C.cyan : C.dim }}>
           {compact ? '展开' : '紧凑'}
@@ -3568,6 +4690,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             pool1DecisionIndustryFilter,
             pool1DecisionConceptFilter,
             pool1RiskHotwordFilter,
+            signalMap,
           )
           const filteredCandidates = view.filteredCandidates
           const filteredTransitions = view.filteredTransitions
@@ -3721,7 +4844,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                     </span>
                   )}
                   {(candidateRiskTagMap.get(item.ts_code) || []).map((tag, tagIdx) => (
-                    <span key={`${item.ts_code}-${tag.text}-${tagIdx}`} style={{
+                    <span key={`${item.ts_code}-${tag.text}-${tagIdx}`} title={pool1GuardTagTitle(tag.text)} style={{
                       padding: '1px 6px',
                       borderRadius: 999,
                       border: `1px solid ${tag.color}`,
@@ -3881,6 +5004,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                         <button
                           key={`risk-filter-${tag.text}`}
                           onClick={() => setPool1RiskHotwordFilter(tag.text)}
+                          title={pool1GuardTagTitle(tag.text)}
                           style={{
                             padding: '2px 8px',
                             fontSize: 10,
@@ -4132,8 +5256,28 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                           {typeof item.reduce_ratio === 'number' && item.reduce_ratio > 0 && (
                             <span style={{ color: C.yellow, fontSize: 10 }}>减仓{(Number(item.reduce_ratio) * 100).toFixed(0)}%</span>
                           )}
+                          {item.reduce_source && (
+                            <span style={{ color: C.yellow, fontSize: 10 }}>减仓源:{item.reduce_source}</span>
+                          )}
+                          {item.reduce_avwap_tier && (
+                            <span style={{ color: C.yellow, fontSize: 10 }}>减仓层级:{item.reduce_avwap_tier}</span>
+                          )}
                           {typeof item.rebuild_add_ratio === 'number' && item.rebuild_add_ratio > 0 && (
                             <span style={{ color: C.cyan, fontSize: 10 }}>回补{(Number(item.rebuild_add_ratio) * 100).toFixed(0)}%</span>
+                          )}
+                          {item.rebuild_from_partial_source && (
+                            <span style={{ color: C.cyan, fontSize: 10 }}>回补源:{item.rebuild_from_partial_source}</span>
+                          )}
+                          {item.rebuild_from_partial_avwap_tier && (
+                            <span style={{ color: C.cyan, fontSize: 10 }}>回补层级:{item.rebuild_from_partial_avwap_tier}</span>
+                          )}
+                          {typeof item.rebuild_add_ratio_bias === 'number' && Math.abs(Number(item.rebuild_add_ratio_bias || 0)) > 0.001 && (
+                            <span style={{ color: Number(item.rebuild_add_ratio_bias || 0) >= 0 ? C.cyan : C.red, fontSize: 10 }}>
+                              回补偏置{Number(item.rebuild_add_ratio_bias || 0) >= 0 ? '+' : ''}{(Number(item.rebuild_add_ratio_bias || 0) * 100).toFixed(0)}%
+                            </span>
+                          )}
+                          {item.exit_reduce_source && (
+                            <span style={{ color: C.red, fontSize: 10 }}>清前减仓源:{item.exit_reduce_source}</span>
                           )}
                           {Number(item.reduce_streak || 0) >= 2 && (
                             <span style={{ color: C.yellow, fontSize: 10 }}>连减{Number(item.reduce_streak || 0)}次</span>
@@ -4295,6 +5439,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                           'candidate',
                         )
                       }}
+                      title={pool1GuardTagTitle(tag.text)}
                       style={{
                         padding: '2px 8px',
                         borderRadius: 999,
@@ -4775,15 +5920,313 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             </span>
             <div style={{ flex: 1 }} />
             <button
-              onClick={loadRuntimeHealth}
+              onClick={() => { loadRuntimeHealth(); loadConceptSnapshotStatus(); loadIndustryMappingCoverage() }}
               style={{ fontSize: 10, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, padding: '2px 6px', cursor: 'pointer' }}
             >
               刷新
+            </button>
+            <button
+              onClick={refreshConceptSnapshot}
+              disabled={conceptSnapshotRefreshLoading}
+              style={{
+                fontSize: 10,
+                background: C.bg,
+                border: `1px solid ${conceptSnapshotRefreshLoading ? C.yellow : C.border}`,
+                borderRadius: 3,
+                color: conceptSnapshotRefreshLoading ? C.yellow : C.cyan,
+                padding: '2px 6px',
+                cursor: conceptSnapshotRefreshLoading ? 'default' : 'pointer',
+                opacity: conceptSnapshotRefreshLoading ? 0.85 : 1,
+              }}
+            >
+              {conceptSnapshotRefreshLoading ? '强刷中...' : '强刷概念'}
             </button>
           </div>
           <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             {runtimeHealthLoading && <div style={{ color: C.dim, fontSize: 11 }}>加载中...</div>}
             {!runtimeHealthLoading && !runtimeHealth && <div style={{ color: C.dim, fontSize: 11 }}>暂无健康数据</div>}
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              fontSize: 10,
+              fontFamily: 'monospace',
+              background: 'rgba(0,0,0,0.2)',
+              border: `1px solid ${C.border}`,
+              borderRadius: 4,
+              padding: '6px 8px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 4, background: conceptSnapshotColor, display: 'inline-block' }} />
+                <span style={{ color: C.bright, minWidth: 180 }}>concept_snapshot_status</span>
+                <span style={{ color: conceptSnapshotColor, fontWeight: 700 }}>
+                  {conceptSnapshotLoading ? 'LOADING' : (conceptSnapshotStatus?.ok ? 'OK' : 'WARN')}
+                </span>
+                <span style={{ color: C.dim }}>
+                  {conceptSnapshotSource || '--'} · {conceptSnapshotCount}条
+                  {conceptSnapshotUpdatedAt > 0 ? ` · ${formatTimeText(conceptSnapshotUpdatedAt)} (${formatAgeText(conceptSnapshotUpdatedAt)})` : ''}
+                </span>
+              </div>
+              {conceptSnapshotStatus && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 6 }}>
+                  <div style={{ color: C.dim }}>
+                    runtime: <span style={{ color: conceptSnapshotStatus.runtime?.fresh ? C.green : C.text }}>
+                      {`${conceptSnapshotStatus.runtime?.count || 0}条 / ${conceptSnapshotStatus.runtime?.sources?.join(', ') || '--'}`}
+                    </span>
+                    {conceptSnapshotStatus.runtime?.updated_at ? ` · ${formatAgeText(Number(conceptSnapshotStatus.runtime.updated_at))}` : ''}
+                  </div>
+                  <div style={{ color: C.dim }}>
+                    cache: <span style={{ color: conceptSnapshotStatus.cache?.fresh ? C.green : C.text }}>
+                      {`${conceptSnapshotStatus.cache?.count || 0}条 / ${conceptSnapshotStatus.cache?.sources?.join(', ') || '--'}`}
+                    </span>
+                    {conceptSnapshotStatus.cache?.updated_at ? ` · ${formatAgeText(Number(conceptSnapshotStatus.cache.updated_at))}` : ''}
+                  </div>
+                  <div style={{ color: C.dim }}>
+                    redis: <span style={{ color: conceptSnapshotStatus.redis?.fresh ? C.green : (conceptSnapshotStatus.redis?.ready ? C.text : C.yellow) }}>
+                      {`${conceptSnapshotStatus.redis?.count || 0}条 / ${conceptSnapshotStatus.redis?.sources?.join(', ') || '--'}`}
+                    </span>
+                    {conceptSnapshotStatus.redis?.updated_at ? ` · ${formatAgeText(Number(conceptSnapshotStatus.redis.updated_at))}` : ''}
+                  </div>
+                  <div style={{ color: C.dim }}>
+                    ttl: <span style={{ color: C.text }}>{String(conceptSnapshotStatus.refresh_ttl_sec ?? '--')}s</span>
+                    {' / '}off: <span style={{ color: C.text }}>{String(conceptSnapshotStatus.off_session_refresh_sec ?? '--')}s</span>
+                  </div>
+                </div>
+              )}
+              {conceptSnapshotStatus?.cache?.error && (
+                <div style={{ color: C.yellow, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                  最近错误: {String(conceptSnapshotStatus.cache.error)}
+                </div>
+              )}
+              {!conceptSnapshotStatus && !conceptSnapshotLoading && (
+                <div style={{ color: C.dim }}>暂无概念生态快照状态</div>
+              )}
+            </div>
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              fontSize: 10,
+              fontFamily: 'monospace',
+              background: 'rgba(0,0,0,0.2)',
+              border: `1px solid ${C.border}`,
+              borderRadius: 4,
+              padding: '6px 8px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 4, background: industryCoverageColor, display: 'inline-block' }} />
+                <span style={{ color: C.bright, minWidth: 180 }}>industry_mapping_coverage</span>
+                <span style={{ color: industryCoverageColor, fontWeight: 700 }}>
+                  {industryMappingCoverageLoading ? 'LOADING' : (industryMappingCoverage?.ok ? 'OK' : 'WARN')}
+                </span>
+                <span style={{ color: C.dim }}>
+                  匹配 {industryCoverageMatched} / {industryCoverageMatched + industryCoverageUnmatched}
+                  {' · '}命中率 {industryCoverageMatchRate.toFixed(2)}%
+                  {' · '}代码优先 {industryCoverageCodeFirstRate.toFixed(2)}%
+                  {industryCoverageUpdatedAt > 0 ? ` · ${formatTimeText(industryCoverageUpdatedAt)} (${formatAgeText(industryCoverageUpdatedAt)})` : ''}
+                </span>
+              </div>
+              {industryMappingCoverage && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 6 }}>
+                  <div style={{ color: C.dim }}>
+                    em表: <span style={{ color: C.text }}>
+                      {`${Number(industryCoverageTables.board_count || 0)}板块 / ${Number(industryCoverageTables.member_count || 0)}成分`}
+                    </span>
+                    {' · '}name: <span style={{ color: C.text }}>{Number(industryCoverageTables.mapped_name_count || 0)}</span>
+                    {' / '}code: <span style={{ color: C.text }}>{Number(industryCoverageTables.mapped_code_count || 0)}</span>
+                  </div>
+                  <div style={{ color: C.dim }}>
+                    source: <span style={{ color: C.text }}>
+                      {`em ${Number(industryCoverageSourceCounts.em_industry_member || 0)} / basic ${Number(industryCoverageSourceCounts.stock_basic_fallback || 0)} / pool ${Number(industryCoverageSourceCounts.monitor_pool_fallback || 0)} / miss ${Number(industryCoverageSourceCounts.missing || 0)}`}
+                    </span>
+                  </div>
+                  <div style={{ color: C.dim }}>
+                    match: <span style={{ color: C.text }}>
+                      {`code ${Number(industryCoverageMatchCounts.code || 0)} / exact ${Number(industryCoverageMatchCounts.exact || 0)} / alias ${Number(industryCoverageMatchCounts.alias || 0)} / fuzzy ${Number(industryCoverageMatchCounts.fuzzy || 0)} / unmatched ${Number(industryCoverageMatchCounts.unmatched || 0)}`}
+                    </span>
+                  </div>
+                  <div style={{ color: C.dim }}>
+                    snapshot: <span style={{ color: C.text }}>
+                      {`${Number(industryCoverageSnapshot.count || 0)}条 / ${industryCoverageSource}`}
+                    </span>
+                    {industryCoverageUpdatedAt > 0 ? ` · ${formatAgeText(industryCoverageUpdatedAt)}` : ''}
+                  </div>
+                </div>
+              )}
+              {industryMappingCoverage && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  <button
+                    onClick={() => exportIndustryCoverageCsv('fallback')}
+                    disabled={industryCoverageFallbackItems.length <= 0}
+                    style={{
+                      fontSize: 10,
+                      background: C.bg,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 3,
+                      color: industryCoverageFallbackItems.length > 0 ? C.text : C.dim,
+                      padding: '2px 6px',
+                      cursor: industryCoverageFallbackItems.length > 0 ? 'pointer' : 'default',
+                    }}
+                  >
+                    导出 fallback CSV
+                  </button>
+                  <button
+                    onClick={() => exportIndustryCoverageCsv('unmatched')}
+                    disabled={industryCoverageUnmatchedItems.length <= 0}
+                    style={{
+                      fontSize: 10,
+                      background: C.bg,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 3,
+                      color: industryCoverageUnmatchedItems.length > 0 ? C.text : C.dim,
+                      padding: '2px 6px',
+                      cursor: industryCoverageUnmatchedItems.length > 0 ? 'pointer' : 'default',
+                    }}
+                  >
+                    导出未命中 CSV
+                  </button>
+                  <button
+                    onClick={() => openIndustryCoverageCardView('fallback')}
+                    disabled={industryCoverageFallbackItems.length <= 0}
+                    style={{
+                      fontSize: 10,
+                      background: C.bg,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 3,
+                      color: industryCoverageFallbackItems.length > 0 ? C.cyan : C.dim,
+                      padding: '2px 6px',
+                      cursor: industryCoverageFallbackItems.length > 0 ? 'pointer' : 'default',
+                    }}
+                  >
+                    只看 fallback 卡片
+                  </button>
+                  <button
+                    onClick={() => openIndustryCoverageCardView('unmatched')}
+                    disabled={industryCoverageUnmatchedItems.length <= 0}
+                    style={{
+                      fontSize: 10,
+                      background: C.bg,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 3,
+                      color: industryCoverageUnmatchedItems.length > 0 ? C.yellow : C.dim,
+                      padding: '2px 6px',
+                      cursor: industryCoverageUnmatchedItems.length > 0 ? 'pointer' : 'default',
+                    }}
+                  >
+                    只看未命中卡片
+                  </button>
+                </div>
+              )}
+              {industryMappingCoverage && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 6 }}>
+                  <div style={{ color: C.dim, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                    fallback样本:
+                    {' '}
+                    <span style={{ color: C.text }}>
+                      {industryCoverageFallbackItems.length > 0 ? industryCoverageFallbackItems.slice(0, 5).map((it, idx) => (
+                        <React.Fragment key={`${it.ts_code}-${idx}`}>
+                          {idx > 0 && <span style={{ color: C.dim }}> · </span>}
+                          <button
+                            onClick={() => locateMemberCard(it.ts_code)}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              padding: 0,
+                              color: C.cyan,
+                              cursor: 'pointer',
+                              fontSize: 10,
+                              fontFamily: 'monospace',
+                            }}
+                            title={`${it.name || it.ts_code} · ${it.source}`}
+                          >
+                            {`${it.ts_code}:${it.source}`}
+                          </button>
+                        </React.Fragment>
+                      )) : '--'}
+                    </span>
+                  </div>
+                  <div style={{ color: C.dim, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                    未命中样本:
+                    {' '}
+                    <span style={{ color: industryCoverageUnmatched > 0 ? C.yellow : C.text }}>
+                      {industryCoverageUnmatchedItems.length > 0 ? industryCoverageUnmatchedItems.slice(0, 5).map((it, idx) => (
+                        <React.Fragment key={`${it.ts_code}-${idx}`}>
+                          {idx > 0 && <span style={{ color: C.dim }}> · </span>}
+                          <button
+                            onClick={() => locateMemberCard(it.ts_code)}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              padding: 0,
+                              color: C.yellow,
+                              cursor: 'pointer',
+                              fontSize: 10,
+                              fontFamily: 'monospace',
+                            }}
+                            title={`${it.name || it.ts_code} · ${it.effective_industry || '--'}`}
+                          >
+                            {`${it.ts_code}:${it.effective_industry || '--'}`}
+                          </button>
+                        </React.Fragment>
+                      )) : '--'}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {unmatchedIndustryGroups.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ color: C.dim }}>未命中行业聚合:</div>
+                    <button
+                      onClick={exportUnmatchedIndustryGroupCsv}
+                      style={{
+                        fontSize: 10,
+                        background: C.bg,
+                        border: `1px solid ${C.border}`,
+                        borderRadius: 3,
+                        color: C.text,
+                        padding: '2px 6px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      导出聚合 CSV
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {unmatchedIndustryGroups.slice(0, 8).map((row) => (
+                      <button
+                        key={row.industry}
+                        onClick={() => openIndustryCoverageIndustryView(row.industry, row.sampleTsCode)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          fontSize: 10,
+                          background: industryCoverageIndustryFilter === row.industry ? 'rgba(234,179,8,0.16)' : 'rgba(234,179,8,0.08)',
+                          border: `1px solid ${industryCoverageIndustryFilter === row.industry ? C.yellow : C.border}`,
+                          borderRadius: 999,
+                          color: C.yellow,
+                          padding: '2px 8px',
+                          cursor: 'pointer',
+                        }}
+                        title={`${row.industry} · ${row.count}只 · 示例 ${row.sampleName || row.sampleTsCode}`}
+                      >
+                        <span>{row.industry}</span>
+                        <span style={{ color: C.dim }}>{row.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {industryCoverageSnapshot.error && (
+                <div style={{ color: C.yellow, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                  最近错误: {String(industryCoverageSnapshot.error)}
+                </div>
+              )}
+              {!industryMappingCoverage && !industryMappingCoverageLoading && (
+                <div style={{ color: C.dim }}>暂无行业映射覆盖率数据</div>
+              )}
+            </div>
             {!runtimeHealthLoading && runtimeHealth && (runtimeHealth.items || []).map((it, idx) => {
               const lvl = it.level
               const lvlColor = lvl === 'red' ? C.red : lvl === 'yellow' ? C.yellow : C.green
@@ -5142,7 +6585,8 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
               <StockCard member={m} signalRow={signalMap.get(m.ts_code)}
                 tick={tickMap[m.ts_code]} txns={txnsMap[m.ts_code] || []} tickHistory={tickHistoryMap[m.ts_code] || []}
                 compact={compact} onRemove={() => removeMember(m.ts_code)} onUpdateNote={(note) => updateNote(m.ts_code, note)} poolId={pool.pool_id}
-                highlighted={locateTsCode === m.ts_code}
+                highlighted={locateTsCode === m.ts_code || (industryCoverageIndustryFilter !== 'all' && industryCoverageFilteredCodes.has(m.ts_code))}
+                conceptSnapshotStatus={conceptSnapshotStatus}
                 pool1RiskTags={Array.from(pool1CardRiskTagMap.get(m.ts_code) || [])}
                 activePool1RiskHotword={pool1RiskHotwordFilter}
                 onSelectPool1RiskHotword={openPool1RiskHotwordFromCard} />
@@ -5207,9 +6651,10 @@ function AddStockBox({ onAdd }: { onAdd: (s: SearchResult) => void }) {
 }
 
 /* ===== 股票监控卡片 ===== */
-function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHistory, compact, onRemove, onUpdateNote, poolId, highlighted, pool1RiskTags = [], activePool1RiskHotword = 'all', onSelectPool1RiskHotword }: {
+function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHistory, compact, onRemove, onUpdateNote, poolId, highlighted, conceptSnapshotStatus, pool1RiskTags = [], activePool1RiskHotword = 'all', onSelectPool1RiskHotword }: {
   member: Member; signalRow?: SignalRow; tick?: TickData; txns: Txn[]; tickHistory?: TickDataPoint[]
   compact: boolean; onRemove: () => void; onUpdateNote: (note: string) => void; poolId: number; highlighted?: boolean
+  conceptSnapshotStatus?: ConceptSnapshotStatusResp | null
   pool1RiskTags?: Array<{ text: string; color: string }>; activePool1RiskHotword?: string
   onSelectPool1RiskHotword?: (tag: string) => void
 }) {
@@ -5297,20 +6742,35 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
     ? '执行级'
     : (pool1DecisionMode === 'watch' ? '观察级' : '中性')
   const pool1GuardTags = poolId === 1 ? derivePool1GuardTags(signals) : []
+  const dedupedPool1RiskTags = pool1RiskTags.filter(tag => !pool1GuardTags.some(guardTag => guardTag.text === tag.text))
   const pool1RecentFailBadge = poolId === 1 ? derivePool1RecentFailBadge(signals) : null
   const pool1RepeatBadge = poolId === 1 ? derivePool1RepeatBadge(signals) : null
   const pool1CooldownBadge = poolId === 1 ? derivePool1CooldownBadge(signals) : null
-  const hasSeverePool1Guard = pool1GuardTags.some(tag => tag.text === '左侧重复退潮')
+  const hasSeverePool1Guard = pool1GuardTags.some(tag => (
+    tag.text === '左侧重复退潮'
+    || tag.text === '高位补跌'
+    || tag.text === '出货结构'
+    || tag.text === '概念热度断崖'
+    || tag.text === '多概念共弱'
+    || tag.text === '行业+概念共弱'
+    || tag.text === '行业退潮'
+    || tag.text === '概念退潮主跌段'
+  ))
   const hasWarnPool1Guard = pool1GuardTags.some(tag => (
     tag.text === '左侧重复转弱'
     || tag.text === '左侧退潮抑制'
     || tag.text === '左侧转弱抑制'
     || tag.text === '概念退潮'
+    || tag.text === '次概念未共振'
+    || tag.text === '行业承接转弱'
+    || tag.text === '概念承接转弱'
     || tag.text === '题材转弱'
+    || tag.text === 'B未成'
+    || tag.text === 'C观察'
   ))
   const pool1GuardDot = hasSeverePool1Guard
-    ? { color: C.red, title: '左侧重复退潮抑制中' }
-    : (hasWarnPool1Guard ? { color: C.yellow, title: '左侧/题材抑制中' } : null)
+    ? { color: C.red, title: '左侧高风险抑制中' }
+    : (hasWarnPool1Guard ? { color: C.yellow, title: '左侧回收/生态仍在观察中' } : null)
   const conceptTags = (() => {
     const seen = new Set<string>()
     const tags: string[] = []
@@ -5504,6 +6964,7 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
                     <button
                       key={`${member.ts_code}-guard-${tag.text}-${idx}`}
                       onClick={() => onSelectPool1RiskHotword?.(tag.text)}
+                      title={pool1GuardTagTitle(tag.text)}
                       style={{
                         padding: '1px 6px',
                         borderRadius: 999,
@@ -5521,12 +6982,13 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
                   ))}
                 </div>
               )}
-              {pool1RiskTags.length > 0 && (
+              {dedupedPool1RiskTags.length > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                  {pool1RiskTags.map((tag, idx) => (
+                  {dedupedPool1RiskTags.map((tag, idx) => (
                     <button
                       key={`${member.ts_code}-${tag.text}-${idx}`}
                       onClick={() => onSelectPool1RiskHotword?.(tag.text)}
+                      title={pool1GuardTagTitle(tag.text)}
                       style={{
                         padding: '1px 6px',
                         borderRadius: 999,
@@ -5657,6 +7119,7 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
           signal={selectedSignal}
           stockCode={member.ts_code}
           stockName={member.name}
+          conceptSnapshotStatus={conceptSnapshotStatus}
           onClose={() => setSelectedSignal(null)}
         />
       )}
@@ -6093,10 +7556,11 @@ function boardSegmentLabel(board?: string | null): string {
   return b || '--'
 }
 
-function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
+function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus, onClose }: {
   signal: Signal
   stockCode: string
   stockName: string
+  conceptSnapshotStatus?: ConceptSnapshotStatusResp | null
   onClose: () => void
 }) {
   const details = signal.details && typeof signal.details === 'object' ? signal.details as Record<string, any> : {}
@@ -6110,8 +7574,36 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
   const conceptEcology = details.concept_ecology && typeof details.concept_ecology === 'object'
     ? details.concept_ecology as Record<string, any>
     : (threshold?.concept_ecology && typeof threshold.concept_ecology === 'object' ? threshold.concept_ecology as Record<string, any> : null)
+  const industryEcology = details.industry_ecology && typeof details.industry_ecology === 'object'
+    ? details.industry_ecology as Record<string, any>
+    : (threshold?.industry_ecology && typeof threshold.industry_ecology === 'object' ? threshold.industry_ecology as Record<string, any> : null)
+  const runtimeConceptActiveSource = String(conceptSnapshotStatus?.active_source || '--')
+  const runtimeConceptUpdatedAt = Number(
+    conceptSnapshotStatus?.active_updated_at
+    || conceptSnapshotStatus?.runtime?.updated_at
+    || conceptSnapshotStatus?.cache?.updated_at
+    || conceptSnapshotStatus?.redis?.updated_at
+    || 0
+  )
+  const runtimeConceptCount = Number(
+    conceptSnapshotStatus?.runtime?.count
+    || conceptSnapshotStatus?.cache?.count
+    || conceptSnapshotStatus?.redis?.count
+    || 0
+  )
+  const runtimeConceptFresh = Boolean(
+    conceptSnapshotStatus?.runtime?.fresh
+    || conceptSnapshotStatus?.cache?.fresh
+    || conceptSnapshotStatus?.redis?.fresh
+  )
   const leftStreakGuard = details.left_streak_guard && typeof details.left_streak_guard === 'object'
     ? details.left_streak_guard as Record<string, any>
+    : null
+  const leftStateMachine = details.left_state_machine && typeof details.left_state_machine === 'object'
+    ? details.left_state_machine as Record<string, any>
+    : null
+  const leftReclaim = details.left_reclaim && typeof details.left_reclaim === 'object'
+    ? details.left_reclaim as Record<string, any>
     : null
   const timingClearDetails = signal.type === 'timing_clear' ? details : null
   const antiChurn = details.anti_churn && typeof details.anti_churn === 'object' ? details.anti_churn as Record<string, any> : null
@@ -6127,6 +7619,15 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
   const pool1Position = details.pool1_position && typeof details.pool1_position === 'object'
     ? details.pool1_position as Record<string, any>
     : null
+  const rebuildMode = Boolean(details.rebuild_mode)
+  const rebuildAddRatio = Number(details.rebuild_add_ratio ?? NaN)
+  const rebuildAddRatioBase = Number(details.rebuild_add_ratio_base ?? NaN)
+  const rebuildAddRatioBias = Number(details.rebuild_add_ratio_bias ?? NaN)
+  const rebuildMinDelayBaseMin = Number(details.rebuild_min_delay_base_min ?? NaN)
+  const rebuildMinDelayEffectiveMin = Number(details.rebuild_min_delay_effective_min ?? NaN)
+  const rebuildDelayBiasMin = Number(details.rebuild_delay_bias_min ?? NaN)
+  const rebuildLinkedPartialSource = String(details.rebuild_linked_partial_source || '--')
+  const rebuildLinkedPartialTier = String(details.rebuild_linked_partial_tier || '--')
   const veto = typeof details.veto === 'string' ? details.veto : ''
   const vetoLabel = veto ? guardVetoLabel(veto) : ''
   const vetoColor = veto ? guardVetoColor(veto) : C.dim
@@ -6158,6 +7659,10 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
   const clearFamilyRaw = timingClearDetails ? String(timingClearDetails.clear_family || '--') : '--'
   const clearLevelRaw = timingClearDetails ? String(timingClearDetails.clear_level || timingClearDetails.clear_level_hint || '--') : '--'
   const clearReduceRatio = timingClearDetails ? Number(timingClearDetails.suggest_reduce_ratio ?? NaN) : NaN
+  const clearReduceRatioSource = timingClearDetails ? String(timingClearDetails.reduce_ratio_source || '--') : '--'
+  const clearReduceRatioComponents = timingClearDetails && Array.isArray(timingClearDetails.reduce_ratio_components)
+    ? timingClearDetails.reduce_ratio_components as any[]
+    : []
   const clearAtrBucket = timingClearDetails ? String(timingClearDetails.atr_bucket || '--') : '--'
   const timingClearAnchor = timingClearDetails && timingClearDetails.entry_anchor && typeof timingClearDetails.entry_anchor === 'object'
     ? timingClearDetails.entry_anchor as Record<string, any>
@@ -6176,6 +7681,17 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
   const clearEventAnchorLost = Boolean(timingClearAnchor?.event_anchor_lost)
   const clearEventAnchorReason = timingClearAnchor ? String(timingClearAnchor.event_anchor_reason || '--') : '--'
   const clearAnchorReason = timingClearAnchor ? String(timingClearAnchor.reason || '--') : '--'
+  const clearSessionAvwap = timingClearAnchor ? Number(timingClearAnchor.session_avwap ?? NaN) : NaN
+  const clearAvwapControlCount = timingClearAnchor ? Number(timingClearAnchor.avwap_control_count ?? NaN) : NaN
+  const clearAvwapControlLabels = timingClearAnchor && Array.isArray(timingClearAnchor.avwap_control_labels)
+    ? timingClearAnchor.avwap_control_labels as any[]
+    : []
+  const clearAvwapLossLabels = timingClearAnchor && Array.isArray(timingClearAnchor.avwap_loss_labels)
+    ? timingClearAnchor.avwap_loss_labels as any[]
+    : []
+  const clearAvwapFlowShift = Boolean(timingClearDetails?.avwap_flow_shift)
+  const clearAvwapExitTier = timingClearDetails ? String(timingClearDetails.avwap_exit_tier || '--') : '--'
+  const clearAvwapExitReason = timingClearDetails ? String(timingClearDetails.avwap_exit_reason || '--') : '--'
   const clearSupportBandLow = timingClearAnchor ? Number(timingClearAnchor.support_band_low ?? NaN) : NaN
   const clearSupportBandHigh = timingClearAnchor ? Number(timingClearAnchor.support_band_high ?? NaN) : NaN
   const clearSupportAnchorType = timingClearAnchor ? String(timingClearAnchor.support_anchor_type || '--') : '--'
@@ -6201,6 +7717,18 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
   const clearFamilyLabel = clearFamilyLabelMap[clearFamilyRaw] || clearFamilyRaw
   const clearLevelLabel = clearLevelLabelMap[clearLevelRaw] || clearLevelRaw
   const clearAtrColor = clearAtrBucket === 'high' ? C.red : clearAtrBucket === 'low' ? C.cyan : C.text
+  const leftStageA = leftStateMachine?.stage_a && typeof leftStateMachine.stage_a === 'object'
+    ? leftStateMachine.stage_a as Record<string, any>
+    : null
+  const leftStageB = leftStateMachine?.stage_b && typeof leftStateMachine.stage_b === 'object'
+    ? leftStateMachine.stage_b as Record<string, any>
+    : null
+  const leftStageC = leftStateMachine?.stage_c && typeof leftStateMachine.stage_c === 'object'
+    ? leftStateMachine.stage_c as Record<string, any>
+    : null
+  const leftStageAItems = Array.isArray(leftStageA?.items) ? leftStageA?.items as any[] : []
+  const leftStageBItems = Array.isArray(leftStageB?.items) ? leftStageB?.items as any[] : []
+  const leftStageCItems = Array.isArray(leftStageC?.items) ? leftStageC?.items as any[] : []
   const msTagRaw = typeof marketStructure?.tag === 'string' ? marketStructure.tag : ''
   const msTagLabelMap: Record<string, string> = {
     normal: '中性',
@@ -6346,6 +7874,9 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
               <div style={{ color: C.dim }}>建仓AVWAP: <span style={{ color: C.text }}>{Number.isFinite(clearEntryAvwap) ? clearEntryAvwap.toFixed(3) : '--'}</span></div>
               <div style={{ color: C.dim }}>突破AVWAP: <span style={{ color: C.text }}>{Number.isFinite(clearBreakoutAnchorAvwap) ? clearBreakoutAnchorAvwap.toFixed(3) : '--'}</span></div>
               <div style={{ color: C.dim }}>事件AVWAP: <span style={{ color: C.text }}>{Number.isFinite(clearEventAnchorAvwap) ? clearEventAnchorAvwap.toFixed(3) : '--'}</span></div>
+              <div style={{ color: C.dim }}>会话AVWAP: <span style={{ color: C.text }}>{Number.isFinite(clearSessionAvwap) ? clearSessionAvwap.toFixed(3) : '--'}</span></div>
+              <div style={{ color: C.dim }}>AVWAP控制: <span style={{ color: Number.isFinite(clearAvwapControlCount) && clearAvwapControlCount <= 0 ? C.red : C.text }}>{Number.isFinite(clearAvwapControlCount) ? `${clearAvwapControlCount}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>控制标签: <span style={{ color: C.text }}>{clearAvwapControlLabels.length > 0 ? clearAvwapControlLabels.join(', ') : '--'}</span></div>
               <div style={{ color: C.dim }}>支撑带: <span style={{ color: C.text }}>{Number.isFinite(clearSupportBandLow) && Number.isFinite(clearSupportBandHigh) ? `${clearSupportBandLow.toFixed(3)} ~ ${clearSupportBandHigh.toFixed(3)}` : '--'}</span></div>
               <div style={{ color: C.dim }}>主支撑锚: <span style={{ color: clearSupportAnchorLost ? C.red : C.text }}>{Number.isFinite(clearSupportAnchorLine) ? `${clearSupportAnchorType} @ ${clearSupportAnchorLine.toFixed(3)}` : '--'}</span></div>
               <div style={{ color: C.dim }}>失守锚数: <span style={{ color: Number.isFinite(clearLostAnchorCount) && clearLostAnchorCount >= 2 ? C.red : C.text }}>{Number.isFinite(clearLostAnchorCount) ? `${clearLostAnchorCount}` : '--'}</span></div>
@@ -6363,6 +7894,16 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
             <>
               <div style={{ color: C.dim }}>仓位前: <span style={{ color: C.text }}>{pool1Position.position_ratio_before != null ? `${(Number(pool1Position.position_ratio_before) * 100).toFixed(0)}%` : '--'}</span></div>
               <div style={{ color: C.dim }}>仓位后: <span style={{ color: C.text }}>{pool1Position.position_ratio_after != null ? `${(Number(pool1Position.position_ratio_after) * 100).toFixed(0)}%` : '--'}</span></div>
+            </>
+          )}
+          {rebuildMode && (
+            <>
+              <div style={{ color: C.dim }}>回补比例: <span style={{ color: C.text }}>{Number.isFinite(rebuildAddRatio) ? `${(rebuildAddRatio * 100).toFixed(0)}%` : '--'}</span></div>
+              <div style={{ color: C.dim }}>回补基准/偏置: <span style={{ color: C.text }}>{Number.isFinite(rebuildAddRatioBase) || Number.isFinite(rebuildAddRatioBias) ? `${Number.isFinite(rebuildAddRatioBase) ? `${(rebuildAddRatioBase * 100).toFixed(0)}%` : '--'} / ${Number.isFinite(rebuildAddRatioBias) ? `${rebuildAddRatioBias >= 0 ? '+' : ''}${(rebuildAddRatioBias * 100).toFixed(0)}%` : '--'}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>回补冷却: <span style={{ color: C.text }}>{Number.isFinite(rebuildMinDelayEffectiveMin) ? `${rebuildMinDelayEffectiveMin.toFixed(0)}m` : '--'}</span></div>
+              <div style={{ color: C.dim }}>冷却基准/偏置: <span style={{ color: C.text }}>{Number.isFinite(rebuildMinDelayBaseMin) || Number.isFinite(rebuildDelayBiasMin) ? `${Number.isFinite(rebuildMinDelayBaseMin) ? `${rebuildMinDelayBaseMin.toFixed(0)}m` : '--'} / ${Number.isFinite(rebuildDelayBiasMin) ? `${rebuildDelayBiasMin >= 0 ? '+' : ''}${rebuildDelayBiasMin.toFixed(0)}m` : '--'}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>关联减仓源: <span style={{ color: C.text }}>{rebuildLinkedPartialSource}</span></div>
+              <div style={{ color: C.dim }}>关联减仓层级: <span style={{ color: C.text }}>{rebuildLinkedPartialTier}</span></div>
             </>
           )}
         </div>
@@ -6388,6 +7929,8 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
                 <div>clear_family: <span style={{ color: C.text }}>{clearFamilyLabel}</span></div>
                 <div>clear_level: <span style={{ color: clearLevelRaw === 'full' ? C.red : clearLevelRaw === 'partial' ? C.yellow : C.cyan }}>{clearLevelLabel}</span></div>
                 <div>suggest_reduce_ratio: <span style={{ color: C.text }}>{Number.isFinite(clearReduceRatio) ? `${(clearReduceRatio * 100).toFixed(0)}%` : '--'}</span></div>
+                <div>reduce_ratio_source: <span style={{ color: C.text }}>{clearReduceRatioSource}</span></div>
+                <div>reduce_ratio_components: <span style={{ color: C.text }}>{clearReduceRatioComponents.length > 0 ? clearReduceRatioComponents.map((x: any) => `${String(x?.source || '--')}:${Number(x?.ratio || 0).toFixed(2)}`).join(', ') : '--'}</span></div>
                 <div>atr_14: <span style={{ color: C.text }}>{String(timingClearDetails.atr_14 ?? '--')}</span></div>
                 <div>atr_pct: <span style={{ color: C.text }}>{String(timingClearDetails.atr_pct ?? '--')}</span></div>
                 <div>atr_bucket: <span style={{ color: clearAtrColor }}>{clearAtrBucket}</span></div>
@@ -6408,6 +7951,13 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
                 <div>event_anchor_premium_pct: <span style={{ color: Number.isFinite(clearEventAnchorPremiumPct) ? (clearEventAnchorPremiumPct >= 0 ? C.red : C.green) : C.text }}>{Number.isFinite(clearEventAnchorPremiumPct) ? `${clearEventAnchorPremiumPct.toFixed(2)}%` : '--'}</span></div>
                 <div>event_anchor_lost: <span style={{ color: clearEventAnchorLost ? C.red : C.text }}>{String(clearEventAnchorLost)}</span></div>
                 <div>event_anchor_bars: <span style={{ color: C.text }}>{String(timingClearAnchor?.event_anchor_bars ?? '--')}</span></div>
+                <div>session_avwap: <span style={{ color: C.text }}>{Number.isFinite(clearSessionAvwap) ? clearSessionAvwap.toFixed(3) : '--'}</span></div>
+                <div>avwap_control_count: <span style={{ color: clearAvwapControlCount > 0 ? C.cyan : C.red }}>{String(clearAvwapControlCount)}</span></div>
+                <div>avwap_control_labels: <span style={{ color: C.text }}>{clearAvwapControlLabels.length > 0 ? clearAvwapControlLabels.join(', ') : '--'}</span></div>
+                <div>avwap_loss_labels: <span style={{ color: clearAvwapLossLabels.length > 0 ? C.red : C.text }}>{clearAvwapLossLabels.length > 0 ? clearAvwapLossLabels.join(', ') : '--'}</span></div>
+                <div>avwap_flow_shift: <span style={{ color: clearAvwapFlowShift ? C.red : C.text }}>{String(clearAvwapFlowShift)}</span></div>
+                <div>avwap_exit_tier: <span style={{ color: clearAvwapExitTier === 'full' ? C.red : clearAvwapExitTier === 'partial' ? C.yellow : clearAvwapExitTier === 'observe' ? C.cyan : C.text }}>{clearAvwapExitTier}</span></div>
+                <div>avwap_exit_reason: <span style={{ color: C.text }}>{clearAvwapExitReason}</span></div>
                 <div>support_band: <span style={{ color: C.text }}>{Number.isFinite(clearSupportBandLow) && Number.isFinite(clearSupportBandHigh) ? `${clearSupportBandLow.toFixed(3)} ~ ${clearSupportBandHigh.toFixed(3)}` : '--'}</span></div>
                 <div>support_anchor: <span style={{ color: clearSupportAnchorLost ? C.red : C.text }}>{Number.isFinite(clearSupportAnchorLine) ? `${clearSupportAnchorType} @ ${clearSupportAnchorLine.toFixed(3)}` : '--'}</span></div>
                 <div>lost_anchor_count: <span style={{ color: Number.isFinite(clearLostAnchorCount) && clearLostAnchorCount >= 2 ? C.red : C.text }}>{Number.isFinite(clearLostAnchorCount) ? String(clearLostAnchorCount) : '--'}</span></div>
@@ -6438,6 +7988,45 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
                 <div>hold_days_before_clear: <span style={{ color: C.text }}>{String(leftStreakGuard.hold_days_before_clear ?? '--')}</span></div>
                 <div>concept_state: <span style={{ color: C.text }}>{String(leftStreakGuard.concept_state || '--')}</span></div>
                 <div>score_adj: <span style={{ color: C.text }}>{String(leftStreakGuard.score_adj ?? '--')}</span></div>
+              </div>
+            )}
+            {leftStateMachine && (
+              <div style={{
+                background: 'rgba(0,0,0,0.22)',
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                padding: 8,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                color: C.dim,
+                lineHeight: 1.5,
+              }}>
+                <div style={{ color: C.cyan, fontSize: 11, marginBottom: 4 }}>左侧状态机</div>
+                <div>reclaim_as_execution_gate: <span style={{ color: C.text }}>{String(Boolean(leftStateMachine.reclaim_as_execution_gate))}</span></div>
+                <div>candidate_ready: <span style={{ color: Boolean(leftStateMachine.candidate_ready) ? C.red : C.text }}>{String(Boolean(leftStateMachine.candidate_ready))}</span></div>
+                <div>reclaim_ready: <span style={{ color: Boolean(leftStateMachine.reclaim_ready) ? C.red : C.yellow }}>{String(Boolean(leftStateMachine.reclaim_ready))}</span></div>
+                <div>executable_ready: <span style={{ color: Boolean(leftStateMachine.executable_ready) ? C.red : C.text }}>{String(Boolean(leftStateMachine.executable_ready))}</span></div>
+                <div>observe_only: <span style={{ color: Boolean(leftStateMachine.observe_only) ? C.yellow : C.text }}>{String(Boolean(leftStateMachine.observe_only))}</span></div>
+                <div>observe_reason: <span style={{ color: C.text }}>{String(leftStateMachine.observe_reason || '--')}</span></div>
+                <div style={{ marginTop: 4, color: C.bright }}>A 极限偏离</div>
+                <div>passed: <span style={{ color: Boolean(leftStageA?.passed) ? C.red : C.text }}>{String(Boolean(leftStageA?.passed))}</span></div>
+                <div>items: <span style={{ color: C.text }}>{leftStageAItems.length > 0 ? leftStageAItems.join(', ') : '--'}</span></div>
+                <div>reason: <span style={{ color: C.text }}>{String(leftStageA?.reason || '--')}</span></div>
+                <div style={{ marginTop: 4, color: C.bright }}>B 回收确认</div>
+                <div>passed: <span style={{ color: Boolean(leftStageB?.passed) ? C.red : C.yellow }}>{String(Boolean(leftStageB?.passed))}</span></div>
+                <div>confirms: <span style={{ color: C.text }}>{leftStageBItems.length > 0 ? leftStageBItems.join(', ') : '--'}</span></div>
+                <div>confirm_count: <span style={{ color: C.text }}>{String(leftStageB?.confirm_count ?? '--')}</span></div>
+                <div>required_confirms: <span style={{ color: C.text }}>{String(leftStageB?.required_confirms ?? '--')}</span></div>
+                <div>reason: <span style={{ color: C.text }}>{String(leftStageB?.reason || '--')}</span></div>
+                <div style={{ marginTop: 4, color: C.bright }}>C 生态确认</div>
+                <div>passed: <span style={{ color: Boolean(leftStageC?.passed) ? C.red : C.yellow }}>{String(Boolean(leftStageC?.passed))}</span></div>
+                <div>items: <span style={{ color: C.text }}>{leftStageCItems.length > 0 ? leftStageCItems.join(', ') : '--'}</span></div>
+                <div>observe_only: <span style={{ color: Boolean(leftStageC?.observe_only) ? C.yellow : C.text }}>{String(Boolean(leftStageC?.observe_only))}</span></div>
+                <div>reason: <span style={{ color: C.text }}>{String(leftStageC?.reason || '--')}</span></div>
+                <div style={{ marginTop: 4, color: C.bright }}>补充因子</div>
+                <div>vwap: <span style={{ color: C.text }}>{String(leftReclaim?.vwap ?? details.vwap ?? '--')}</span></div>
+                <div>bias_vwap: <span style={{ color: C.text }}>{String(leftReclaim?.bias_vwap ?? details.bias_vwap ?? '--')}</span></div>
+                <div>short_zscore: <span style={{ color: C.text }}>{String(leftReclaim?.short_zscore ?? details.short_zscore ?? '--')}</span></div>
               </div>
             )}
             {(trendGuard || vetoLabel) && (
@@ -6491,6 +8080,12 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
                 <div>concept_boards: <span style={{ color: C.text }}>{Array.isArray(threshold.concept_boards) && threshold.concept_boards.length > 0 ? threshold.concept_boards.join(', ') : (Array.isArray(details.concept_boards) && details.concept_boards.length > 0 ? details.concept_boards.join(', ') : '--')}</span></div>
                 <div>concept_state: <span style={{ color: String(conceptEcology?.state || '') === 'retreat' ? C.red : String(conceptEcology?.state || '') === 'expand' ? C.green : String(conceptEcology?.state || '') === 'strong' ? C.cyan : C.text }}>{String(conceptEcology?.state || '--')}</span></div>
                 <div>concept_score: <span style={{ color: C.text }}>{String(conceptEcology?.score ?? '--')}</span></div>
+                <div>concept_hard_gate: <span style={{ color: conceptEcology?.blocked ? C.red : conceptEcology?.gate_level === 'observe' ? C.yellow : conceptEcology?.gate_level === 'strong' ? C.green : C.text }}>{String(conceptEcology?.gate_level || '--')}</span></div>
+                <div>concept_hard_score: <span style={{ color: C.text }}>{String(conceptEcology?.hard_score ?? conceptEcology?.structured_score ?? '--')}</span></div>
+                <div>concept_components: <span style={{ color: C.text }}>{conceptEcology?.score_components && typeof conceptEcology.score_components === 'object' ? Object.entries(conceptEcology.score_components).map(([k, v]) => `${k}:${String(v)}`).join(', ') : '--'}</span></div>
+                <div>concept_source: <span style={{ color: C.text }}>{String(conceptEcology?.source || '--')}</span></div>
+                <div>concept_updated: <span style={{ color: C.text }}>{String(conceptEcology?.updated_at_iso || '--')}{conceptEcology?.updated_at ? ` · ${formatAgeText(Number(conceptEcology.updated_at))}` : ''}</span></div>
+                <div>runtime_concept_snapshot: <span style={{ color: runtimeConceptFresh ? C.green : C.yellow }}>{runtimeConceptActiveSource}</span>{runtimeConceptUpdatedAt > 0 ? <span style={{ color: C.text }}>{` · ${formatTimeText(runtimeConceptUpdatedAt)} (${formatAgeText(runtimeConceptUpdatedAt)})`}</span> : <span style={{ color: C.text }}> · --</span>}<span style={{ color: C.dim }}>{` · ${runtimeConceptCount}条`}</span></div>
                 <div>risk_warning: <span style={{ color: threshold.risk_warning ? C.red : C.text }}>{String(Boolean(threshold.risk_warning ?? instrumentProfile?.risk_warning))}</span></div>
                 <div>market_name: <span style={{ color: C.text }}>{String(instrumentProfile?.market_name || '--')}</span></div>
                 <div>volume_drought: <span style={{ color: threshold.volume_drought ? C.yellow : C.text }}>{String(Boolean(threshold.volume_drought ?? microEnvironment?.volume_drought))}</span></div>
@@ -6505,6 +8100,13 @@ function SignalDetailModal({ signal, stockCode, stockName, onClose }: {
                 <div>observer_only: <span style={{ color: C.text }}>{String(Boolean(threshold.observer_only))}</span></div>
                 <div>observer_reason: <span style={{ color: C.text }}>{String(threshold.observer_reason || '--')}</span></div>
                 <div>concept_observe_reason: <span style={{ color: C.text }}>{String(conceptEcology?.observe_reason || details.observe_reason || '--')}</span></div>
+                <div>industry: <span style={{ color: C.text }}>{String(industryEcology?.industry_query_name || threshold.industry || details.industry || '--')}</span></div>
+                <div>industry_state: <span style={{ color: String(industryEcology?.state || '') === 'retreat' ? C.red : String(industryEcology?.state || '') === 'expand' ? C.green : String(industryEcology?.state || '') === 'strong' ? C.cyan : C.text }}>{String(industryEcology?.state || '--')}</span></div>
+                <div>industry_score: <span style={{ color: C.text }}>{String(industryEcology?.score ?? '--')}</span></div>
+                <div>industry_source: <span style={{ color: C.text }}>{String(industryEcology?.source || '--')}</span></div>
+                <div>industry_updated: <span style={{ color: C.text }}>{String(industryEcology?.updated_at_iso || '--')}{industryEcology?.updated_at ? ` ? ${formatAgeText(Number(industryEcology.updated_at))}` : ''}</span></div>
+                <div>industry_match: <span style={{ color: C.text }}>{String(industryEcology?.industry_match_method || '--')}</span>{industryEcology?.industry_match_score != null ? <span style={{ color: C.dim }}>{` ? ${Number(industryEcology.industry_match_score).toFixed(2)}`}</span> : null}</div>
+                <div>industry_observe_reason: <span style={{ color: C.text }}>{String(industryEcology?.observe_reason || '--')}</span></div>
               </div>
             )}
             {pool1Decision && (

@@ -8,6 +8,17 @@
 - 支持特殊信号优先 + 标准市场环境映射
 """
 
+from scripts.akshare_proxy_patch_free import install_patch
+install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
+    log_file="akshare_proxy_patch.log",
+    log_console=False,
+    hook_domains=[
+    "fund.eastmoney.com",
+    "push2.eastmoney.com",
+    "push2his.eastmoney.com",
+    "emweb.securities.eastmoney.com",
+    ],)
+
 import numpy as np
 import pandas as pd
 from datetime import datetime

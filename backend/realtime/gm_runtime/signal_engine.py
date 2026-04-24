@@ -360,9 +360,36 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
     down_limit = None
     pre_close = float(tick.get('pre_close', 0) or 0)
     instrument_profile = dict(_main_instrument_profile.get(ts_code, {}) or {})
+    industry_name = str(_main_stock_industry.get(ts_code, '') or '')
+    industry_code = str(_main_stock_industry_code.get(ts_code, '') or '').strip().upper()
+    industry_ecology = dict(_main_industry_snapshot.get(industry_code, {}) or {}) if industry_code else {}
+    if not industry_ecology and industry_name:
+        industry_ecology = dict(_main_industry_snapshot.get(industry_name, {}) or {})
     concept_boards = list(_main_stock_concepts.get(ts_code, []) or [])
+    concept_codes = list(_main_stock_concept_codes.get(ts_code, []) or [])
     core_concept_board = str(_main_stock_core_concept.get(ts_code, '') or '')
-    concept_ecology = dict(_main_concept_snapshot.get(core_concept_board, {}) or {})
+    core_concept_code = str(_main_stock_core_concept_code.get(ts_code, '') or '').strip().upper()
+    concept_ecology = dict(_main_concept_snapshot.get(core_concept_code, {}) or {}) if core_concept_code else {}
+    if not concept_ecology:
+        concept_ecology = dict(_main_concept_snapshot.get(core_concept_board, {}) or {})
+    concept_ecology_multi: list[dict] = []
+    _concept_multi_seen: set[str] = set()
+    for idx, concept_name in enumerate(concept_boards):
+        board_code = str(concept_codes[idx] if idx < len(concept_codes) else '' or '').strip().upper()
+        snapshot = dict(_main_concept_snapshot.get(board_code, {}) or {}) if board_code else {}
+        if not snapshot:
+            snapshot = dict(_main_concept_snapshot.get(str(concept_name or ''), {}) or {})
+        if not snapshot:
+            continue
+        if concept_name and not snapshot.get('concept_name'):
+            snapshot['concept_name'] = str(concept_name)
+        if board_code and not snapshot.get('board_code'):
+            snapshot['board_code'] = board_code
+        multi_key = f"{str(snapshot.get('board_code') or board_code)}|{str(snapshot.get('concept_name') or concept_name)}"
+        if multi_key in _concept_multi_seen:
+            continue
+        _concept_multi_seen.add(multi_key)
+        concept_ecology_multi.append(snapshot)
     if pre_close > 0 and _calc_theoretical_limits is not None:
         up_limit, down_limit = _calc_theoretical_limits(pre_close, instrument_profile.get('price_limit_pct'))
     elif pre_close > 0:
@@ -412,13 +439,18 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                 market={
                     'vol_20': daily.get('vol_20'),
                     'atr_14': daily.get('atr_14'),
-                    'industry': _main_stock_industry.get(ts_code, ''),
+                    'industry': industry_name,
+                    'industry_code': industry_code,
+                    'industry_ecology': industry_ecology,
                     'name': tick.get('name'),
                     'market_name': instrument_profile.get('market_name'),
                     'list_date': instrument_profile.get('list_date'),
                     'concept_boards': concept_boards,
+                    'concept_codes': concept_codes,
                     'core_concept_board': core_concept_board,
+                    'core_concept_code': core_concept_code,
                     'concept_ecology': concept_ecology,
+                    'concept_ecology_multi': concept_ecology_multi,
                     'instrument_profile': instrument_profile,
                 },
             )
@@ -438,6 +470,38 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
             return None
 
     intraday_state = _update_intraday_state(ts_code, tick) if (1 in pools or 2 in pools) else None
+    pool1_vwap = _compute_vwap(intraday_state) if isinstance(intraday_state, dict) else None
+    pool1_short_zscore = _compute_price_zscore(intraday_state) if isinstance(intraday_state, dict) else None
+    pool1_intraday_prices = None
+    pool1_bias_vwap = None
+    pool1_minute_bars_1m = None
+    if isinstance(intraday_state, dict):
+        try:
+            pw = list(intraday_state.get('price_window') or [])
+            prices = [float(p) for _, p, _ in pw if float(p or 0) > 0]
+            pool1_intraday_prices = prices or None
+            if pw:
+                pool1_minute_bars_1m = [
+                    {
+                        'timestamp': int(ts),
+                        'close': float(px),
+                        'high': float(px),
+                        'low': float(px),
+                        'open': float(px),
+                        'volume': int(max(0, dv)),
+                        'amount': float(px) * float(max(0, dv)),
+                    }
+                    for ts, px, dv in pw
+                    if float(px or 0) > 0
+                ]
+        except Exception:
+            pool1_intraday_prices = None
+            pool1_minute_bars_1m = None
+    if pool1_vwap and pool1_vwap > 0 and price > 0:
+        try:
+            pool1_bias_vwap = (price - pool1_vwap) / pool1_vwap * 100.0
+        except Exception:
+            pool1_bias_vwap = None
 
     fired_pool1: list[dict] = []
     fired_pool2: list[dict] = []
@@ -462,6 +526,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
         if not p1_regime and isinstance(p1_right_th, dict):
             p1_regime = str(p1_right_th.get('regime') or '')
         p1_industry = str(_main_stock_industry.get(ts_code, '') or '')
+        p1_industry_code = str(_main_stock_industry_code.get(ts_code, '') or '').strip().upper()
         chip_bonus = 0
         chip_info = {'source': 'skipped_stage1'}
         resonance_60m = True
@@ -479,33 +544,64 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
             rebuild_allow_left = bool(rebuild_cfg.get('allow_left_side_buy', True))
             rebuild_allow_right = bool(rebuild_cfg.get('allow_right_side_breakout', True))
             rebuild_add_ratio = max(0.0, min(1.0, float(rebuild_cfg.get('add_ratio', 0.5) or 0.5)))
+            rebuild_observe_tier_add_ratio_bias = float(
+                rebuild_cfg.get('observe_tier_add_ratio_bias', 0.15) or 0.15
+            )
+            rebuild_full_tier_add_ratio_bias = float(
+                rebuild_cfg.get('full_tier_add_ratio_bias', -0.15) or -0.15
+            )
+            rebuild_soft_source_add_ratio_bias = float(
+                rebuild_cfg.get('soft_source_add_ratio_bias', 0.10) or 0.10
+            )
+            rebuild_core_source_add_ratio_bias = float(
+                rebuild_cfg.get('core_source_add_ratio_bias', -0.15) or -0.15
+            )
             rebuild_min_gap = max(0.0, min(1.0, float(rebuild_cfg.get('min_position_gap', 0.12) or 0.12)))
             rebuild_min_strength = float(rebuild_cfg.get('min_signal_strength', 78.0) or 78.0)
             rebuild_min_delay_sec = max(0.0, float(rebuild_cfg.get('min_minutes_after_reduce', 20.0) or 20.0) * 60.0)
+            rebuild_full_tier_extra_delay_sec = max(
+                0.0, float(rebuild_cfg.get('full_tier_extra_delay_minutes', 20.0) or 20.0) * 60.0
+            )
+            rebuild_core_source_extra_delay_sec = max(
+                0.0, float(rebuild_cfg.get('core_source_extra_delay_minutes', 15.0) or 15.0) * 60.0
+            )
             position_ratio_before = max(0.0, min(1.0, float(pos_state_before.get('position_ratio', 0.0) or 0.0)))
             position_gap = max(0.0, 1.0 - position_ratio_before)
             last_reduce_at = int(pos_state_before.get('last_reduce_at', 0) or 0)
+            last_reduce_source = str(
+                pos_state_before.get('last_reduce_source')
+                or pos_state_before.get('last_exit_reduce_source')
+                or ''
+            ).strip()
+            last_reduce_avwap_tier = str(
+                pos_state_before.get('last_reduce_avwap_tier')
+                or pos_state_before.get('last_exit_reduce_avwap_tier')
+                or ''
+            ).strip().lower()
+            last_reduce_avwap_reason = str(
+                pos_state_before.get('last_reduce_avwap_reason')
+                or pos_state_before.get('last_exit_reduce_avwap_reason')
+                or ''
+            ).strip()
+            rebuild_add_ratio_bias = 0.0
+            reduce_source_tokens = {x for x in last_reduce_source.split('+') if x}
+            if last_reduce_avwap_tier == 'observe':
+                rebuild_add_ratio_bias += rebuild_observe_tier_add_ratio_bias
+            elif last_reduce_avwap_tier == 'full':
+                rebuild_add_ratio_bias += rebuild_full_tier_add_ratio_bias
+            if {'session_avwap', 'entry_cost_anchor', 'avwap_soft_weak'} & reduce_source_tokens:
+                rebuild_add_ratio_bias += rebuild_soft_source_add_ratio_bias
+            if {'entry_day_avwap', 'avwap_flow_shift'} & reduce_source_tokens:
+                rebuild_add_ratio_bias += rebuild_core_source_add_ratio_bias
+            rebuild_add_ratio_effective = max(0.15, min(1.0, rebuild_add_ratio + rebuild_add_ratio_bias))
+            rebuild_delay_bias_sec = 0.0
+            if last_reduce_avwap_tier == 'full':
+                rebuild_delay_bias_sec += rebuild_full_tier_extra_delay_sec
+            if {'entry_day_avwap', 'avwap_flow_shift'} & reduce_source_tokens:
+                rebuild_delay_bias_sec += rebuild_core_source_extra_delay_sec
+            rebuild_min_delay_effective_sec = max(0.0, rebuild_min_delay_sec + rebuild_delay_bias_sec)
             resonance_60m, resonance_60m_info = _pool1_resonance_60m(ts_code, daily, price, prev_price)
-            anchor_bars_1m = None
-            if isinstance(intraday_state, dict):
-                try:
-                    pw = list(intraday_state.get('price_window') or [])
-                    if pw:
-                        anchor_bars_1m = [
-                            {
-                                'timestamp': int(ts),
-                                'close': float(px),
-                                'high': float(px),
-                                'low': float(px),
-                                'open': float(px),
-                                'volume': int(max(0, dv)),
-                                'amount': float(px) * float(max(0, dv)),
-                            }
-                            for ts, px, dv in pw
-                            if float(px or 0) > 0
-                        ]
-                except Exception:
-                    anchor_bars_1m = None
+            anchor_bars_1m = list(pool1_minute_bars_1m or []) or None
             chip_feat = dict(_main_chip_cache.get(ts_code, {}))
             chip_feat.update({
                 'chip_concentration_pct': daily.get('chip_concentration_pct'),
@@ -525,6 +621,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                 volume_ratio=volume_ratio,
                 bid_ask_ratio=bid_ask_ratio,
                 resonance_60m=resonance_60m,
+                vwap=pool1_vwap,
                 big_order_bias=ms_pool1.get('big_order_bias'),
                 super_order_bias=ms_pool1.get('super_order_bias'),
                 big_net_flow_bps=ms_pool1.get('big_net_flow_bps'),
@@ -555,7 +652,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                 clear_sig.get('has_signal')
                 and not bool(((clear_sig.get('details') if isinstance(clear_sig.get('details'), dict) else {}) or {}).get('observe_only', False))
             )
-            rebuild_delay_ok = last_reduce_at > 0 and float(now_ts - last_reduce_at) >= rebuild_min_delay_sec
+            rebuild_delay_ok = last_reduce_at > 0 and float(now_ts - last_reduce_at) >= rebuild_min_delay_effective_sec
             rebuild_allowed = (
                 rebuild_enabled
                 and not clear_sig_actionable
@@ -582,9 +679,17 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     base_sig = _attach_signal_channel_meta(base_sig, pool_id=1)
                     details = base_sig.setdefault('details', {})
                     details['rebuild_mode'] = True
-                    details['rebuild_add_ratio'] = round(float(rebuild_add_ratio), 4)
+                    details['rebuild_add_ratio'] = round(float(rebuild_add_ratio_effective), 4)
+                    details['rebuild_add_ratio_base'] = round(float(rebuild_add_ratio), 4)
+                    details['rebuild_add_ratio_bias'] = round(float(rebuild_add_ratio_bias), 4)
+                    details['rebuild_min_delay_base_min'] = round(float(rebuild_min_delay_sec / 60.0), 2)
+                    details['rebuild_min_delay_effective_min'] = round(float(rebuild_min_delay_effective_sec / 60.0), 2)
+                    details['rebuild_delay_bias_min'] = round(float(rebuild_delay_bias_sec / 60.0), 2)
                     details['rebuild_position_gap'] = round(float(position_gap), 4)
                     details['rebuild_min_strength'] = round(float(rebuild_min_strength), 2)
+                    details['rebuild_linked_partial_source'] = last_reduce_source or None
+                    details['rebuild_linked_partial_tier'] = last_reduce_avwap_tier or None
+                    details['rebuild_linked_partial_reason'] = last_reduce_avwap_reason or None
                     details['pool1_stage'] = {
                         'daily_screening': stage1_info,
                         'stage2_triggered': True,
@@ -616,6 +721,10 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     left_rebuild = sig.detect_left_side_buy(
                         price=price, boll_upper=boll_upper, boll_mid=boll_mid, boll_lower=boll_lower,
                         rsi6=rsi6, pct_chg=pct_chg,
+                        vwap=pool1_vwap,
+                        bias_vwap=pool1_bias_vwap,
+                        intraday_prices=pool1_intraday_prices,
+                        short_zscore=pool1_short_zscore,
                         bid_ask_ratio=bid_ask_ratio,
                         lure_long=ms_pool1.get('lure_long', False),
                         wash_trade=ms_pool1.get('wash_trade', False),
@@ -628,9 +737,14 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                         ask_wall_absorb_ratio=ms_pool1.get('ask_wall_absorb_ratio'),
                         super_net_flow_bps=ms_pool1.get('super_net_flow_bps'),
                         minute_bars_1m=anchor_bars_1m,
+                        industry=p1_industry,
+                        industry_ecology=industry_ecology,
                         core_concept_board=core_concept_board,
                         concept_boards=concept_boards,
+                        concept_codes=concept_codes,
+                        core_concept_code=core_concept_code,
                         concept_ecology=concept_ecology,
+                        concept_ecology_multi=concept_ecology_multi,
                         position_state=pos_state_before,
                     )
                     left_rebuild = _finalize_rebuild_signal(left_rebuild, p1_left_th)
@@ -642,6 +756,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                         price=price, boll_upper=boll_upper, boll_mid=boll_mid, boll_lower=boll_lower,
                         volume_ratio=volume_ratio,
                         ma5=daily.get('ma5'), ma10=daily.get('ma10'), rsi6=rsi6,
+                        vwap=pool1_vwap,
                         prev_price=prev_price,
                         bid_ask_ratio=bid_ask_ratio,
                         lure_long=ms_pool1.get('lure_long', False),
@@ -651,6 +766,16 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                         volume_pace_ratio=p1_vol_pace.get('ratio'),
                         volume_pace_state=p1_vol_pace.get('state'),
                         thresholds=p1_right_th,
+                        minute_bars_1m=anchor_bars_1m,
+                        industry=p1_industry,
+                        industry_code=p1_industry_code,
+                        industry_ecology=industry_ecology,
+                        core_concept_board=core_concept_board,
+                        concept_boards=concept_boards,
+                        concept_codes=concept_codes,
+                        core_concept_code=core_concept_code,
+                        concept_ecology=concept_ecology,
+                        concept_ecology_multi=concept_ecology_multi,
                     )
                     right_rebuild = _finalize_rebuild_signal(right_rebuild, p1_right_th)
                     if right_rebuild:
@@ -677,6 +802,10 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                 left = sig.detect_left_side_buy(
                     price=price, boll_upper=boll_upper, boll_mid=boll_mid, boll_lower=boll_lower,
                     rsi6=rsi6, pct_chg=pct_chg,
+                    vwap=pool1_vwap,
+                    bias_vwap=pool1_bias_vwap,
+                    intraday_prices=pool1_intraday_prices,
+                    short_zscore=pool1_short_zscore,
                     bid_ask_ratio=bid_ask_ratio,
                     lure_long=ms_pool1.get('lure_long', False),
                     wash_trade=ms_pool1.get('wash_trade', False),
@@ -688,9 +817,15 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     prev_price=prev_price,
                     ask_wall_absorb_ratio=ms_pool1.get('ask_wall_absorb_ratio'),
                     super_net_flow_bps=ms_pool1.get('super_net_flow_bps'),
+                    industry=p1_industry,
+                    industry_code=p1_industry_code,
+                    industry_ecology=industry_ecology,
                     core_concept_board=core_concept_board,
                     concept_boards=concept_boards,
+                    concept_codes=concept_codes,
+                    core_concept_code=core_concept_code,
                     concept_ecology=concept_ecology,
+                    concept_ecology_multi=concept_ecology_multi,
                     position_state=pos_state_before,
                 )
                 if left.get('has_signal'):
@@ -718,6 +853,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     price=price, boll_upper=boll_upper, boll_mid=boll_mid, boll_lower=boll_lower,
                     volume_ratio=volume_ratio,
                     ma5=daily.get('ma5'), ma10=daily.get('ma10'), rsi6=rsi6,
+                    vwap=pool1_vwap,
                     prev_price=prev_price,
                     bid_ask_ratio=bid_ask_ratio,
                     lure_long=ms_pool1.get('lure_long', False),
@@ -727,6 +863,16 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     volume_pace_ratio=p1_vol_pace.get('ratio'),
                     volume_pace_state=p1_vol_pace.get('state'),
                     thresholds=p1_right_th,
+                    minute_bars_1m=pool1_minute_bars_1m,
+                    industry=p1_industry,
+                    industry_code=p1_industry_code,
+                    industry_ecology=industry_ecology,
+                    core_concept_board=core_concept_board,
+                    concept_boards=concept_boards,
+                    concept_codes=concept_codes,
+                    core_concept_code=core_concept_code,
+                    concept_ecology=concept_ecology,
+                    concept_ecology_multi=concept_ecology_multi,
                 )
                 if right.get('has_signal'):
                     right['strength'] = min(100, int(right.get('strength', 0)) + stage1_bonus + chip_bonus)
@@ -791,6 +937,11 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     reduce_ratio = float(best_sell_details.get('suggest_reduce_ratio', 0.0) or 0.0)
                 except Exception:
                     reduce_ratio = 0.0
+                reduce_meta = {
+                    'source': str(best_sell_details.get('reduce_ratio_source') or '').strip(),
+                    'avwap_tier': str(best_sell_details.get('avwap_exit_tier') or '').strip().lower(),
+                    'avwap_reason': str(best_sell_details.get('avwap_exit_reason') or '').strip(),
+                }
                 pos_state_after = _pool1_set_position_state(
                     ts_code,
                     'holding' if clear_level == 'partial' else 'observe',
@@ -799,6 +950,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     signal_price=float(best_sell.get('price', price) or price),
                     clear_level=clear_level,
                     reduce_ratio=reduce_ratio,
+                    reduce_meta=reduce_meta,
                 )
                 after_status = str(pos_state_after.get('status') or 'observe')
                 if clear_level == 'partial' and after_status == 'holding':
@@ -831,6 +983,10 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                         signal_type=str(best_rebuild.get('type') or ''),
                         signal_price=float(best_rebuild.get('price', price) or price),
                         rebuild_ratio=rebuild_ratio,
+                        rebuild_meta={
+                            'base_add_ratio': round(float(rebuild_add_ratio), 4),
+                            'add_ratio_bias': round(float(rebuild_add_ratio_bias), 4),
+                        },
                     )
                     if str(pos_state_after.get('last_rebuild_transition') or '') == 'holding->holding(rebuild)':
                         transition = 'holding->holding(rebuild)'
@@ -866,14 +1022,22 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                 'reduce_streak_after': int(pos_state_after.get('reduce_streak', pos_state_before.get('reduce_streak', 0)) or 0),
                 'reduce_ratio_cum_before': round(float(pos_state_before.get('reduce_ratio_cum', 0.0) or 0.0), 4),
                 'reduce_ratio_cum_after': round(float(pos_state_after.get('reduce_ratio_cum', pos_state_before.get('reduce_ratio_cum', 0.0)) or 0.0), 4),
+                'last_reduce_source': str(pos_state_after.get('last_reduce_source', '') or ''),
+                'last_reduce_avwap_tier': str(pos_state_after.get('last_reduce_avwap_tier', '') or ''),
                 'last_rebuild_at': int(pos_state_after.get('last_rebuild_at', 0) or 0),
                 'last_rebuild_transition': str(pos_state_after.get('last_rebuild_transition', '') or ''),
                 'last_rebuild_add_ratio': round(float(pos_state_after.get('last_rebuild_add_ratio', 0.0) or 0.0), 4),
+                'last_rebuild_add_ratio_base': round(float(pos_state_after.get('last_rebuild_add_ratio_base', 0.0) or 0.0), 4),
+                'last_rebuild_add_ratio_bias': round(float(pos_state_after.get('last_rebuild_add_ratio_bias', 0.0) or 0.0), 4),
                 'last_rebuild_from_partial_count': int(pos_state_after.get('last_rebuild_from_partial_count', 0) or 0),
                 'last_rebuild_from_partial_ratio': round(float(pos_state_after.get('last_rebuild_from_partial_ratio', 0.0) or 0.0), 4),
+                'last_rebuild_from_partial_source': str(pos_state_after.get('last_rebuild_from_partial_source', '') or ''),
+                'last_rebuild_from_partial_avwap_tier': str(pos_state_after.get('last_rebuild_from_partial_avwap_tier', '') or ''),
                 'last_exit_after_partial': bool(pos_state_after.get('last_exit_after_partial', False)),
                 'last_exit_partial_count': int(pos_state_after.get('last_exit_partial_count', 0) or 0),
                 'last_exit_reduce_ratio_cum': round(float(pos_state_after.get('last_exit_reduce_ratio_cum', 0.0) or 0.0), 4),
+                'last_exit_reduce_source': str(pos_state_after.get('last_exit_reduce_source', '') or ''),
+                'last_exit_reduce_avwap_tier': str(pos_state_after.get('last_exit_reduce_avwap_tier', '') or ''),
                 'transition': transition,
             }
 

@@ -1,5 +1,18 @@
 """日常增量数据同步"""
+import warnings
+
+from scripts.akshare_proxy_patch_free import install_patch
+install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
+    log_file="akshare_proxy_patch.log",
+    log_console=False,
+    hook_domains=[
+    "fund.eastmoney.com",
+    "push2.eastmoney.com",
+    "push2his.eastmoney.com",
+    "emweb.securities.eastmoney.com",
+    ],)
 import tushare as ts
+import akshare as ak
 import pandas as pd
 import time
 import queue
@@ -8,6 +21,57 @@ from datetime import datetime, timedelta
 from loguru import logger
 from config import DB_PATH, TUSHARE_TOKEN
 from backend.data.duckdb_manager import open_duckdb_conn
+
+try:
+    from pandas.errors import SettingWithCopyWarning as _SettingWithCopyWarning
+except Exception:
+    _SettingWithCopyWarning = Warning
+
+
+def _call_akshare_quiet(func, *args, **kwargs):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="A value is trying to be set on a copy of a slice from a DataFrame.*",
+            category=_SettingWithCopyWarning,
+            module=r"akshare\.stock\.stock_board_.*_em",
+        )
+        return func(*args, **kwargs)
+
+
+def _normalize_code6_local(raw: object) -> str:
+    s = str(raw or "").strip().upper()
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return ""
+    if len(digits) < 6:
+        digits = digits.zfill(6)
+    elif len(digits) > 6:
+        digits = digits[-6:]
+    return digits
+
+
+def _guess_ts_code_from_code6_local(code6: object) -> str:
+    code6 = _normalize_code6_local(code6)
+    if not code6:
+        return ""
+    if code6.startswith(("4", "8")):
+        return f"{code6}.BJ"
+    if code6.startswith(("5", "6", "9")):
+        return f"{code6}.SH"
+    return f"{code6}.SZ"
+
+
+def _normalize_em_board_code_local(raw: object) -> str:
+    s = str(raw or "").strip().upper()
+    if not s:
+        return ""
+    if s.startswith("BK"):
+        digits = "".join(ch for ch in s[2:] if ch.isdigit())
+        return f"BK{digits.zfill(4)}" if digits else s
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return f"BK{digits.zfill(4)}" if digits else s
+
 
 
 class IncrementalSync:
@@ -606,6 +670,91 @@ class IncrementalSync:
     #  主入口
     # ------------------------------------------------------------------ #
 
+    def sync_em_industry_board(self):
+        """同步东方财富行业板块列表（AKShare / 东方财富行业板块）"""
+        logger.info("开始同步东方财富行业板块列表...")
+        try:
+            df = _call_akshare_quiet(ak.stock_board_industry_name_em)
+            if df is None or df.empty:
+                logger.warning("东方财富行业板块列表为空")
+                return False
+            df = df.copy()
+            code_col = next((c for c in ["板块代码", "行业代码", "代码"] if c in df.columns), None)
+            name_col = next((c for c in ["板块名称", "行业名称", "名称", "行业"] if c in df.columns), None)
+            if not name_col:
+                raise RuntimeError(f"行业板块列表缺少名称列: {list(df.columns)}")
+            df["industry_name"] = df[name_col].astype(str).str.strip()
+            df["industry_code"] = df[code_col].map(_normalize_em_board_code_local) if code_col else ""
+            df["source"] = "akshare_eastmoney_industry_board"
+            df["synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._submit_write({"kind": "replace_table", "table": "em_industry_board", "df": df}, wait=True)
+            logger.info(f"东方财富行业板块列表已同步: {len(df)} 条")
+            return True
+        except Exception as e:
+            logger.error(f"同步东方财富行业板块列表失败: {e}")
+            return False
+
+    def sync_em_industry_member(self):
+        """同步东方财富行业板块成分股（AKShare / 东方财富行业板块成分股）"""
+        logger.info("开始同步东方财富行业板块成分股...")
+        try:
+            board_df = pd.read_sql('SELECT industry_name, industry_code FROM em_industry_board', self.conn)
+            if board_df.empty:
+                logger.info("东方财富行业板块列表为空，先尝试刷新板块列表...")
+                if not self.sync_em_industry_board():
+                    return False
+                board_df = pd.read_sql('SELECT industry_name, industry_code FROM em_industry_board', self.conn)
+            if board_df.empty:
+                logger.warning("东方财富行业板块列表仍为空，跳过成分股同步")
+                return False
+        except Exception as e:
+            logger.error(f"读取东方财富行业板块列表失败: {e}")
+            return False
+
+        all_data = []
+        total = len(board_df)
+        for idx, row in board_df.iterrows():
+            industry_name = str(row.get('industry_name') or '').strip()
+            industry_code = _normalize_em_board_code_local(row.get('industry_code'))
+            if not industry_name:
+                continue
+            symbol = industry_code or industry_name
+            try:
+                df = _call_akshare_quiet(ak.stock_board_industry_cons_em, symbol=symbol)
+                if df is None or df.empty:
+                    continue
+                df = df.copy()
+                code_col = next((c for c in ["代码", "股票代码", "个股代码", "symbol", "code"] if c in df.columns), None)
+                name_col = next((c for c in ["名称", "股票名称", "name"] if c in df.columns), None)
+                df['industry_name'] = industry_name
+                df['industry_code'] = industry_code
+                if code_col:
+                    df['symbol'] = df[code_col].map(_normalize_code6_local)
+                    df['ts_code'] = df['symbol'].map(_guess_ts_code_from_code6_local)
+                else:
+                    df['symbol'] = ''
+                    df['ts_code'] = ''
+                df['stock_name'] = df[name_col].astype(str).str.strip() if name_col else ''
+                df['source'] = 'akshare_eastmoney_industry_member'
+                df['synced_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                all_data.append(df)
+            except Exception as e:
+                logger.warning(f"同步行业成分股失败 {industry_name}: {e}")
+            time.sleep(0.25)
+            if (idx + 1) % 25 == 0 or (idx + 1) == total:
+                logger.info(f"东方财富行业成分股进度: {idx + 1}/{total}")
+
+        if not all_data:
+            logger.warning("东方财富行业板块成分股未获取到数据")
+            return False
+
+        df_all = pd.concat(all_data, ignore_index=True)
+        if 'ts_code' in df_all.columns and 'industry_code' in df_all.columns:
+            df_all = df_all.drop_duplicates(subset=['ts_code', 'industry_code'], keep='last')
+        self._submit_write({"kind": "replace_table", "table": "em_industry_member", "df": df_all}, wait=True)
+        logger.info(f"东方财富行业板块成分股已同步: {len(df_all)} 条")
+        return True
+
     def run_daily_sync(self):
         """执行增量同步：每日类 + 季度类 + 不定期类"""
         logger.info("=" * 60)
@@ -634,5 +783,10 @@ class IncrementalSync:
         # ── 不定期类 ──
         logger.info("开始不定期类增量同步...")
         self._sync_irregular()
+
+        # Eastmoney industry board taxonomy: runtime industry ecology uses this first
+        logger.info("Start syncing Eastmoney industry taxonomy...")
+        self.sync_em_industry_board()
+        self.sync_em_industry_member()
 
         logger.info("增量同步全部完成")

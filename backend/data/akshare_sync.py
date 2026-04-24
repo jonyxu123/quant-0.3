@@ -1,18 +1,18 @@
 """AKShare辅助数据同步模块 (v8.0)
 负责拉取Tushare无法覆盖的数据。
 """
-import akshare_proxy_patch
-akshare_proxy_patch.install_patch(
-    "101.201.173.125",
-    auth_token="20260402BAQOIJJ3",
-    retry=30,
+
+from scripts.akshare_proxy_patch_free import install_patch
+install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
+    log_file="akshare_proxy_patch.log",
+    log_console=False,
     hook_domains=[
-        "fund.eastmoney.com",
-        "push2.eastmoney.com",
-        "push2his.eastmoney.com",
-        "emweb.securities.eastmoney.com",
-    ],
-)
+    "fund.eastmoney.com",
+    "push2.eastmoney.com",
+    "push2his.eastmoney.com",
+    "emweb.securities.eastmoney.com",
+    ],)
+
 import akshare as ak
 import pandas as pd
 import duckdb

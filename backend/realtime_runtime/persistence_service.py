@@ -586,7 +586,7 @@ def _process_db_batch(conn: duckdb.DuckDBPyConnection, batch: list[tuple[str, ob
         elif kind == "signal_rows":
             signal_rows.extend(payload or [])
 
-    if tick_rows:
+    if tick_rows and _TICK_DB_PERSIST_ENABLED:
         conn.executemany(
             """
             INSERT INTO tick_history

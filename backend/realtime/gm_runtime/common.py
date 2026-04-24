@@ -349,7 +349,7 @@ def _dedup_seconds_for_signal(signal_type: str, pools: set) -> int:
 
 
 def _pool1_resonance_60m_proxy(daily: dict, price: float, prev_price: Optional[float]) -> bool:
-    """Pool2 半衰期配置（分钟）转换为 lambda。"""
+    """Pool1 60m 共振代理判断。"""
     cfg = _P1_CFG.get('resonance_60m', {}) if isinstance(_P1_CFG, dict) else {}
     if not cfg.get('enabled', False):
         return True
@@ -689,7 +689,7 @@ def _expire_reversed_signal_state(ts_code: str, signal_type: str) -> None:
 
 
 # ============================================================
- # ============================================================
+# ============================================================
 # 项目路径
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _STRATEGY_FILE = os.path.join(_PROJECT_ROOT, '_gm_strategy.py')  # gm 策略脚本路径
@@ -723,9 +723,13 @@ _main_chip_cache: dict[str, dict] = {}              # ts_code -> 筹码特征
 _main_signal_cache: dict[str, dict] = {}            # ts_code -> 实时信号缓存
 _main_stock_pools: dict[str, set] = {}              # ts_code -> {pool_id, ...}
 _main_stock_industry: dict[str, str] = {}           # ts_code -> industry
+_main_stock_industry_code: dict[str, str] = {}      # ts_code -> eastmoney industry board code
 _main_stock_concepts: dict[str, list[str]] = {}     # ts_code -> [concept_name, ...]
 _main_stock_core_concept: dict[str, str] = {}       # ts_code -> core concept_name
+_main_stock_concept_codes: dict[str, list[str]] = {}  # ts_code -> [board_code, ...]
+_main_stock_core_concept_code: dict[str, str] = {}    # ts_code -> core board_code
 _main_concept_snapshot: dict[str, dict] = {}        # concept_name -> ecology snapshot
+_main_industry_snapshot: dict[str, dict] = {}       # industry_name -> ecology snapshot
 _main_instrument_profile: dict[str, dict] = {}      # ts_code -> instrument profile
 # 信号去重：(ts_code, signal_type) -> 上次触发 timestamp
 _main_signal_last_fire: dict[tuple, int] = {}
@@ -769,7 +773,7 @@ _T0_DIV_FLOW_RATIO_MAX = float(_T0_MICRO_CFG.get('divergence_flow_ratio_max', 0.
 _T0_DIV_NET_BPS_DROP = float(_T0_MICRO_CFG.get('divergence_net_bps_drop', 25.0) or 25.0)
 _T0_DIV_PRICE_EPS_PCT = float(_T0_MICRO_CFG.get('divergence_price_eps_pct', 0.05) or 0.05)
 
- # 每个池允许的信号类型（择时池 vs T+0 池）
+# 每个池允许的信号类型（择时池 vs T+0 池）
 POOL_SIGNAL_TYPES: dict[int, set] = {
      1: {'left_side_buy', 'right_side_breakout', 'timing_clear'},   # Pool1 择时建仓+清仓
      2: {'positive_t', 'reverse_t'},                # Pool2 T+0 日内
@@ -785,13 +789,13 @@ SIGNAL_CHANNEL_SOURCE: dict[int, str] = {
     2: 'tick+intraday_state+microstructure',
 }
 
- # Layer2 T+0 日内状态缓存，用于 VWAP/GUB5/Z-Score 特征
+# Layer2 T+0 日内状态缓存，用于 VWAP/GUB5/Z-Score 特征
 # _intraday_state[ts_code] = {
 #   'date': 'YYYY-MM-DD',
- #   'cum_volume': int, 'cum_amount': float,    # 累计成交 -> VWAP
- #   'last_volume': int,                          # 用于计算增量成交量
- #   'price_window': deque[(ts, price, vol)],    # 最近 N 分钟 tick
- #   'gub5_small_sells_5min': deque[ts],         # 最近 5 分钟小单卖出
+#   'cum_volume': int, 'cum_amount': float,    # 累计成交 -> VWAP
+#   'last_volume': int,                        # 用于计算增量成交量
+#   'price_window': deque[(ts, price, vol)],  # 最近 N 分钟 tick
+#   'gub5_small_sells_5min': deque[ts],       # 最近 5 分钟小单卖出
 # }
 _intraday_state: dict[str, dict] = {}
 INTRADAY_WINDOW_SECONDS = 20 * 60                    # 20 分钟价格滚动窗口
@@ -815,9 +819,9 @@ WALL_NET_FLOW_BPS_TH = float(os.getenv("GM_WALL_NET_FLOW_BPS_TH", "30") or 30.0)
 # Number of recent transactions kept for analysis.
 TXN_ANALYZE_COUNT = 50
 
- # Layer2 信号状态缓存
+# Layer2 信号状态缓存
 #   'state':            'active' | 'decaying' | 'expired',
- #   'triggered_at': int,       # 首次触发时间戳（epoch）
+#   'triggered_at': int,       # 首次触发时间戳（epoch）
 #   'initial_strength': float,
 #   'current_strength': float,
 #   'last_update_at':   int,

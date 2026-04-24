@@ -4,7 +4,295 @@ from __future__ import annotations
 from .common import *  # noqa: F401,F403
 from .persistence_service import *  # noqa: F401,F403
 from .pool_service import _build_member_data, _evaluate_signals_fast_internal
+from . import pool_service as pool_service_module
 import backend.realtime_runtime.runtime_jobs as runtime_jobs
+
+def runtime_pool1_left_replay(
+    hours: int = Query(72, ge=1, le=240),
+    limit: int = Query(120, ge=1, le=500),
+    promote_hours: int = Query(48, ge=1, le=168),
+):
+    h = int(hours)
+    lim = int(limit)
+    promote_h = int(promote_hours)
+    since_dt = datetime.datetime.now() - datetime.timedelta(hours=h)
+
+    def _parse_snapshot(raw) -> dict | None:
+        if isinstance(raw, str) and raw:
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                return None
+        return None
+
+    def _stage_label(snapshot: dict | None, message: str) -> tuple[str, str]:
+        hs = snapshot if isinstance(snapshot, dict) else {}
+        lsm = hs.get("left_state_machine") if isinstance(hs.get("left_state_machine"), dict) else {}
+        stage_a = lsm.get("stage_a") if isinstance(lsm.get("stage_a"), dict) else {}
+        stage_b = lsm.get("stage_b") if isinstance(lsm.get("stage_b"), dict) else {}
+        stage_c = lsm.get("stage_c") if isinstance(lsm.get("stage_c"), dict) else {}
+        observe_only = bool(hs.get("observe_only", False) or lsm.get("observe_only", False))
+        observe_reason = str(hs.get("observe_reason") or lsm.get("observe_reason") or "")
+        if bool(stage_a.get("passed")) and not bool(stage_b.get("passed")):
+            return "B??", "?????????????????"
+        if bool(stage_a.get("passed")) and bool(stage_b.get("passed")) and (not bool(stage_c.get("passed")) or bool(stage_c.get("observe_only"))):
+            return "C??", "???????????????????"
+        if bool(lsm.get("executable_ready")) and not observe_only:
+            return "???", "?? A/B/C ???????????"
+        if "?????" in message:
+            return "B??", "?????????????????"
+        if observe_reason in {
+            "concept_retreat",
+            "concept_weak",
+            "left_high_position_catchdown",
+            "left_distribution_structure",
+            "left_concept_heat_cliff",
+            "left_side_streak_retreat",
+            "left_side_repeat_retreat",
+            "left_side_streak_weak",
+            "left_side_repeat_weak",
+        }:
+            return "C??", "??????????????????"
+        if observe_only:
+            return "??", "????????????"
+        return "???", "????????????"
+
+    def _stage_c_block(snapshot: dict | None, observe_reason: str) -> tuple[str, str]:
+        hs = snapshot if isinstance(snapshot, dict) else {}
+        lsm = hs.get("left_state_machine") if isinstance(hs.get("left_state_machine"), dict) else {}
+        stage_c = lsm.get("stage_c") if isinstance(lsm.get("stage_c"), dict) else {}
+        items = [str(x or "").strip() for x in (stage_c.get("items") or [])] if isinstance(stage_c.get("items"), list) else []
+        observe_reason = str(observe_reason or "").strip()
+        if bool(stage_c.get("industry_joint_weak")) or observe_reason == "concept_industry_joint_weak" or "行业+概念共弱" in items:
+            return "industry_joint_weak", "行业+概念共弱"
+        if bool(stage_c.get("industry_retreat")) or "行业退潮" in items:
+            return "industry_retreat", "行业退潮"
+        if bool(stage_c.get("industry_weak")) or "行业承接转弱" in items:
+            return "industry_weak", "行业承接转弱"
+        if bool(stage_c.get("concept_heat_cliff")) or observe_reason == "left_concept_heat_cliff" or "??????" in items:
+            return "concept_heat_cliff", "??????"
+        if "???????" in items or observe_reason == "concept_retreat":
+            return "concept_retreat_main", "???????"
+        if "??????" in items or observe_reason == "concept_weak":
+            return "concept_weak_main", "??????"
+        if bool(stage_c.get("high_position_catchdown")) or observe_reason == "left_high_position_catchdown":
+            return "high_position_catchdown", "????"
+        if bool(stage_c.get("distribution_structure")) or observe_reason == "left_distribution_structure":
+            return "distribution_structure", "????"
+        return "", ""
+
+    def _future_tick_ret_bps(conn, ts_code: str, trigger_ts: float, trigger_price: float, horizon_sec: int, tolerance_sec: int) -> float | None:
+        if not ts_code or trigger_price <= 0 or trigger_ts <= 0:
+            return None
+        row = conn.execute(
+            """
+            SELECT price, ts
+            FROM tick_history
+            WHERE ts_code = ?
+              AND ts >= ?
+              AND ts <= ?
+              AND price > 0
+            ORDER BY ts ASC
+            LIMIT 1
+            """,
+            [ts_code, int(trigger_ts + horizon_sec), int(trigger_ts + horizon_sec + tolerance_sec)],
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            eval_price = float(row[0] or 0)
+            if eval_price <= 0:
+                return None
+            return round((eval_price - float(trigger_price)) / float(trigger_price) * 10000.0, 2)
+        except Exception:
+            return None
+
+    with _ro_conn_ctx() as conn:
+        hist_rows = conn.execute(
+            """
+            SELECT id, ts_code, name, signal_type, channel, signal_source, strength, message, price, pct_chg, details_json, triggered_at
+            FROM signal_history
+            WHERE pool_id = 1
+              AND signal_type = 'left_side_buy'
+              AND triggered_at >= ?
+            ORDER BY triggered_at DESC
+            LIMIT ?
+            """,
+            [since_dt, lim],
+        ).fetchall()
+
+    rows: list[dict] = []
+    summary = {
+        "signals": 0,
+        "stage_b_pending": 0,
+        "stage_c_observe": 0,
+        "executable": 0,
+        "concept_heat_cliff": 0,
+        "concept_retreat_main": 0,
+        "concept_weak_main": 0,
+        "industry_joint_weak": 0,
+        "industry_retreat": 0,
+        "industry_weak": 0,
+        "high_position_catchdown": 0,
+        "distribution_structure": 0,
+        "promoted_build": 0,
+        "watch_avoided_drop": 0,
+        "watch_too_early": 0,
+        "good_follow": 0,
+        "fast_fail": 0,
+        "mixed": 0,
+        "pending": 0,
+    }
+
+    with _ro_conn_ctx() as conn:
+        for r in hist_rows:
+            hist_id = r[0]
+            ts_code = str(r[1] or "")
+            name = str(r[2] or "")
+            message = str(r[7] or "")
+            price = float(r[8] or 0)
+            pct_chg = float(r[9] or 0)
+            snapshot = _parse_snapshot(r[10])
+            triggered_at = r[11]
+            trigger_dt = triggered_at if isinstance(triggered_at, datetime.datetime) else _parse_dt(triggered_at)
+            trigger_ts = float(trigger_dt.timestamp()) if isinstance(trigger_dt, datetime.datetime) else 0.0
+            stage_label, stage_reason = _stage_label(snapshot, message)
+            hs = snapshot if isinstance(snapshot, dict) else {}
+            observe_only = bool(hs.get("observe_only", False))
+            observe_reason = str(hs.get("observe_reason") or "")
+            stage_c_block_type, stage_c_block_label = _stage_c_block(snapshot, observe_reason)
+            concept_ecology = hs.get("concept_ecology") if isinstance(hs.get("concept_ecology"), dict) else {}
+            concept_state = str(concept_ecology.get("state") or "")
+            left_state_machine = hs.get("left_state_machine") if isinstance(hs.get("left_state_machine"), dict) else {}
+            stage_b = left_state_machine.get("stage_b") if isinstance(left_state_machine.get("stage_b"), dict) else {}
+            stage_c = left_state_machine.get("stage_c") if isinstance(left_state_machine.get("stage_c"), dict) else {}
+
+            ret_5m_bps = _future_tick_ret_bps(conn, ts_code, trigger_ts, price, 300, 900)
+            ret_60m_bps = _future_tick_ret_bps(conn, ts_code, trigger_ts, price, 3600, 1800)
+
+            future_rows = conn.execute(
+                """
+                SELECT signal_type, message, details_json, triggered_at
+                FROM signal_history
+                WHERE pool_id = 1
+                  AND ts_code = ?
+                  AND triggered_at > ?
+                  AND triggered_at <= ?
+                  AND signal_type IN ('left_side_buy', 'right_side_breakout', 'timing_clear')
+                ORDER BY triggered_at ASC
+                """,
+                [ts_code, trigger_dt, trigger_dt + datetime.timedelta(hours=promote_h) if isinstance(trigger_dt, datetime.datetime) else since_dt],
+            ).fetchall() if isinstance(trigger_dt, datetime.datetime) else []
+
+            next_exec_build = None
+            next_clear = None
+            next_any = None
+            for fr in future_rows:
+                sig_type = str(fr[0] or "")
+                fr_message = str(fr[1] or "")
+                fr_snapshot = _parse_snapshot(fr[2])
+                fr_dt = fr[3] if isinstance(fr[3], datetime.datetime) else _parse_dt(fr[3])
+                fr_observe = bool((fr_snapshot or {}).get("observe_only", False))
+                item = {
+                    "signal_type": sig_type,
+                    "message": fr_message,
+                    "observe_only": fr_observe,
+                    "triggered_at": _to_iso_datetime_text(fr_dt),
+                    "time_diff_hours": round(max(0.0, ((fr_dt.timestamp() - trigger_ts) / 3600.0)) if isinstance(fr_dt, datetime.datetime) and trigger_ts > 0 else 0.0, 3),
+                }
+                if next_any is None:
+                    next_any = item
+                if sig_type in {"left_side_buy", "right_side_breakout"} and not fr_observe and next_exec_build is None:
+                    next_exec_build = item
+                if sig_type == "timing_clear" and next_clear is None:
+                    next_clear = item
+
+            classification = "pending"
+            classification_reason = "????????"
+            if stage_label in {"B??", "C??", "??"}:
+                if next_exec_build is not None:
+                    classification = "promoted_build"
+                    classification_reason = "????????????/??"
+                elif ret_60m_bps is not None and ret_60m_bps <= -120:
+                    classification = "watch_avoided_drop"
+                    classification_reason = "??????????????????"
+                elif ret_60m_bps is not None and ret_60m_bps >= 80:
+                    classification = "watch_too_early"
+                    classification_reason = "?????????????????????"
+                elif ret_5m_bps is not None or ret_60m_bps is not None:
+                    classification = "mixed"
+                    classification_reason = "???????????????????????"
+            else:
+                if next_clear is not None and ret_60m_bps is not None and ret_60m_bps < 0:
+                    classification = "fast_fail"
+                    classification_reason = "????????????????????"
+                elif ret_60m_bps is not None and ret_60m_bps >= 80:
+                    classification = "good_follow"
+                    classification_reason = "????? 60 ???????"
+                elif ret_60m_bps is not None and ret_60m_bps <= -120:
+                    classification = "fast_fail"
+                    classification_reason = "????? 60 ???????"
+                elif ret_5m_bps is not None or ret_60m_bps is not None:
+                    classification = "mixed"
+                    classification_reason = "??????????????????????"
+
+            summary["signals"] += 1
+            if stage_label == "B??":
+                summary["stage_b_pending"] += 1
+            elif stage_label == "C??":
+                summary["stage_c_observe"] += 1
+            elif stage_label == "???":
+                summary["executable"] += 1
+            if stage_c_block_type and stage_c_block_type in summary:
+                summary[stage_c_block_type] += 1
+            if classification in summary:
+                summary[classification] += 1
+
+            rows.append(
+                {
+                    "id": hist_id,
+                    "ts_code": ts_code,
+                    "name": name,
+                    "signal_type": str(r[3] or ""),
+                    "channel": str(r[4] or ""),
+                    "signal_source": str(r[5] or ""),
+                    "strength": float(r[6] or 0),
+                    "message": message,
+                    "price": price,
+                    "pct_chg": pct_chg,
+                    "triggered_at": _to_iso_datetime_text(trigger_dt),
+                    "history_snapshot": snapshot,
+                    "stage_label": stage_label,
+                    "stage_reason": stage_reason,
+                    "observe_only": observe_only,
+                    "observe_reason": observe_reason,
+                    "stage_c_block_type": stage_c_block_type,
+                    "stage_c_block_label": stage_c_block_label,
+                    "concept_state": concept_state,
+                    "ret_5m_bps": ret_5m_bps,
+                    "ret_60m_bps": ret_60m_bps,
+                    "next_signal": next_any,
+                    "next_exec_build": next_exec_build,
+                    "next_clear": next_clear,
+                    "classification": classification,
+                    "classification_reason": classification_reason,
+                    "stage_b_items": list(stage_b.get("confirm_items") or []) if isinstance(stage_b.get("confirm_items"), list) else [],
+                    "stage_c_items": list(stage_c.get("items") or []) if isinstance(stage_c.get("items"), list) else [],
+                }
+            )
+
+    return {
+        "ok": True,
+        "checked_at": datetime.datetime.now().isoformat(),
+        "hours": h,
+        "limit": lim,
+        "promote_hours": promote_h,
+        "summary": summary,
+        "count": len(rows),
+        "rows": rows,
+    }
 
 def runtime_t0_reverse_replay(
     hours: int = Query(24, ge=1, le=168),
@@ -387,6 +675,471 @@ def runtime_threshold_calibration_snapshot():
         }
     payload["storage_source"] = "memory"
     return payload
+
+
+def runtime_concept_snapshot_status():
+    checked_at = datetime.datetime.now()
+
+    def _summarize_snapshot_map(snapshot_map: dict[str, dict]) -> dict:
+        concept_names: set[str] = set()
+        source_set: set[str] = set()
+        latest_updated = 0.0
+        latest_updated_iso = ""
+        for payload in (snapshot_map or {}).values():
+            if not isinstance(payload, dict):
+                continue
+            concept_name = str(payload.get("concept_name") or "").strip()
+            if concept_name:
+                concept_names.add(concept_name)
+            source = str(payload.get("source") or "").strip()
+            if source:
+                source_set.add(source)
+            try:
+                updated_at = float(payload.get("updated_at") or 0.0)
+            except Exception:
+                updated_at = 0.0
+            if updated_at > latest_updated:
+                latest_updated = updated_at
+                latest_updated_iso = str(payload.get("updated_at_iso") or "").strip()
+        return {
+            "count": len(concept_names),
+            "sources": sorted(source_set),
+            "updated_at": int(latest_updated) if latest_updated > 0 else None,
+            "updated_at_iso": latest_updated_iso or None,
+            "age_sec": (checked_at.timestamp() - latest_updated) if latest_updated > 0 else None,
+        }
+
+    with pool_service_module._concept_snapshot_cache_lock:
+        cache_map = dict(pool_service_module._concept_snapshot_cache_map or {})
+        cache_error = str(pool_service_module._concept_snapshot_cache_error or "")
+        cache_at = float(pool_service_module._concept_snapshot_cache_at or 0.0)
+
+    cache_summary = _summarize_snapshot_map(cache_map)
+    if cache_at > 0 and not cache_summary.get("updated_at"):
+        cache_summary["updated_at"] = int(cache_at)
+        cache_summary["updated_at_iso"] = datetime.datetime.fromtimestamp(cache_at).isoformat(timespec="seconds")
+        cache_summary["age_sec"] = checked_at.timestamp() - cache_at
+
+    redis_ready = False
+    redis_summary = {
+        "enabled": bool(_RUNTIME_STATE_REDIS_ENABLED),
+        "ready": False,
+        "count": 0,
+        "updated_at": None,
+        "updated_at_iso": None,
+        "age_sec": None,
+        "sources": [],
+        "error": "",
+    }
+    try:
+        cli = _get_runtime_state_redis()
+        redis_ready = cli is not None
+        redis_summary["ready"] = redis_ready
+    except Exception as e:
+        redis_summary["error"] = str(e)
+        cli = None
+    redis_map, redis_error, redis_at = pool_service_module._read_concept_snapshot_runtime_state(
+        source_override="redis_status"
+    )
+    redis_compact = _summarize_snapshot_map(redis_map)
+    redis_summary.update(redis_compact)
+    if redis_at > 0 and not redis_summary.get("updated_at"):
+        redis_summary["updated_at"] = int(redis_at)
+        redis_summary["updated_at_iso"] = datetime.datetime.fromtimestamp(redis_at).isoformat(timespec="seconds")
+        redis_summary["age_sec"] = checked_at.timestamp() - redis_at
+    if redis_error:
+        redis_summary["error"] = str(redis_error)
+
+    runtime_summary = {
+        "count": 0,
+        "sources": [],
+        "updated_at": None,
+        "updated_at_iso": None,
+        "age_sec": None,
+    }
+    runtime_error = ""
+    try:
+        from backend.realtime import gm_tick
+
+        runtime_map = dict(getattr(gm_tick, "_main_concept_snapshot", {}) or {})
+        runtime_summary = _summarize_snapshot_map(runtime_map)
+    except Exception as e:
+        runtime_error = str(e)
+
+    cache_fresh = bool(cache_summary.get("updated_at")) and float(cache_summary.get("age_sec") or 10**9) <= float(
+        pool_service_module._CONCEPT_SNAPSHOT_CACHE_TTL_SEC
+    ) * 2.0
+    runtime_fresh = bool(runtime_summary.get("updated_at")) and float(runtime_summary.get("age_sec") or 10**9) <= float(
+        runtime_jobs._CONCEPT_SNAPSHOT_OFF_SESSION_SEC
+    ) * 1.5
+    redis_fresh = bool(redis_summary.get("updated_at")) and float(redis_summary.get("age_sec") or 10**9) <= max(
+        float(pool_service_module._CONCEPT_SNAPSHOT_CACHE_TTL_SEC) * 3.0,
+        300.0,
+    )
+
+    active_source = ""
+    active_updated_iso = None
+    if runtime_summary.get("sources"):
+        active_source = str((runtime_summary.get("sources") or [""])[0] or "")
+        active_updated_iso = runtime_summary.get("updated_at_iso")
+    elif cache_summary.get("sources"):
+        active_source = str((cache_summary.get("sources") or [""])[0] or "")
+        active_updated_iso = cache_summary.get("updated_at_iso")
+    elif redis_summary.get("sources"):
+        active_source = str((redis_summary.get("sources") or [""])[0] or "")
+        active_updated_iso = redis_summary.get("updated_at_iso")
+
+    ok = bool(runtime_summary.get("count")) and runtime_fresh
+    if not ok and bool(cache_summary.get("count")) and cache_fresh:
+        ok = True
+    if not ok and bool(redis_summary.get("count")) and redis_fresh:
+        ok = True
+
+    return {
+        "ok": ok,
+        "checked_at": checked_at.isoformat(),
+        "refresh_ttl_sec": float(pool_service_module._CONCEPT_SNAPSHOT_CACHE_TTL_SEC),
+        "off_session_refresh_sec": float(runtime_jobs._CONCEPT_SNAPSHOT_OFF_SESSION_SEC),
+        "active_source": active_source or None,
+        "active_updated_at": runtime_summary.get("updated_at") or cache_summary.get("updated_at") or redis_summary.get("updated_at"),
+        "active_updated_at_iso": active_updated_iso,
+        "cache": {
+            **cache_summary,
+            "error": cache_error,
+            "fresh": cache_fresh,
+        },
+        "runtime": {
+            **runtime_summary,
+            "fresh": runtime_fresh,
+            "error": runtime_error,
+        },
+        "redis": {
+            **redis_summary,
+            "fresh": redis_fresh,
+        },
+    }
+
+
+def runtime_industry_mapping_coverage(
+    pool_id: Optional[int] = Query(None),
+    limit_unmatched: int = Query(80, ge=1, le=500),
+):
+    checked_at = datetime.datetime.now()
+    limit_n = int(limit_unmatched)
+
+    with _ro_conn_ctx() as conn:
+        if pool_id is None:
+            member_rows = conn.execute(
+                """
+                SELECT pool_id, ts_code, name, industry
+                FROM monitor_pools
+                ORDER BY pool_id, sort_order, added_at
+                """
+            ).fetchall()
+        else:
+            member_rows = conn.execute(
+                """
+                SELECT pool_id, ts_code, name, industry
+                FROM monitor_pools
+                WHERE pool_id = ?
+                ORDER BY sort_order, added_at
+                """,
+                [int(pool_id)],
+            ).fetchall()
+
+    if not member_rows:
+        return {
+            "ok": True,
+            "checked_at": checked_at.isoformat(timespec="seconds"),
+            "pool_scope": int(pool_id) if pool_id is not None else None,
+            "totals": {
+                "member_count": 0,
+                "unique_ts_count": 0,
+                "pool_count": 0,
+            },
+            "em_tables": {
+                "board_count": 0,
+                "member_count": 0,
+            },
+            "source_counts": {},
+            "match_counts": {},
+            "coverage": {
+                "matched": 0,
+                "unmatched": 0,
+                "match_rate": 0.0,
+                "code_first_rate": 0.0,
+            },
+            "unmatched_items": [],
+            "fallback_items": [],
+            "snapshot": {
+                "count": 0,
+                "updated_at": None,
+                "updated_at_iso": None,
+                "error": "",
+                "sources": [],
+            },
+        }
+
+    ts_codes = sorted({str(r[1] or "").strip().upper() for r in member_rows if str(r[1] or "").strip()})
+    pool_counts: dict[str, int] = {}
+    for row in member_rows:
+        pool_counts[str(int(row[0]))] = pool_counts.get(str(int(row[0])), 0) + 1
+
+    industry_snapshot_map, snapshot_error, snapshot_at = pool_service_module._fetch_realtime_industry_snapshot_map(
+        force_refresh=False
+    )
+    snapshot_sources = sorted(
+        {
+            str(v.get("source") or "").strip()
+            for v in (industry_snapshot_map or {}).values()
+            if isinstance(v, dict) and str(v.get("source") or "").strip()
+        }
+    )
+
+    em_name_map: dict[str, str] = {}
+    em_code_map: dict[str, str] = {}
+    stock_basic_map: dict[str, dict] = {}
+    em_board_count = 0
+    em_member_count = 0
+    with pool_service_module._data_ro_conn_ctx() as dconn:
+        em_name_map, em_code_map = pool_service_module._load_em_industry_member_maps(dconn, ts_codes)
+        try:
+            row = dconn.execute("SELECT COUNT(*) FROM em_industry_board").fetchone()
+            em_board_count = int(row[0] or 0) if row else 0
+        except Exception:
+            em_board_count = 0
+        try:
+            row = dconn.execute("SELECT COUNT(*) FROM em_industry_member").fetchone()
+            em_member_count = int(row[0] or 0) if row else 0
+        except Exception:
+            em_member_count = 0
+        if ts_codes:
+            placeholders = ",".join(["?"] * len(ts_codes))
+            try:
+                rows = dconn.execute(
+                    f"""
+                    SELECT ts_code, name, industry, market
+                    FROM stock_basic
+                    WHERE ts_code IN ({placeholders})
+                    """,
+                    ts_codes,
+                ).fetchall()
+                for ts_code, name, industry, market in rows:
+                    code = str(ts_code or "").strip().upper()
+                    if not code:
+                        continue
+                    stock_basic_map[code] = {
+                        "name": str(name or "").strip(),
+                        "industry": str(industry or "").strip(),
+                        "market": str(market or "").strip(),
+                    }
+            except Exception:
+                stock_basic_map = {}
+
+    alias_inputs = {
+        str(em_name_map.get(ts_code, "") or "").strip()
+        for ts_code in ts_codes
+        if str(em_name_map.get(ts_code, "") or "").strip()
+    }
+    alias_inputs.update(
+        str((stock_basic_map.get(ts_code) or {}).get("industry") or "").strip()
+        for ts_code in ts_codes
+        if str((stock_basic_map.get(ts_code) or {}).get("industry") or "").strip()
+    )
+    alias_inputs.update(str(r[3] or "").strip() for r in member_rows if str(r[3] or "").strip())
+    pool_service_module._attach_industry_snapshot_aliases(industry_snapshot_map, alias_inputs)
+
+    source_counts = {
+        "em_industry_member": 0,
+        "stock_basic_fallback": 0,
+        "monitor_pool_fallback": 0,
+        "missing": 0,
+    }
+    match_counts = {
+        "code": 0,
+        "exact": 0,
+        "normalized": 0,
+        "alias": 0,
+        "contains": 0,
+        "fuzzy": 0,
+        "resolved": 0,
+        "unmatched": 0,
+    }
+    matched_count = 0
+    code_first_count = 0
+    unmatched_items: list[dict] = []
+    fallback_items: list[dict] = []
+
+    for row in member_rows:
+        member_pool_id = int(row[0])
+        ts_code = str(row[1] or "").strip().upper()
+        name = str(row[2] or "").strip()
+        pool_industry = str(row[3] or "").strip()
+        if not ts_code:
+            continue
+
+        em_industry_name = str(em_name_map.get(ts_code, "") or "").strip()
+        em_industry_code = str(em_code_map.get(ts_code, "") or "").strip().upper()
+        basic_meta = stock_basic_map.get(ts_code) or {}
+        stock_basic_industry = str(basic_meta.get("industry") or "").strip()
+
+        if em_industry_name or em_industry_code:
+            source = "em_industry_member"
+        elif stock_basic_industry:
+            source = "stock_basic_fallback"
+        elif pool_industry:
+            source = "monitor_pool_fallback"
+        else:
+            source = "missing"
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+        effective_industry = em_industry_name or stock_basic_industry or pool_industry
+        effective_code = em_industry_code
+
+        resolved = pool_service_module._resolve_industry_snapshot(
+            industry_snapshot_map,
+            industry_name=effective_industry,
+            industry_code=effective_code,
+        )
+        resolved_name = str((resolved or {}).get("industry_name") or "").strip()
+        resolved_code = str((resolved or {}).get("industry_code") or "").strip().upper()
+        resolved_state = str((resolved or {}).get("state") or "").strip()
+        if effective_code and resolved_code and resolved_code == pool_service_module._normalize_industry_board_code(effective_code):
+            match_method = "code"
+        elif resolved:
+            match_method = str(resolved.get("industry_match_method") or "").strip()
+            if not match_method:
+                if effective_industry and effective_industry in industry_snapshot_map:
+                    match_method = "exact"
+                elif effective_industry and pool_service_module._normalize_industry_name(effective_industry) in industry_snapshot_map:
+                    match_method = "normalized"
+                else:
+                    match_method = "resolved"
+        else:
+            match_method = "unmatched"
+
+        if match_method not in match_counts:
+            match_counts[match_method] = 0
+        match_counts[match_method] += 1
+        if match_method != "unmatched":
+            matched_count += 1
+        if match_method == "code":
+            code_first_count += 1
+
+        item = {
+            "pool_id": member_pool_id,
+            "ts_code": ts_code,
+            "name": name,
+            "source": source,
+            "pool_industry": pool_industry,
+            "stock_basic_industry": stock_basic_industry,
+            "em_industry_name": em_industry_name,
+            "em_industry_code": em_industry_code,
+            "effective_industry": effective_industry,
+            "effective_code": effective_code,
+            "match_method": match_method,
+            "resolved_industry": resolved_name,
+            "resolved_code": resolved_code,
+            "resolved_state": resolved_state,
+        }
+        if match_method == "unmatched" and len(unmatched_items) < limit_n:
+            unmatched_items.append(item)
+        if source != "em_industry_member" and len(fallback_items) < limit_n:
+            fallback_items.append(item)
+
+    member_count = len(member_rows)
+    return {
+        "ok": True,
+        "checked_at": checked_at.isoformat(timespec="seconds"),
+        "pool_scope": int(pool_id) if pool_id is not None else None,
+        "totals": {
+            "member_count": member_count,
+            "unique_ts_count": len(ts_codes),
+            "pool_count": len(pool_counts),
+            "pool_breakdown": pool_counts,
+        },
+        "em_tables": {
+            "board_count": em_board_count,
+            "member_count": em_member_count,
+            "mapped_name_count": len(em_name_map),
+            "mapped_code_count": len(em_code_map),
+        },
+        "source_counts": source_counts,
+        "match_counts": match_counts,
+        "coverage": {
+            "matched": matched_count,
+            "unmatched": member_count - matched_count,
+            "match_rate": round((matched_count / member_count) * 100.0, 2) if member_count else 0.0,
+            "code_first_count": code_first_count,
+            "code_first_rate": round((code_first_count / member_count) * 100.0, 2) if member_count else 0.0,
+        },
+        "snapshot": {
+            "count": len(
+                {
+                    str(v.get("industry_name") or "").strip()
+                    for v in (industry_snapshot_map or {}).values()
+                    if isinstance(v, dict) and str(v.get("industry_name") or "").strip()
+                }
+            ),
+            "updated_at": int(snapshot_at) if snapshot_at > 0 else None,
+            "updated_at_iso": datetime.datetime.fromtimestamp(snapshot_at).isoformat(timespec="seconds")
+            if snapshot_at > 0
+            else None,
+            "age_sec": round(checked_at.timestamp() - snapshot_at, 3) if snapshot_at > 0 else None,
+            "sources": snapshot_sources,
+            "error": str(snapshot_error or ""),
+        },
+        "unmatched_items": unmatched_items,
+        "fallback_items": fallback_items,
+    }
+
+
+def runtime_concept_snapshot_refresh():
+    checked_at = datetime.datetime.now()
+    rows_loaded = 0
+    error_text = ""
+    try:
+        raw_snapshot_map, error_text, fetched_at = pool_service_module._fetch_realtime_concept_snapshot_map(force_refresh=True)
+        if raw_snapshot_map:
+            runtime_snapshot_map: dict[str, dict] = {}
+            seen_names: set[str] = set()
+            for snapshot in raw_snapshot_map.values():
+                if not isinstance(snapshot, dict):
+                    continue
+                concept_name = str(snapshot.get("concept_name") or "").strip()
+                if not concept_name or concept_name in seen_names:
+                    continue
+                seen_names.add(concept_name)
+                pool_service_module._register_concept_snapshot_alias(
+                    runtime_snapshot_map,
+                    concept_name=concept_name,
+                    concept_code=snapshot.get("board_code"),
+                    snapshot=dict(snapshot),
+                )
+            rows_loaded = len(seen_names)
+            if runtime_snapshot_map:
+                provider = get_tick_provider()
+                provider.bulk_update_concept_snapshots(runtime_snapshot_map)
+        status = runtime_concept_snapshot_status()
+        return {
+            "ok": bool(status.get("ok")),
+            "checked_at": checked_at.isoformat(),
+            "message": "concept snapshot refreshed" if rows_loaded > 0 else "concept snapshot refresh finished",
+            "rows_loaded": int(rows_loaded),
+            "fetch_error": str(error_text or ""),
+            "status": status,
+        }
+    except Exception as e:
+        error_text = str(e)
+        status = runtime_concept_snapshot_status()
+        return {
+            "ok": False,
+            "checked_at": checked_at.isoformat(),
+            "message": "concept snapshot refresh failed",
+            "rows_loaded": int(rows_loaded),
+            "fetch_error": error_text,
+            "status": status,
+        }
 def _table_probe(conn: duckdb.DuckDBPyConnection, table_name: str) -> tuple[bool, Optional[str]]:
     try:
         conn.execute(f'SELECT 1 FROM "{table_name}" LIMIT 1').fetchone()

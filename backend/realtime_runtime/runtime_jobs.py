@@ -4,6 +4,13 @@ from __future__ import annotations
 from .common import *  # noqa: F401,F403
 from .persistence_service import *  # noqa: F401,F403
 
+_concept_snapshot_refresher_started = False
+_industry_snapshot_refresher_started = False
+_CONCEPT_SNAPSHOT_REFRESH_SEC = float(os.getenv("CONCEPT_SNAPSHOT_REFRESH_SEC", "60") or 60.0)
+_CONCEPT_SNAPSHOT_OFF_SESSION_SEC = float(os.getenv("CONCEPT_SNAPSHOT_OFF_SESSION_SEC", "300") or 300.0)
+_INDUSTRY_SNAPSHOT_REFRESH_SEC = float(os.getenv("INDUSTRY_SNAPSHOT_REFRESH_SEC", "60") or 60.0)
+_INDUSTRY_SNAPSHOT_OFF_SESSION_SEC = float(os.getenv("INDUSTRY_SNAPSHOT_OFF_SESSION_SEC", "300") or 300.0)
+
 def _load_latest_vol20_map(ts_codes: list[str]) -> dict[str, float]:
     if not ts_codes:
         return {}
@@ -366,7 +373,7 @@ def _start_tick_persistence() -> None:
     _start_db_writer()
 
     def _loop() -> None:
-        logger.info("[Layer3] tick persistence thread started")
+        logger.info(f"[Layer3] tick persistence thread started enabled={_TICK_DB_PERSIST_ENABLED}")
         provider = get_tick_provider()
         gm_persist_queue = None
         if getattr(provider, "name", "") == "gm":
@@ -387,6 +394,8 @@ def _start_tick_persistence() -> None:
                         # Drain queue but skip persistence during non-trading periods.
                         continue
                     if kind == "tick":
+                        if not _TICK_DB_PERSIST_ENABLED:
+                            continue
                         row = _build_tick_row(str(ts_code), str((item or {}).get("name", "") or ""), item or {})
                         _enqueue_db_write("tick_rows", [row])
                     elif kind == "signal":
@@ -408,7 +417,7 @@ def _start_tick_persistence() -> None:
                         rows.append(_build_tick_row(str(ts_code), str(name or ""), t))
                     except Exception:
                         pass
-                if rows:
+                if rows and _TICK_DB_PERSIST_ENABLED:
                     _enqueue_db_write("tick_rows", rows)
             except Exception as e:
                 logger.warning(f"[Layer3] tick persistence error: {e}")
@@ -450,6 +459,174 @@ def _start_txn_refresher(interval: float = 3.0) -> None:
             time.sleep(interval)
 
     threading.Thread(target=_loop, daemon=True, name="txn-refresher").start()
+def _start_concept_snapshot_refresher(interval_sec: float = _CONCEPT_SNAPSHOT_REFRESH_SEC) -> None:
+    global _concept_snapshot_refresher_started
+    if _concept_snapshot_refresher_started:
+        return
+    _concept_snapshot_refresher_started = True
+
+    def _loop() -> None:
+        sec = max(15.0, float(interval_sec))
+        logger.info(f"[Layer2] concept snapshot refresher started interval={sec:.0f}s")
+        while True:
+            try:
+                from . import pool_service
+
+                force_refresh = True
+                raw_snapshot_map, error_text, fetched_at = pool_service._fetch_realtime_concept_snapshot_map(
+                    force_refresh=force_refresh
+                )
+                if raw_snapshot_map:
+                    runtime_snapshot_map: dict[str, dict] = {}
+                    seen_names: set[str] = set()
+                    for snapshot in raw_snapshot_map.values():
+                        if not isinstance(snapshot, dict):
+                            continue
+                        concept_name = str(snapshot.get("concept_name") or "").strip()
+                        if not concept_name or concept_name in seen_names:
+                            continue
+                        seen_names.add(concept_name)
+                        pool_service._register_concept_snapshot_alias(
+                            runtime_snapshot_map,
+                            concept_name=concept_name,
+                            concept_code=snapshot.get("board_code"),
+                            snapshot=dict(snapshot),
+                        )
+                    if runtime_snapshot_map:
+                        provider = get_tick_provider()
+                        provider.bulk_update_concept_snapshots(runtime_snapshot_map)
+                elif error_text:
+                    logger.debug(f"[Layer2] concept snapshot refresh skipped: {error_text}")
+            except Exception as e:
+                logger.warning(f"[Layer2] concept snapshot refresher error: {e}")
+
+            try:
+                market_open = bool(_is_market_open().get("is_open", False))
+            except Exception:
+                market_open = False
+            sleep_sec = sec if market_open else max(sec, float(_CONCEPT_SNAPSHOT_OFF_SESSION_SEC))
+            time.sleep(sleep_sec)
+
+    threading.Thread(target=_loop, daemon=True, name="concept-snapshot-refresher").start()
+
+
+def _load_industry_snapshot_alias_inputs(pool_service_module=None) -> list[str]:
+    alias_inputs: list[str] = []
+    ts_codes: list[str] = []
+    try:
+        with _ro_conn_ctx() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT ts_code, industry
+                FROM monitor_pools
+                WHERE ts_code IS NOT NULL AND ts_code <> ''
+                """
+            ).fetchall()
+        for ts_code, industry in rows:
+            code = str(ts_code or "").strip()
+            if code:
+                ts_codes.append(code)
+            industry_name = str(industry or "").strip()
+            if industry_name:
+                alias_inputs.append(industry_name)
+    except Exception:
+        pass
+
+    if pool_service_module is not None and ts_codes:
+        try:
+            with _data_ro_conn_ctx() as data_conn:
+                em_industry_name_map, _em_industry_code_map = pool_service_module._load_em_industry_member_maps(
+                    data_conn,
+                    sorted(set(ts_codes)),
+                )
+            alias_inputs.extend(
+                str(name or "").strip()
+                for name in em_industry_name_map.values()
+                if str(name or "").strip()
+            )
+        except Exception:
+            pass
+
+    try:
+        from backend.realtime.gm_runtime import common as gm_common
+
+        runtime_industry_map = getattr(gm_common, "_main_stock_industry", {}) or {}
+        if isinstance(runtime_industry_map, dict):
+            alias_inputs.extend(
+                str(name or "").strip()
+                for name in runtime_industry_map.values()
+                if str(name or "").strip()
+            )
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in alias_inputs:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _start_industry_snapshot_refresher(interval_sec: float = _INDUSTRY_SNAPSHOT_REFRESH_SEC) -> None:
+    global _industry_snapshot_refresher_started
+    if _industry_snapshot_refresher_started:
+        return
+    _industry_snapshot_refresher_started = True
+
+    def _loop() -> None:
+        sec = max(15.0, float(interval_sec))
+        logger.info(f"[Layer2] industry snapshot refresher started interval={sec:.0f}s")
+        while True:
+            try:
+                from . import pool_service
+
+                raw_snapshot_map, error_text, _fetched_at = pool_service._fetch_realtime_industry_snapshot_map(
+                    force_refresh=True
+                )
+                if raw_snapshot_map:
+                    runtime_snapshot_map: dict[str, dict] = {}
+                    seen_names: set[str] = set()
+                    alias_inputs = _load_industry_snapshot_alias_inputs(pool_service)
+                    pool_service._attach_industry_snapshot_aliases(
+                        raw_snapshot_map,
+                        alias_inputs,
+                    )
+                    for snapshot in raw_snapshot_map.values():
+                        if not isinstance(snapshot, dict):
+                            continue
+                        industry_name = str(snapshot.get("industry_name") or "").strip()
+                        if not industry_name or industry_name in seen_names:
+                            continue
+                        seen_names.add(industry_name)
+                        pool_service._register_industry_snapshot_alias(
+                            runtime_snapshot_map,
+                            industry_name=industry_name,
+                            snapshot=dict(snapshot),
+                        )
+                    pool_service._attach_industry_snapshot_aliases(
+                        runtime_snapshot_map,
+                        alias_inputs,
+                    )
+                    if runtime_snapshot_map:
+                        provider = get_tick_provider()
+                        provider.bulk_update_industry_snapshots(runtime_snapshot_map)
+                elif error_text:
+                    logger.debug(f"[Layer2] industry snapshot refresh skipped: {error_text}")
+            except Exception as e:
+                logger.warning(f"[Layer2] industry snapshot refresher error: {e}")
+
+            try:
+                market_open = bool(_is_market_open().get("is_open", False))
+            except Exception:
+                market_open = False
+            sleep_sec = sec if market_open else max(sec, float(_INDUSTRY_SNAPSHOT_OFF_SESSION_SEC))
+            time.sleep(sleep_sec)
+
+    threading.Thread(target=_loop, daemon=True, name="industry-snapshot-refresher").start()
 def _start_t0_quality_monitor(interval: float = 1.0) -> None:
     global _quality_monitor_started
     if _quality_monitor_started:

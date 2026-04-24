@@ -1,5 +1,22 @@
-﻿"""Realtime pool service: pool members, signal evaluation, market/tick access, indices."""
+"""Realtime pool service: pool members, signal evaluation, market/tick access, indices."""
+
 from __future__ import annotations
+
+import warnings
+import re
+import unicodedata
+from difflib import SequenceMatcher
+
+from scripts.akshare_proxy_patch_free import install_patch
+install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
+    log_file="akshare_proxy_patch.log",
+    log_console=False,
+    hook_domains=[
+    "fund.eastmoney.com",
+    "push2.eastmoney.com",
+    "push2his.eastmoney.com",
+    "emweb.securities.eastmoney.com",
+    ],)
 
 from .common import *  # noqa: F401,F403
 from .persistence_service import *  # noqa: F401,F403
@@ -9,12 +26,30 @@ _concept_flow_cache_lock = threading.Lock()
 _concept_flow_cache_at: float = 0.0
 _concept_flow_cache_rows: list[dict] = []
 _concept_flow_cache_error: str = ""
+_CONCEPT_SNAPSHOT_CACHE_TTL_SEC = 60.0
+_concept_snapshot_cache_lock = threading.Lock()
+_concept_snapshot_cache_at: float = 0.0
+_concept_snapshot_cache_map: dict[str, dict] = {}
+_concept_snapshot_cache_error: str = ""
+_INDUSTRY_SNAPSHOT_CACHE_TTL_SEC = 60.0
+_industry_snapshot_cache_lock = threading.Lock()
+_industry_snapshot_cache_at: float = 0.0
+_industry_snapshot_cache_map: dict[str, dict] = {}
+_industry_snapshot_cache_error: str = ""
+_CONCEPT_SNAPSHOT_REDIS_KEY_LATEST = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:concept:snapshot:latest"
+_CONCEPT_SNAPSHOT_REDIS_KEY_META = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:concept:snapshot:meta"
+_AKSHARE_PROXY_PATCH_ENABLED = os.getenv("REALTIME_AKSHARE_PROXY_PATCH_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 _concept_flow_patch_ready = False
 _MARKET_CHANGES_CACHE_TTL_SEC = 5.0
 _market_changes_cache_lock = threading.Lock()
 _market_changes_cache: dict[str, dict] = {}
 _news_feed_cache_lock = threading.Lock()
 _news_feed_cache: dict[str, dict] = {}
+
+try:
+    from pandas.errors import SettingWithCopyWarning as _SettingWithCopyWarning
+except Exception:
+    _SettingWithCopyWarning = Warning
 
 _NEWS_FEED_SOURCES: dict[str, dict[str, object]] = {
     "cjzc_em": {
@@ -140,6 +175,408 @@ def _normalize_code6(raw: object) -> str:
     return digits
 
 
+def _normalize_concept_board_code(raw: object) -> str:
+    s = str(raw or "").strip().upper()
+    if not s:
+        return ""
+    if s.startswith("BK"):
+        digits = "".join(ch for ch in s[2:] if ch.isdigit())
+        if digits and len(digits) < 4:
+            digits = digits.zfill(4)
+            return f"BK{digits}"
+        return s
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return ""
+    if len(digits) < 4:
+        digits = digits.zfill(4)
+    return f"BK{digits}"
+
+
+def _normalize_industry_board_code(raw: object) -> str:
+    s = str(raw or "").strip().upper()
+    if not s:
+        return ""
+    if s.startswith("BK"):
+        digits = "".join(ch for ch in s[2:] if ch.isdigit())
+        if digits:
+            return f"BK{digits.zfill(4)}"
+        return s
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if digits:
+        return f"BK{digits.zfill(4)}"
+    return s
+
+
+_INDUSTRY_SNAPSHOT_ALIAS_MAP: dict[str, str] = {
+    "IT设备": "计算机设备",
+    "专用机械": "专用设备",
+    "中成药": "中药",
+    "乳制品": "乳品",
+    "互联网": "互联网服务",
+    "供气供热": "燃气",
+    "全国地产": "房地产开发",
+    "区域地产": "房地产开发",
+    "房产服务": "房地产服务",
+    "园区开发": "产业地产",
+    "建筑工程": "房屋建设",
+    "公路": "高速公路",
+    "路桥": "基础建设",
+    "水运": "航运港口",
+    "空运": "航空运输",
+    "服饰": "服装家纺",
+    "纺织": "纺织制造",
+    "玻璃": "玻璃玻纤",
+    "红黄酒": "非白酒",
+    "软件服务": "软件开发",
+    "电信运营": "通信服务",
+    "电器连锁": "家电行业",
+    "石油加工": "炼化及贸易",
+    "石油开采": "油气开采及服务",
+    "石油贸易": "炼化及贸易",
+    "环境保护": "环保行业",
+    "生物制药": "生物制品",
+    "超市连锁": "一般零售",
+    "综合类": "综合",
+    "船舶": "航海装备",
+    "运输设备": "交运设备",
+    "旅游服务": "旅游酒店",
+    "旅游景点": "旅游及景区",
+    "食品": "食品加工制造",
+    "装修装饰": "装修建材",
+}
+
+_INDUSTRY_SNAPSHOT_ALIAS_MAP.update({
+    "???": "??",
+    "????": "??",
+    "????": "????",
+    "????": "????",
+    "??": "????",
+    "????": "????",
+    "????": "????",
+    "????": "????",
+    "????": "????",
+    "????": "???????",
+    "???": "????",
+    "????": "????",
+    "????": "?????",
+    "????": "???",
+    "????": "????",
+    "????": "??????",
+    "???": "???",
+    "????": "??????",
+    "????": "?????",
+    "????": "????",
+    "????": "?????",
+    "????": "??????",
+    "????": "??????",
+    "???": "??",
+    "??": "????",
+    "????": "?????",
+})
+
+
+def _normalize_industry_name(raw: object) -> str:
+    s = unicodedata.normalize("NFKC", str(raw or "").strip())
+    if not s:
+        return ""
+    s = s.replace(" ", "")
+    s = re.sub(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVX]+$", "", s, flags=re.IGNORECASE)
+    if s.endswith("类") and len(s) > 1:
+        s = s[:-1]
+    for suffix in ("行业", "板块"):
+        if s.endswith(suffix) and len(s) > len(suffix):
+            s = s[:-len(suffix)]
+    return s.strip()
+
+
+def _iter_unique_industry_snapshots(snapshot_map: dict[str, dict]) -> list[tuple[str, dict]]:
+    out: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+    for snapshot in snapshot_map.values():
+        if not isinstance(snapshot, dict):
+            continue
+        name = str(snapshot.get("industry_name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append((name, dict(snapshot)))
+    return out
+
+
+def _match_industry_snapshot(
+    snapshot_map: dict[str, dict],
+    industry_name: object,
+) -> tuple[dict, str, float]:
+    raw_name = str(industry_name or "").strip()
+    if not raw_name:
+        return {}, "", 0.0
+
+    direct = dict(snapshot_map.get(raw_name) or {})
+    if direct:
+        return direct, "exact", 1.0
+
+    normalized = _normalize_industry_name(raw_name)
+    if normalized and normalized != raw_name:
+        direct_norm = dict(snapshot_map.get(normalized) or {})
+        if direct_norm:
+            return direct_norm, "normalized", 0.96
+
+    alias_target = _INDUSTRY_SNAPSHOT_ALIAS_MAP.get(raw_name) or _INDUSTRY_SNAPSHOT_ALIAS_MAP.get(normalized)
+    if alias_target:
+        alias_snapshot = dict(snapshot_map.get(alias_target) or snapshot_map.get(_normalize_industry_name(alias_target)) or {})
+        if alias_snapshot:
+            return alias_snapshot, "alias", 0.98
+
+    candidates = _iter_unique_industry_snapshots(snapshot_map)
+    best_snapshot: dict = {}
+    best_method = ""
+    best_score = 0.0
+    for candidate_name, candidate_snapshot in candidates:
+        candidate_norm = _normalize_industry_name(candidate_name)
+        if not candidate_norm:
+            continue
+        score = 0.0
+        method = ""
+        if normalized and (normalized in candidate_norm or candidate_norm in normalized):
+            overlap = min(len(normalized), len(candidate_norm))
+            score = 0.84 + min(0.12, overlap * 0.01)
+            method = "contains"
+        else:
+            seq = SequenceMatcher(None, normalized or raw_name, candidate_norm).ratio()
+            if seq >= 0.74:
+                score = seq
+                method = "fuzzy"
+        if score > best_score:
+            best_snapshot = dict(candidate_snapshot)
+            best_method = method
+            best_score = score
+
+    if best_snapshot and best_score >= 0.82:
+        return best_snapshot, best_method, round(float(best_score), 4)
+    return {}, "", 0.0
+
+
+def _register_concept_snapshot_alias(
+    snapshot_map: dict[str, dict],
+    *,
+    concept_name: object = "",
+    concept_code: object = "",
+    snapshot: Optional[dict] = None,
+) -> None:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return
+    name = str(concept_name or snapshot.get("concept_name") or "").strip()
+    board_code = _normalize_concept_board_code(concept_code or snapshot.get("board_code"))
+    payload = dict(snapshot)
+    if name:
+        payload["concept_name"] = name
+    if board_code:
+        payload["board_code"] = board_code
+    if board_code:
+        snapshot_map[board_code] = dict(payload)
+    if name:
+        snapshot_map[name] = dict(payload)
+
+
+def _resolve_concept_snapshot(
+    concept_snapshot_map: dict[str, dict],
+    concept_name: object = "",
+    concept_code: object = "",
+) -> dict:
+    board_code = _normalize_concept_board_code(concept_code)
+    if board_code:
+        snapshot = dict(concept_snapshot_map.get(board_code) or {})
+        if snapshot:
+            return snapshot
+    name = str(concept_name or "").strip()
+    if name:
+        return dict(concept_snapshot_map.get(name) or {})
+    return {}
+
+
+def _register_industry_snapshot_alias(
+    snapshot_map: dict[str, dict],
+    *,
+    industry_name: object = "",
+    industry_code: object = "",
+    snapshot: Optional[dict] = None,
+) -> None:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return
+    name = str(industry_name or snapshot.get("industry_name") or "").strip()
+    board_code = _normalize_industry_board_code(industry_code or snapshot.get("industry_code"))
+    if not name and not board_code:
+        return
+    payload = dict(snapshot)
+    payload["industry_name"] = name
+    if board_code:
+        payload["industry_code"] = board_code
+        snapshot_map[board_code] = dict(payload)
+    if name:
+        snapshot_map[name] = dict(payload)
+    normalized = _normalize_industry_name(name)
+    if normalized:
+        snapshot_map[normalized] = dict(payload)
+
+
+def _attach_industry_snapshot_aliases(
+    snapshot_map: dict[str, dict],
+    industry_names: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict]:
+    if not snapshot_map:
+        return snapshot_map
+    for raw_name in sorted({str(x or "").strip() for x in (industry_names or []) if str(x or "").strip()}):
+        if raw_name in snapshot_map or _normalize_industry_name(raw_name) in snapshot_map:
+            continue
+        matched_snapshot, match_method, match_score = _match_industry_snapshot(snapshot_map, raw_name)
+        if not matched_snapshot:
+            continue
+        alias_payload = dict(matched_snapshot)
+        alias_payload["industry_query_name"] = raw_name
+        alias_payload["industry_match_method"] = match_method
+        alias_payload["industry_match_score"] = round(float(match_score), 4)
+        snapshot_map[raw_name] = dict(alias_payload)
+        normalized = _normalize_industry_name(raw_name)
+        if normalized:
+            snapshot_map[normalized] = dict(alias_payload)
+    return snapshot_map
+
+
+def _resolve_industry_snapshot(
+    industry_snapshot_map: dict[str, dict],
+    industry_name: object = "",
+    industry_code: object = "",
+) -> dict:
+    board_code = _normalize_industry_board_code(industry_code)
+    if board_code:
+        snapshot = dict(industry_snapshot_map.get(board_code) or {})
+        if snapshot:
+            return snapshot
+    name = str(industry_name or "").strip()
+    if not name:
+        return {}
+    snapshot = dict(industry_snapshot_map.get(name) or {})
+    if snapshot:
+        return snapshot
+    normalized = _normalize_industry_name(name)
+    if normalized:
+        snapshot = dict(industry_snapshot_map.get(normalized) or {})
+        if snapshot:
+            return snapshot
+    matched_snapshot, match_method, match_score = _match_industry_snapshot(industry_snapshot_map, name)
+    if matched_snapshot:
+        matched_snapshot["industry_query_name"] = name
+        matched_snapshot["industry_match_method"] = match_method
+        matched_snapshot["industry_match_score"] = round(float(match_score), 4)
+        return matched_snapshot
+    return {}
+
+
+def _build_concept_ecology_multi(
+    concept_snapshot_map: dict[str, dict],
+    concept_names: Optional[list[str]] = None,
+    concept_codes: Optional[list[str]] = None,
+) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    names = list(concept_names or [])
+    codes = list(concept_codes or [])
+    for idx, concept_name in enumerate(names):
+        board_code = codes[idx] if idx < len(codes) else ""
+        snapshot = _resolve_concept_snapshot(
+            concept_snapshot_map,
+            concept_name=concept_name,
+            concept_code=board_code,
+        )
+        if not snapshot:
+            continue
+        item = dict(snapshot)
+        name = str(concept_name or item.get("concept_name") or "").strip()
+        code = _normalize_concept_board_code(board_code or item.get("board_code"))
+        if name:
+            item["concept_name"] = name
+        if code:
+            item["board_code"] = code
+        key = f"{code}|{name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _clone_concept_snapshot_map(snapshot_map: dict[str, dict], *, source_override: str = "") -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for concept_name, payload in (snapshot_map or {}).items():
+        name = str(concept_name or "").strip()
+        if not name:
+            continue
+        item = dict(payload or {})
+        if source_override:
+            if item.get("source"):
+                item["source_origin"] = str(item.get("source") or "").strip()
+            item["source"] = source_override
+        out[name] = item
+    return out
+
+
+def _write_concept_snapshot_runtime_state(snapshot_map: dict[str, dict], fetched_at: float, error_text: str = "") -> bool:
+    cli = _get_runtime_state_redis()
+    if cli is None or not isinstance(snapshot_map, dict) or not snapshot_map:
+        return False
+    fetched_ts = int(fetched_at or time.time())
+    payload = {
+        "updated_at": fetched_ts,
+        "updated_at_iso": datetime.datetime.fromtimestamp(fetched_ts).isoformat(timespec="seconds"),
+        "count": int(len(snapshot_map)),
+        "source": "akshare_eastmoney_concept_realtime",
+        "error": str(error_text or ""),
+        "snapshot_map": _clone_concept_snapshot_map(snapshot_map),
+    }
+    ttl = max(int(_runtime_state_ttl_sec()), 300)
+    try:
+        pipe = cli.pipeline(transaction=False)
+        pipe.set(_CONCEPT_SNAPSHOT_REDIS_KEY_LATEST, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        pipe.hset(
+            _CONCEPT_SNAPSHOT_REDIS_KEY_META,
+            mapping={
+                "updated_at": str(payload["updated_at"]),
+                "updated_at_iso": str(payload["updated_at_iso"]),
+                "count": str(payload["count"]),
+                "source": str(payload["source"]),
+                "error": str(payload["error"]),
+            },
+        )
+        pipe.expire(_CONCEPT_SNAPSHOT_REDIS_KEY_LATEST, ttl)
+        pipe.expire(_CONCEPT_SNAPSHOT_REDIS_KEY_META, ttl)
+        pipe.execute()
+        return True
+    except Exception as e:
+        logger.debug(f"写入概念生态 Redis 快照失败: {e}")
+        return False
+
+
+def _read_concept_snapshot_runtime_state(source_override: str = "redis_bootstrap") -> tuple[dict[str, dict], str, float]:
+    cli = _get_runtime_state_redis()
+    if cli is None:
+        return {}, "", 0.0
+    try:
+        raw = cli.get(_CONCEPT_SNAPSHOT_REDIS_KEY_LATEST)
+        if not raw:
+            return {}, "", 0.0
+        obj = json.loads(raw)
+        snapshot_map = obj.get("snapshot_map") if isinstance(obj, dict) else {}
+        if not isinstance(snapshot_map, dict) or not snapshot_map:
+            return {}, "", 0.0
+        fetched_at = float(obj.get("updated_at") or 0.0)
+        error_text = str(obj.get("error") or "")
+        return _clone_concept_snapshot_map(snapshot_map, source_override=source_override), error_text, fetched_at
+    except Exception as e:
+        logger.debug(f"读取概念生态 Redis 快照失败: {e}")
+        return {}, "", 0.0
+
+
 def _safe_float_local(value, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -156,47 +593,74 @@ def _compute_concept_ecology_snapshot(
     down_count: Optional[int],
     leader_pct: Optional[float],
     turnover: Optional[float],
+    fund_flow: Optional[float] = None,
+    core_degree: Optional[float] = None,
 ) -> dict:
     pct = _safe_float_local(pct_chg, 0.0)
     up = int(up_count or 0)
     down = int(down_count or 0)
     leader = _safe_float_local(leader_pct, 0.0)
     turn = _safe_float_local(turnover, 0.0)
+    fund = _safe_float_text(fund_flow, 0.0)
+    core = _safe_float_local(core_degree, 0.0)
     total = up + down
     breadth = ((up - down) / total) if total > 0 else 0.0
 
-    score = 0.0
     if pct >= 3.0:
-        score += 30.0
+        board_component = 30.0
     elif pct >= 1.2:
-        score += 18.0
+        board_component = 18.0
     elif pct <= -3.0:
-        score -= 30.0
+        board_component = -30.0
     elif pct <= -1.2:
-        score -= 18.0
+        board_component = -18.0
+    else:
+        board_component = max(-30.0, min(30.0, (pct / 3.0) * 30.0))
 
     if breadth >= 0.35:
-        score += 22.0
+        breadth_component = 20.0
     elif breadth >= 0.10:
-        score += 12.0
+        breadth_component = 12.0
     elif breadth <= -0.35:
-        score -= 22.0
+        breadth_component = -20.0
     elif breadth <= -0.10:
-        score -= 12.0
+        breadth_component = -12.0
+    else:
+        breadth_component = max(-20.0, min(20.0, breadth * 20.0))
 
-    if leader >= 6.0:
-        score += 12.0
-    elif leader >= 3.0:
-        score += 6.0
+    if leader >= 8.0:
+        leader_component = 25.0
+    elif leader >= 4.0:
+        leader_component = 16.0
+    elif leader >= 2.0:
+        leader_component = 8.0
     elif leader <= -4.0:
-        score -= 10.0
+        leader_component = -18.0
     elif leader <= -2.0:
-        score -= 6.0
+        leader_component = -10.0
+    else:
+        leader_component = max(-25.0, min(25.0, (leader / 8.0) * 25.0))
 
-    if turn >= 6.0:
-        score += 4.0
-    elif 0 < turn < 1.0:
-        score -= 2.0
+    if fund > 0:
+        fund_component = 15.0
+    elif fund < 0:
+        fund_component = -15.0
+    else:
+        fund_component = 0.0
+
+    if abs(core) <= 1.0:
+        core_component = max(-10.0, min(10.0, core * 10.0))
+    else:
+        core_component = max(-10.0, min(10.0, core))
+
+    score_components = {
+        "board_strength": round(board_component, 2),
+        "leader_status": round(leader_component, 2),
+        "strong_breadth": round(breadth_component, 2),
+        "fund_flow": round(fund_component, 2),
+        "core_degree": round(core_component, 2),
+    }
+    score = sum(score_components.values())
 
     if score >= 45.0:
         state = "expand"
@@ -212,6 +676,15 @@ def _compute_concept_ecology_snapshot(
     return {
         "concept_name": str(concept_name or ""),
         "score": round(score, 2),
+        "structured_score": round(score, 2),
+        "score_components": score_components,
+        "score_weights": {
+            "board_strength": 30,
+            "leader_status": 25,
+            "strong_breadth": 20,
+            "fund_flow": 15,
+            "core_degree": 10,
+        },
         "state": state,
         "pct_chg": round(pct, 2),
         "up_count": up,
@@ -219,19 +692,260 @@ def _compute_concept_ecology_snapshot(
         "breadth_ratio": round(breadth, 4),
         "leader_pct": round(leader, 2),
         "turnover": round(turn, 2),
+        "main_net_inflow": round(fund, 2),
         "source": "eastmoney_concept",
     }
+
+
+def _compute_industry_ecology_snapshot(
+    industry_name: str,
+    pct_chg: Optional[float],
+    up_count: Optional[int],
+    down_count: Optional[int],
+    leader_pct: Optional[float],
+    turnover: Optional[float],
+) -> dict:
+    snapshot = _compute_concept_ecology_snapshot(
+        concept_name=industry_name,
+        pct_chg=pct_chg,
+        up_count=up_count,
+        down_count=down_count,
+        leader_pct=leader_pct,
+        turnover=turnover,
+    )
+    snapshot["industry_name"] = str(industry_name or "")
+    snapshot["source"] = "eastmoney_industry"
+    return snapshot
+
+
+def _fetch_realtime_concept_snapshot_map(force_refresh: bool = False) -> tuple[dict[str, dict], str, float]:
+    global _concept_snapshot_cache_at, _concept_snapshot_cache_map, _concept_snapshot_cache_error
+    now = time.time()
+    with _concept_snapshot_cache_lock:
+        if (
+            not force_refresh
+            and _concept_snapshot_cache_map
+            and (now - _concept_snapshot_cache_at) < _CONCEPT_SNAPSHOT_CACHE_TTL_SEC
+        ):
+            return dict(_concept_snapshot_cache_map), str(_concept_snapshot_cache_error or ""), _concept_snapshot_cache_at
+
+    redis_snapshot_map: dict[str, dict] = {}
+    redis_error_text = ""
+    redis_fetched_at = 0.0
+    redis_snapshot_map, redis_error_text, redis_fetched_at = _read_concept_snapshot_runtime_state(
+        source_override="redis_bootstrap"
+    )
+    if (
+        not force_refresh
+        and redis_snapshot_map
+        and redis_fetched_at > 0
+        and (now - redis_fetched_at) < _CONCEPT_SNAPSHOT_CACHE_TTL_SEC
+    ):
+        with _concept_snapshot_cache_lock:
+            _concept_snapshot_cache_map = dict(redis_snapshot_map)
+            _concept_snapshot_cache_error = str(redis_error_text or "")
+            _concept_snapshot_cache_at = float(redis_fetched_at)
+        return dict(redis_snapshot_map), str(redis_error_text or ""), float(redis_fetched_at)
+
+    snapshot_map: dict[str, dict] = {}
+    error_text = ""
+    fetched_at = time.time()
+    try:
+        _ensure_akshare_runtime_patch()
+        import akshare as ak
+
+        df = _call_akshare_quiet(ak.stock_board_concept_name_em)
+        fetched_at = time.time()
+        if df is not None and not getattr(df, "empty", True):
+            fund_flow_by_name: dict[str, dict] = {}
+            try:
+                flow_rows, _, _ = _fetch_concept_fund_flow_rows(force_refresh=False)
+                fund_flow_by_name = {
+                    str(row.get("concept_name") or "").strip(): dict(row)
+                    for row in flow_rows
+                    if str(row.get("concept_name") or "").strip()
+                }
+            except Exception:
+                fund_flow_by_name = {}
+            columns = [str(c) for c in list(df.columns)]
+            name_col = _pick_df_column(columns, "板块名称", "概念名称", "名称")
+            pct_col = _pick_df_column(columns, "涨跌幅")
+            up_col = _pick_df_column(columns, "上涨家数", "上涨数")
+            down_col = _pick_df_column(columns, "下跌家数", "下跌数")
+            leader_col = _pick_df_column(columns, "领涨股票")
+            leader_pct_col = _pick_df_column(columns, "领涨股票-涨跌幅", "领涨股-涨跌幅")
+            turnover_col = _pick_df_column(columns, "换手率")
+            latest_col = _pick_df_column(columns, "最新价")
+            change_col = _pick_df_column(columns, "涨跌额")
+            total_mv_col = _pick_df_column(columns, "总市值")
+            code_col = _pick_df_column(columns, "板块代码")
+            fund_flow_col = _pick_df_column(
+                columns,
+                "今日主力净流入-净额",
+                "主力净流入-净额",
+                "主力净流入净额",
+                "主力净流入",
+                "净额",
+                "main_net_inflow",
+            )
+            if not name_col:
+                raise RuntimeError(f"东方财富概念实时接口缺少名称字段: {columns}")
+
+            for rec in df.to_dict(orient="records"):
+                concept_name = str(rec.get(name_col) or "").strip()
+                if not concept_name:
+                    continue
+                fund_flow_info = dict(fund_flow_by_name.get(concept_name) or {})
+                snapshot = _compute_concept_ecology_snapshot(
+                    concept_name=concept_name,
+                    pct_chg=rec.get(pct_col) if pct_col else None,
+                    up_count=rec.get(up_col) if up_col else None,
+                    down_count=rec.get(down_col) if down_col else None,
+                    leader_pct=rec.get(leader_pct_col) if leader_pct_col else fund_flow_info.get("leader_pct"),
+                    turnover=rec.get(turnover_col) if turnover_col else None,
+                    fund_flow=rec.get(fund_flow_col) if fund_flow_col else fund_flow_info.get("main_net_inflow"),
+                )
+                snapshot.update(
+                    {
+                        "source": "akshare_eastmoney_concept_realtime",
+                        "board_code": str(rec.get(code_col) or "").strip() if code_col else "",
+                        "leader_name": str(rec.get(leader_col) or "").strip() if leader_col else "",
+                        "latest_price": round(_safe_float_text(rec.get(latest_col), 0.0), 4) if latest_col else 0.0,
+                        "change_amount": round(_safe_float_text(rec.get(change_col), 0.0), 4) if change_col else 0.0,
+                        "total_mv": round(_safe_float_text(rec.get(total_mv_col), 0.0), 2) if total_mv_col else 0.0,
+                        "main_net_inflow_ratio": round(_safe_float_local(fund_flow_info.get("main_net_inflow_ratio"), 0.0), 3),
+                        "updated_at": int(fetched_at),
+                        "updated_at_iso": datetime.datetime.fromtimestamp(fetched_at).isoformat(timespec="seconds"),
+                    }
+                )
+                snapshot_map[concept_name] = snapshot
+    except Exception as e:
+        error_text = f"获取东方财富概念实时快照失败: {e}"
+        logger.warning(error_text)
+        with _concept_snapshot_cache_lock:
+            if _concept_snapshot_cache_map and not force_refresh:
+                return dict(_concept_snapshot_cache_map), error_text, _concept_snapshot_cache_at
+        if redis_snapshot_map:
+            redis_fallback = _clone_concept_snapshot_map(redis_snapshot_map, source_override="redis_fallback")
+            with _concept_snapshot_cache_lock:
+                _concept_snapshot_cache_map = dict(redis_fallback)
+                _concept_snapshot_cache_error = str(error_text or "")
+                _concept_snapshot_cache_at = float(redis_fetched_at or fetched_at)
+            return dict(redis_fallback), error_text, float(redis_fetched_at or fetched_at)
+
+    if snapshot_map:
+        with _concept_snapshot_cache_lock:
+            _concept_snapshot_cache_map = dict(snapshot_map)
+            _concept_snapshot_cache_error = error_text
+            _concept_snapshot_cache_at = fetched_at
+        _write_concept_snapshot_runtime_state(snapshot_map, fetched_at, error_text)
+        return dict(snapshot_map), error_text, fetched_at
+
+    if redis_snapshot_map:
+        redis_fallback = _clone_concept_snapshot_map(redis_snapshot_map, source_override="redis_fallback")
+        with _concept_snapshot_cache_lock:
+            _concept_snapshot_cache_map = dict(redis_fallback)
+            _concept_snapshot_cache_error = str(error_text or redis_error_text or "")
+            _concept_snapshot_cache_at = float(redis_fetched_at or fetched_at)
+        return dict(redis_fallback), str(error_text or redis_error_text or ""), float(redis_fetched_at or fetched_at)
+
+    return {}, error_text, fetched_at
+
+
+def _fetch_realtime_industry_snapshot_map(force_refresh: bool = False) -> tuple[dict[str, dict], str, float]:
+    global _industry_snapshot_cache_at, _industry_snapshot_cache_map, _industry_snapshot_cache_error
+    now = time.time()
+    with _industry_snapshot_cache_lock:
+        if (
+            not force_refresh
+            and _industry_snapshot_cache_map
+            and (now - _industry_snapshot_cache_at) < _INDUSTRY_SNAPSHOT_CACHE_TTL_SEC
+        ):
+            return dict(_industry_snapshot_cache_map), str(_industry_snapshot_cache_error or ""), _industry_snapshot_cache_at
+
+    snapshot_map: dict[str, dict] = {}
+    error_text = ""
+    fetched_at = time.time()
+    try:
+        _ensure_akshare_runtime_patch()
+        import akshare as ak
+
+        df = _call_akshare_quiet(ak.stock_board_industry_name_em)
+        fetched_at = time.time()
+        if df is not None and not getattr(df, "empty", True):
+            columns = [str(c) for c in list(df.columns)]
+            name_col = _pick_df_column(columns, "板块名称", "行业名称", "名称", "行业")
+            code_col = _pick_df_column(columns, "????", "????", "??", "board_code", "code")
+            pct_col = _pick_df_column(columns, "涨跌幅", "行业-涨跌幅")
+            up_col = _pick_df_column(columns, "上涨家数", "上涨数")
+            down_col = _pick_df_column(columns, "下跌家数", "下跌数")
+            leader_col = _pick_df_column(columns, "领涨股票", "领涨股")
+            leader_pct_col = _pick_df_column(columns, "领涨股票-涨跌幅", "领涨股-涨跌幅", "领涨股涨跌幅")
+            turnover_col = _pick_df_column(columns, "换手率")
+            latest_col = _pick_df_column(columns, "最新价")
+            change_col = _pick_df_column(columns, "涨跌额")
+            total_mv_col = _pick_df_column(columns, "总市值")
+            if not name_col:
+                raise RuntimeError(f"东方财富行业实时接口缺少名称字段: {columns}")
+
+            for rec in df.to_dict(orient="records"):
+                industry_name = str(rec.get(name_col) or "").strip()
+                if not industry_name:
+                    continue
+                snapshot = _compute_industry_ecology_snapshot(
+                    industry_name=industry_name,
+                    pct_chg=rec.get(pct_col) if pct_col else None,
+                    up_count=rec.get(up_col) if up_col else None,
+                    down_count=rec.get(down_col) if down_col else None,
+                    leader_pct=rec.get(leader_pct_col) if leader_pct_col else None,
+                    turnover=rec.get(turnover_col) if turnover_col else None,
+                )
+                snapshot.update(
+                    {
+                        "source": "akshare_eastmoney_industry_realtime",
+                        "industry_code": _normalize_industry_board_code(rec.get(code_col)) if code_col else "",
+                        "leader_name": str(rec.get(leader_col) or "").strip() if leader_col else "",
+                        "latest_price": round(_safe_float_text(rec.get(latest_col), 0.0), 4) if latest_col else 0.0,
+                        "change_amount": round(_safe_float_text(rec.get(change_col), 0.0), 4) if change_col else 0.0,
+                        "total_mv": round(_safe_float_text(rec.get(total_mv_col), 0.0), 2) if total_mv_col else 0.0,
+                        "updated_at": int(fetched_at),
+                        "updated_at_iso": datetime.datetime.fromtimestamp(fetched_at).isoformat(timespec="seconds"),
+                    }
+                )
+                _register_industry_snapshot_alias(
+                    snapshot_map,
+                    industry_name=industry_name,
+                    industry_code=snapshot.get("industry_code"),
+                    snapshot=snapshot,
+                )
+    except Exception as e:
+        error_text = f"获取东方财富行业实时快照失败: {e}"
+        logger.warning(error_text)
+        with _industry_snapshot_cache_lock:
+            if _industry_snapshot_cache_map and not force_refresh:
+                return dict(_industry_snapshot_cache_map), error_text, _industry_snapshot_cache_at
+
+    if snapshot_map:
+        with _industry_snapshot_cache_lock:
+            _industry_snapshot_cache_map = dict(snapshot_map)
+            _industry_snapshot_cache_error = error_text
+            _industry_snapshot_cache_at = fetched_at
+        return dict(snapshot_map), error_text, fetched_at
+
+    return {}, error_text, fetched_at
 
 
 def _load_concept_board_maps(
     data_conn: duckdb.DuckDBPyConnection,
     ts_codes: list[str],
-) -> tuple[dict[str, list[str]], dict[str, str], dict[str, dict]]:
+) -> tuple[dict[str, list[str]], dict[str, str], dict[str, dict], dict[str, list[str]], dict[str, str]]:
     stock_concepts_map: dict[str, list[str]] = {}
     core_concept_map: dict[str, str] = {}
     concept_snapshot_map: dict[str, dict] = {}
+    stock_concept_code_map: dict[str, list[str]] = {}
+    core_concept_code_map: dict[str, str] = {}
     if not ts_codes:
-        return stock_concepts_map, core_concept_map, concept_snapshot_map
+        return stock_concepts_map, core_concept_map, concept_snapshot_map, stock_concept_code_map, core_concept_code_map
 
     code6_to_ts: dict[str, str] = {}
     query_code_values: set[str] = set()
@@ -252,7 +966,9 @@ def _load_concept_board_maps(
                 if market_part:
                     query_code_values.add(f"{market_part}{code_part}")
     if not code6_to_ts:
-        return stock_concepts_map, core_concept_map, concept_snapshot_map
+        return stock_concepts_map, core_concept_map, concept_snapshot_map, stock_concept_code_map, core_concept_code_map
+
+    stock_concept_pairs: dict[str, list[tuple[str, str]]] = {}
 
     try:
         cd_schema_rows = data_conn.execute("PRAGMA table_info('concept_detail')").fetchall()
@@ -267,101 +983,174 @@ def _load_concept_board_maps(
         "股票代码",
         "证券代码",
         "symbol",
-        "浠ｇ爜",
         "code",
-        "璇佸埜浠ｇ爜",
     )
     concept_col = _pick_existing_column(
         cd_columns,
         "concept_name",
         "概念名称",
         "板块名称",
-        "鏉垮潡鍚嶇О",
-        "姒傚康鍚嶇О",
+    )
+    board_code_col = _pick_existing_column(
+        cd_columns,
+        "板块代码",
+        "概念代码",
+        "concept_code",
+        "board_code",
+        "bk_code",
     )
     if code_col and concept_col:
         query_code_list = sorted({str(x or "").strip() for x in query_code_values if str(x or "").strip()})
         placeholders = ",".join(["?"] * len(query_code_list))
+        board_code_expr = f", CAST({_quote_ident(board_code_col)} AS VARCHAR) AS board_code" if board_code_col else ", NULL AS board_code"
         concept_rows = data_conn.execute(
             f"""
             SELECT CAST({_quote_ident(code_col)} AS VARCHAR) AS raw_code,
                    {_quote_ident(concept_col)} AS concept_name
+                   {board_code_expr}
             FROM concept_detail
             WHERE CAST({_quote_ident(code_col)} AS VARCHAR) IN ({placeholders})
             """,
             query_code_list,
         ).fetchall()
-        for raw_code, concept_name in concept_rows:
+        for raw_code, concept_name, raw_board_code in concept_rows:
             ts_code = code6_to_ts.get(_normalize_code6(raw_code))
             name = str(concept_name or "").strip()
+            board_code = _normalize_concept_board_code(raw_board_code)
             if not ts_code or not name:
                 continue
-            stock_concepts_map.setdefault(ts_code, [])
-            if name not in stock_concepts_map[ts_code]:
-                stock_concepts_map[ts_code].append(name)
+            stock_concept_pairs.setdefault(ts_code, []).append((name, board_code))
 
-    all_concepts = sorted({name for names in stock_concepts_map.values() for name in names if name})
+    all_concepts = sorted({name for pairs in stock_concept_pairs.values() for name, _ in pairs if name})
+    concept_codes_by_name: dict[str, set[str]] = {}
+    for pairs in stock_concept_pairs.values():
+        for name, board_code in pairs:
+            if name and board_code:
+                concept_codes_by_name.setdefault(name, set()).add(board_code)
+
     if all_concepts:
-        try:
-            concept_schema_rows = data_conn.execute("PRAGMA table_info('concept')").fetchall()
-            concept_columns = {str(r[1]).lower() for r in concept_schema_rows}
-        except Exception:
-            concept_columns = set()
-        name_col = _pick_existing_column(concept_columns, "板块名称", "concept_name", "name")
-        pct_col = _pick_existing_column(concept_columns, "涨跌幅", "pct_chg", "change_pct")
-        up_col = _pick_existing_column(concept_columns, "上涨家数", "上涨数", "up_count")
-        down_col = _pick_existing_column(concept_columns, "下跌家数", "下跌数", "down_count")
-        leader_pct_col = _pick_existing_column(concept_columns, "领涨股票-涨跌幅", "领涨股票涨跌幅", "leader_pct_chg")
-        turnover_col = _pick_existing_column(concept_columns, "换手率", "turnover")
+        realtime_snapshot_map, _, _ = _fetch_realtime_concept_snapshot_map(force_refresh=False)
+        for name, snapshot in realtime_snapshot_map.items():
+            concept_name = str(name or "").strip()
+            if not concept_name:
+                continue
+            _register_concept_snapshot_alias(
+                concept_snapshot_map,
+                concept_name=concept_name,
+                concept_code=(snapshot or {}).get("board_code"),
+                snapshot=dict(snapshot or {}),
+            )
 
+        missing_concepts = [
+            name
+            for name in all_concepts
+            if not _resolve_concept_snapshot(
+                concept_snapshot_map,
+                concept_name=name,
+                concept_code=next(iter(concept_codes_by_name.get(name, set())), ""),
+            )
+        ]
+        if missing_concepts:
+            try:
+                concept_schema_rows = data_conn.execute("PRAGMA table_info('concept')").fetchall()
+                concept_columns = {str(r[1]).lower() for r in concept_schema_rows}
+            except Exception:
+                concept_columns = set()
+            name_col = _pick_existing_column(concept_columns, "板块名称", "concept_name", "name")
+            pct_col = _pick_existing_column(concept_columns, "涨跌幅", "pct_chg", "change_pct")
+            up_col = _pick_existing_column(concept_columns, "上涨家数", "上涨数", "up_count")
+            down_col = _pick_existing_column(concept_columns, "下跌家数", "下跌数", "down_count")
+            leader_pct_col = _pick_existing_column(concept_columns, "领涨股票-涨跌幅", "领涨股票涨跌幅", "leader_pct_chg")
+            turnover_col = _pick_existing_column(concept_columns, "换手率", "turnover")
 
-        if name_col:
-            placeholders = ",".join(["?"] * len(all_concepts))
-            pct_expr = f"{_quote_ident(pct_col)}" if pct_col else "NULL"
-            up_expr = f"{_quote_ident(up_col)}" if up_col else "NULL"
-            down_expr = f"{_quote_ident(down_col)}" if down_col else "NULL"
-            leader_expr = f"{_quote_ident(leader_pct_col)}" if leader_pct_col else "NULL"
-            turnover_expr = f"{_quote_ident(turnover_col)}" if turnover_col else "NULL"
-            concept_meta_rows = data_conn.execute(
-                f"""
-                SELECT {_quote_ident(name_col)} AS concept_name,
-                       {pct_expr} AS pct_chg,
-                       {up_expr} AS up_count,
-                       {down_expr} AS down_count,
-                       {leader_expr} AS leader_pct,
-                       {turnover_expr} AS turnover
-                FROM concept
-                WHERE {_quote_ident(name_col)} IN ({placeholders})
-                """,
-                all_concepts,
-            ).fetchall()
-            for concept_name, pct_chg, up_count, down_count, leader_pct, turnover in concept_meta_rows:
-                name = str(concept_name or "").strip()
-                if not name:
-                    continue
-                concept_snapshot_map[name] = _compute_concept_ecology_snapshot(
-                    concept_name=name,
-                    pct_chg=pct_chg,
-                    up_count=up_count,
-                    down_count=down_count,
-                    leader_pct=leader_pct,
-                    turnover=turnover,
-                )
+            if name_col:
+                placeholders = ",".join(["?"] * len(missing_concepts))
+                pct_expr = f"{_quote_ident(pct_col)}" if pct_col else "NULL"
+                up_expr = f"{_quote_ident(up_col)}" if up_col else "NULL"
+                down_expr = f"{_quote_ident(down_col)}" if down_col else "NULL"
+                leader_expr = f"{_quote_ident(leader_pct_col)}" if leader_pct_col else "NULL"
+                turnover_expr = f"{_quote_ident(turnover_col)}" if turnover_col else "NULL"
+                concept_meta_rows = data_conn.execute(
+                    f"""
+                    SELECT {_quote_ident(name_col)} AS concept_name,
+                           {pct_expr} AS pct_chg,
+                           {up_expr} AS up_count,
+                           {down_expr} AS down_count,
+                           {leader_expr} AS leader_pct,
+                           {turnover_expr} AS turnover
+                    FROM concept
+                    WHERE {_quote_ident(name_col)} IN ({placeholders})
+                    """,
+                    missing_concepts,
+                ).fetchall()
+                for concept_name, pct_chg, up_count, down_count, leader_pct, turnover in concept_meta_rows:
+                    name = str(concept_name or "").strip()
+                    if not name:
+                        continue
+                    snapshot = _compute_concept_ecology_snapshot(
+                        concept_name=name,
+                        pct_chg=pct_chg,
+                        up_count=up_count,
+                        down_count=down_count,
+                        leader_pct=leader_pct,
+                        turnover=turnover,
+                    )
+                    codes = sorted(concept_codes_by_name.get(name, set()))
+                    if codes:
+                        for board_code in codes:
+                            _register_concept_snapshot_alias(
+                                concept_snapshot_map,
+                                concept_name=name,
+                                concept_code=board_code,
+                                snapshot=snapshot,
+                            )
+                    else:
+                        _register_concept_snapshot_alias(
+                            concept_snapshot_map,
+                            concept_name=name,
+                            snapshot=snapshot,
+                        )
 
-    for ts_code, concept_names in stock_concepts_map.items():
-        sorted_names = sorted([str(name or "").strip() for name in concept_names if str(name or "").strip()])
+    for ts_code, concept_pairs in stock_concept_pairs.items():
+        name_to_code: dict[str, str] = {}
+        for concept_name, board_code in concept_pairs:
+            name = str(concept_name or "").strip()
+            code = _normalize_concept_board_code(board_code)
+            if not name:
+                continue
+            if name not in name_to_code or (not name_to_code[name] and code):
+                name_to_code[name] = code
+        sorted_names = sorted(name_to_code.keys())
         stock_concepts_map[ts_code] = sorted_names
+        stock_concept_code_map[ts_code] = [name_to_code[name] for name in sorted_names if name_to_code[name]]
         if not sorted_names:
             core_concept_map[ts_code] = ""
+            core_concept_code_map[ts_code] = ""
             continue
         ranked = sorted(
             sorted_names,
-            key=lambda name: float((concept_snapshot_map.get(name) or {}).get("score", -9999.0)),
+            key=lambda name: float(
+                _resolve_concept_snapshot(
+                    concept_snapshot_map,
+                    concept_name=name,
+                    concept_code=name_to_code.get(name, ""),
+                ).get("score", -9999.0)
+            ),
             reverse=True,
         )
-        core_concept_map[ts_code] = ranked[0] if ranked else sorted_names[0]
+        core_name = ranked[0] if ranked else sorted_names[0]
+        core_snapshot = _resolve_concept_snapshot(
+            concept_snapshot_map,
+            concept_name=core_name,
+            concept_code=name_to_code.get(core_name, ""),
+        )
+        core_concept_map[ts_code] = core_name
+        core_concept_code_map[ts_code] = (
+            _normalize_concept_board_code(name_to_code.get(core_name, ""))
+            or _normalize_concept_board_code(core_snapshot.get("board_code"))
+        )
 
-    return stock_concepts_map, core_concept_map, concept_snapshot_map
+    return stock_concepts_map, core_concept_map, concept_snapshot_map, stock_concept_code_map, core_concept_code_map
 
 
 def _guess_ts_code_from_code6(code6: str) -> str:
@@ -392,8 +1181,6 @@ def _load_concept_member_counts(
         "concept_name",
         "概念名称",
         "板块名称",
-        "鏉垮潡鍚嶇О",
-        "姒傚康鍚嶇О",
     )
     if not concept_col:
         return out
@@ -416,6 +1203,89 @@ def _load_concept_member_counts(
     except Exception:
         return out
     return out
+
+
+def _load_em_industry_member_maps(
+    data_conn: duckdb.DuckDBPyConnection,
+    ts_codes: list[str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    industry_name_map: dict[str, str] = {}
+    industry_code_map: dict[str, str] = {}
+    if not ts_codes:
+        return industry_name_map, industry_code_map
+    try:
+        schema_rows = data_conn.execute("PRAGMA table_info('em_industry_member')").fetchall()
+        columns = {str(r[1]).lower() for r in schema_rows}
+    except Exception:
+        return industry_name_map, industry_code_map
+
+    ts_code_col = _pick_existing_column(columns, "ts_code")
+    symbol_col = _pick_existing_column(columns, "symbol", "代码", "股票代码", "证券代码", "code")
+    industry_name_col = _pick_existing_column(columns, "industry_name", "板块名称", "行业名称", "name")
+    industry_code_col = _pick_existing_column(columns, "industry_code", "板块代码", "行业代码", "board_code", "bk_code")
+    if not industry_name_col or (not ts_code_col and not symbol_col):
+        return industry_name_map, industry_code_map
+
+    params: list[str] = []
+    where_sql = ""
+    if ts_code_col:
+        placeholders = ",".join(["?"] * len(ts_codes))
+        where_sql = f"{_quote_ident(ts_code_col)} IN ({placeholders})"
+        params = list(ts_codes)
+    else:
+        code6_to_ts = { _normalize_code6(ts_code): str(ts_code) for ts_code in ts_codes if _normalize_code6(ts_code) }
+        if not code6_to_ts:
+            return industry_name_map, industry_code_map
+        query_values: set[str] = set()
+        for code6 in code6_to_ts:
+            query_values.add(code6)
+            try:
+                query_values.add(str(int(code6)))
+            except Exception:
+                pass
+        placeholders = ",".join(["?"] * len(query_values))
+        where_sql = f"CAST({_quote_ident(symbol_col)} AS VARCHAR) IN ({placeholders})"
+        params = sorted(query_values)
+
+    select_symbol_expr = (
+        f"CAST({_quote_ident(symbol_col)} AS VARCHAR) AS raw_symbol"
+        if symbol_col else
+        "NULL AS raw_symbol"
+    )
+    select_ts_expr = (
+        f"CAST({_quote_ident(ts_code_col)} AS VARCHAR) AS ts_code"
+        if ts_code_col else
+        "NULL AS ts_code"
+    )
+    select_code_expr = (
+        f"CAST({_quote_ident(industry_code_col)} AS VARCHAR) AS industry_code"
+        if industry_code_col else
+        "NULL AS industry_code"
+    )
+    rows = data_conn.execute(
+        f"""
+        SELECT {select_ts_expr},
+               {select_symbol_expr},
+               {_quote_ident(industry_name_col)} AS industry_name,
+               {select_code_expr}
+        FROM em_industry_member
+        WHERE {where_sql}
+        """,
+        params,
+    ).fetchall()
+    for raw_ts_code, raw_symbol, industry_name, industry_code in rows:
+        ts_code = str(raw_ts_code or "").strip().upper()
+        if not ts_code:
+            ts_code = _guess_ts_code_from_code6(_normalize_code6(raw_symbol))
+        if not ts_code:
+            continue
+        name = str(industry_name or "").strip()
+        code = _normalize_industry_board_code(industry_code)
+        if name:
+            industry_name_map[ts_code] = name
+        if code:
+            industry_code_map[ts_code] = code
+    return industry_name_map, industry_code_map
 
 
 def _load_stock_basic_meta_by_symbol(
@@ -579,24 +1449,36 @@ def _safe_float_text(value: object, default: float = 0.0) -> float:
         return float(default)
 
 
+def _call_akshare_quiet(func, *args, **kwargs):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="A value is trying to be set on a copy of a slice from a DataFrame.*",
+            category=_SettingWithCopyWarning,
+            module=r"akshare\.stock\.stock_board_concept_em",
+        )
+        return func(*args, **kwargs)
+
+
 def _ensure_akshare_runtime_patch() -> None:
     global _concept_flow_patch_ready
     if _concept_flow_patch_ready:
         return
+    if not _AKSHARE_PROXY_PATCH_ENABLED:
+        _concept_flow_patch_ready = True
+        return
     try:
-        import akshare_proxy_patch
-
-        akshare_proxy_patch.install_patch(
-            "101.201.173.125",
-            auth_token="20260402BAQOIJJ3",
-            retry=30,
+       
+        from scripts.akshare_proxy_patch_free import install_patch
+        install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
+            log_file="akshare_proxy_patch.log",
+            log_console=False,
             hook_domains=[
-                "fund.eastmoney.com",
-                "push2.eastmoney.com",
-                "push2his.eastmoney.com",
-                "emweb.securities.eastmoney.com",
-            ],
-        )
+            "fund.eastmoney.com",
+            "push2.eastmoney.com",
+            "push2his.eastmoney.com",
+            "emweb.securities.eastmoney.com",
+            ],)
     except Exception:
         pass
     _concept_flow_patch_ready = True
@@ -725,70 +1607,64 @@ def list_concept_boards(
     limit: int = Query(500, ge=1, le=2000),
 ):
     items: list[dict] = []
+    realtime_snapshot_map, _, _ = _fetch_realtime_concept_snapshot_map(force_refresh=False)
     with _data_ro_conn_ctx() as data_conn:
-        try:
-            concept_schema_rows = data_conn.execute("PRAGMA table_info('concept')").fetchall()
-            concept_columns = {str(r[1]).lower() for r in concept_schema_rows}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"读取 concept 表结构失败: {e}")
-
-        name_col = _pick_existing_column(concept_columns, "板块名称", "concept_name", "name")
-        pct_col = _pick_existing_column(concept_columns, "涨跌幅", "pct_chg", "change_pct")
-        up_col = _pick_existing_column(concept_columns, "上涨家数", "上涨数", "up_count")
-        down_col = _pick_existing_column(concept_columns, "下跌家数", "下跌数", "down_count")
-        leader_pct_col = _pick_existing_column(concept_columns, "领涨股票-涨跌幅", "领涨股票涨跌幅", "leader_pct_chg")
-        turnover_col = _pick_existing_column(concept_columns, "换手率", "turnover")
-
-        if not name_col:
-            raise HTTPException(status_code=500, detail="concept 表缺少概念名称字段")
-
-        params: list[object] = []
-        where_sql = ""
         keyword = str(q or "").strip()
-        if keyword:
-            where_sql = f"WHERE CAST({_quote_ident(name_col)} AS VARCHAR) LIKE ?"
-            params.append(f"%{keyword}%")
+        concept_names = sorted(
+            [
+                str(name or "").strip()
+                for name in realtime_snapshot_map.keys()
+                if str(name or "").strip() and (not keyword or keyword in str(name or "").strip())
+            ]
+        )
+        if not concept_names:
+            try:
+                concept_schema_rows = data_conn.execute("PRAGMA table_info('concept')").fetchall()
+                concept_columns = {str(r[1]).lower() for r in concept_schema_rows}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"读取 concept 表结构失败: {e}")
+            name_col = _pick_existing_column(concept_columns, "板块名称", "concept_name", "name")
+            if not name_col:
+                raise HTTPException(status_code=500, detail="concept 表缺少概念名称字段")
+            params: list[object] = []
+            where_sql = ""
+            if keyword:
+                where_sql = f"WHERE CAST({_quote_ident(name_col)} AS VARCHAR) LIKE ?"
+                params.append(f"%{keyword}%")
+            params.append(int(limit))
+            db_rows = data_conn.execute(
+                f"""
+                SELECT {_quote_ident(name_col)} AS concept_name
+                FROM concept
+                {where_sql}
+                ORDER BY {_quote_ident(name_col)}
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            concept_names = [str(x[0] or "").strip() for x in db_rows if str(x[0] or "").strip()]
 
-        pct_expr = f"{_quote_ident(pct_col)}" if pct_col else "NULL"
-        up_expr = f"{_quote_ident(up_col)}" if up_col else "NULL"
-        down_expr = f"{_quote_ident(down_col)}" if down_col else "NULL"
-        leader_expr = f"{_quote_ident(leader_pct_col)}" if leader_pct_col else "NULL"
-        turnover_expr = f"{_quote_ident(turnover_col)}" if turnover_col else "NULL"
-        params.append(int(limit))
-        rows = data_conn.execute(
-            f"""
-            SELECT {_quote_ident(name_col)} AS concept_name,
-                   {pct_expr} AS pct_chg,
-                   {up_expr} AS up_count,
-                   {down_expr} AS down_count,
-                   {leader_expr} AS leader_pct,
-                   {turnover_expr} AS turnover
-            FROM concept
-            {where_sql}
-            ORDER BY COALESCE({pct_expr}, 0) DESC, {_quote_ident(name_col)}
-            LIMIT ?
-            """,
-            params,
-        ).fetchall()
-
-        concept_names = [str(r[0] or "").strip() for r in rows if str(r[0] or "").strip()]
+        concept_names = concept_names[: int(limit)]
         member_count_map = _load_concept_member_counts(data_conn, concept_names)
-        for concept_name, pct_chg, up_count, down_count, leader_pct, turnover in rows:
-            name = str(concept_name or "").strip()
-            if not name:
-                continue
-            snapshot = _compute_concept_ecology_snapshot(
-                concept_name=name,
-                pct_chg=pct_chg,
-                up_count=up_count,
-                down_count=down_count,
-                leader_pct=leader_pct,
-                turnover=turnover,
-            )
+        for name in concept_names:
+            snapshot = dict(realtime_snapshot_map.get(name) or {})
+            if not snapshot:
+                snapshot = {
+                    "concept_name": name,
+                    "score": 0.0,
+                    "state": "neutral",
+                    "pct_chg": 0.0,
+                    "up_count": 0,
+                    "down_count": 0,
+                    "breadth_ratio": 0.0,
+                    "leader_pct": 0.0,
+                    "turnover": 0.0,
+                    "source": "concept_table_fallback",
+                }
             items.append(
                 {
                     **snapshot,
-                    "member_count": int(member_count_map.get(name, 0)),
+                    "member_count": int(member_count_map.get(name, 0) or 0),
                 }
             )
 
@@ -1123,61 +1999,23 @@ def get_concept_board_members(
     if not concept_name:
         raise HTTPException(status_code=400, detail="concept_name 不能为空")
 
+    realtime_snapshot_map, _, _ = _fetch_realtime_concept_snapshot_map(force_refresh=False)
     with _data_ro_conn_ctx() as data_conn:
-        try:
-            concept_schema_rows = data_conn.execute("PRAGMA table_info('concept')").fetchall()
-            concept_columns = {str(r[1]).lower() for r in concept_schema_rows}
-        except Exception:
-            concept_columns = set()
-        name_col = _pick_existing_column(concept_columns, "板块名称", "concept_name", "name")
-        pct_col = _pick_existing_column(concept_columns, "涨跌幅", "pct_chg", "change_pct")
-        up_col = _pick_existing_column(concept_columns, "上涨家数", "上涨数", "up_count")
-        down_col = _pick_existing_column(concept_columns, "下跌家数", "下跌数", "down_count")
-        leader_pct_col = _pick_existing_column(concept_columns, "领涨股票-涨跌幅", "领涨股票涨跌幅", "leader_pct_chg")
-        turnover_col = _pick_existing_column(concept_columns, "换手率", "turnover")
-
-        board_meta = {
-            "concept_name": concept_name,
-            "score": 0.0,
-            "state": "neutral",
-            "pct_chg": 0.0,
-            "up_count": 0,
-            "down_count": 0,
-            "breadth_ratio": 0.0,
-            "leader_pct": 0.0,
-            "turnover": 0.0,
-            "source": "eastmoney_concept",
-            "member_count": 0,
-        }
-        if name_col:
-            pct_expr = f"{_quote_ident(pct_col)}" if pct_col else "NULL"
-            up_expr = f"{_quote_ident(up_col)}" if up_col else "NULL"
-            down_expr = f"{_quote_ident(down_col)}" if down_col else "NULL"
-            leader_expr = f"{_quote_ident(leader_pct_col)}" if leader_pct_col else "NULL"
-            turnover_expr = f"{_quote_ident(turnover_col)}" if turnover_col else "NULL"
-            row = data_conn.execute(
-                f"""
-                SELECT {_quote_ident(name_col)} AS concept_name,
-                       {pct_expr} AS pct_chg,
-                       {up_expr} AS up_count,
-                       {down_expr} AS down_count,
-                       {leader_expr} AS leader_pct,
-                       {turnover_expr} AS turnover
-                FROM concept
-                WHERE {_quote_ident(name_col)} = ?
-                LIMIT 1
-                """,
-                [concept_name],
-            ).fetchone()
-            if row:
-                board_meta = _compute_concept_ecology_snapshot(
-                    concept_name=str(row[0] or concept_name),
-                    pct_chg=row[1],
-                    up_count=row[2],
-                    down_count=row[3],
-                    leader_pct=row[4],
-                    turnover=row[5],
-                )
+        board_meta = dict(realtime_snapshot_map.get(concept_name) or {})
+        if not board_meta:
+            board_meta = {
+                "concept_name": concept_name,
+                "score": 0.0,
+                "state": "neutral",
+                "pct_chg": 0.0,
+                "up_count": 0,
+                "down_count": 0,
+                "breadth_ratio": 0.0,
+                "leader_pct": 0.0,
+                "turnover": 0.0,
+                "source": "concept_table_fallback",
+                "member_count": 0,
+            }
 
         try:
             cd_schema_rows = data_conn.execute("PRAGMA table_info('concept_detail')").fetchall()
@@ -1190,8 +2028,6 @@ def get_concept_board_members(
             "concept_name",
             "概念名称",
             "板块名称",
-            "鏉垮潡鍚嶇О",
-            "姒傚康鍚嶇О",
         )
         code_col = _pick_existing_column(
             cd_columns,
@@ -1200,9 +2036,7 @@ def get_concept_board_members(
             "股票代码",
             "证券代码",
             "symbol",
-            "浠ｇ爜",
             "code",
-            "璇佸埜浠ｇ爜",
         )
         stock_name_col = _pick_existing_column(cd_columns, "名称", "股票名称", "name")
         if not concept_col or not code_col:
@@ -1298,6 +2132,7 @@ def _refresh_daily_factors_cache(pool_id: Optional[int] = None) -> int:
             pool_rows = rt_conn.execute("SELECT ts_code, pool_id, industry FROM monitor_pools").fetchall()
         stock_pool_map: dict[str, set] = {}
         stock_industry_map: dict[str, str] = {}
+        stock_industry_code_map: dict[str, str] = {}
         for ts_code, pid, industry in pool_rows:
             stock_pool_map.setdefault(ts_code, set()).add(int(pid))
             if ts_code and ts_code not in stock_industry_map:
@@ -1306,6 +2141,9 @@ def _refresh_daily_factors_cache(pool_id: Optional[int] = None) -> int:
         stock_concepts_map: dict[str, list[str]] = {}
         core_concept_map: dict[str, str] = {}
         concept_snapshot_map: dict[str, dict] = {}
+        industry_snapshot_map: dict[str, dict] = {}
+        stock_concept_code_map: dict[str, list[str]] = {}
+        core_concept_code_map: dict[str, str] = {}
         ts_codes = list(stock_pool_map.keys()) if pool_id is None else [
             code for code, pools in stock_pool_map.items() if int(pool_id) in pools
         ]
@@ -1321,37 +2159,66 @@ def _refresh_daily_factors_cache(pool_id: Optional[int] = None) -> int:
                         """,
                         ts_codes,
                     ).fetchall()
-                    stock_concepts_map, core_concept_map, concept_snapshot_map = _load_concept_board_maps(data_conn, ts_codes)
-                for ts_code, name, market_name, list_date in meta_rows:
-                    if infer_instrument_profile is None:
-                        continue
-                    profile = infer_instrument_profile(
-                        str(ts_code or ""),
-                        name=name,
-                        market_name=market_name,
-                        list_date=list_date,
-                        ts_epoch=int(time.time()),
+                    (
+                        stock_concepts_map,
+                        core_concept_map,
+                        concept_snapshot_map,
+                        stock_concept_code_map,
+                        core_concept_code_map,
+                    ) = _load_concept_board_maps(data_conn, ts_codes)
+                    em_industry_name_map, em_industry_code_map = _load_em_industry_member_maps(data_conn, ts_codes)
+                    for code, industry_name in em_industry_name_map.items():
+                        if industry_name:
+                            stock_industry_map[str(code)] = str(industry_name)
+                    for code, industry_code in em_industry_code_map.items():
+                        if industry_code:
+                            stock_industry_code_map[str(code)] = str(industry_code)
+                    industry_snapshot_map, _, _ = _fetch_realtime_industry_snapshot_map(force_refresh=False)
+                    _attach_industry_snapshot_aliases(
+                        industry_snapshot_map,
+                        list(stock_industry_map.values()),
                     )
-                    profile["name"] = str(name or "")
-                    instrument_profile_map[str(ts_code)] = profile
+                    for ts_code, name, market_name, list_date in meta_rows:
+                        if infer_instrument_profile is None:
+                            continue
+                        profile = infer_instrument_profile(
+                            str(ts_code or ""),
+                            name=name,
+                            market_name=market_name,
+                            list_date=list_date,
+                            ts_epoch=int(time.time()),
+                        )
+                        profile["name"] = str(name or "")
+                        instrument_profile_map[str(ts_code)] = profile
             except Exception:
                 instrument_profile_map = {}
                 stock_concepts_map = {}
                 core_concept_map = {}
                 concept_snapshot_map = {}
+                stock_concept_code_map = {}
+                core_concept_code_map = {}
+                industry_snapshot_map = {}
         try:
             provider.bulk_update_stock_pools(stock_pool_map)
         except Exception:
             pass
         try:
-            provider.bulk_update_stock_industry(stock_industry_map)
+            provider.bulk_update_stock_industry({
+                ts_code: {
+                    "industry_name": stock_industry_map.get(ts_code, ""),
+                    "industry_code": stock_industry_code_map.get(ts_code, ""),
+                }
+                for ts_code in ts_codes
+            })
         except Exception:
             pass
         try:
             provider.bulk_update_stock_concepts({
                 ts_code: {
                     "concept_boards": stock_concepts_map.get(ts_code, []),
+                    "concept_codes": stock_concept_code_map.get(ts_code, []),
                     "core_concept_board": core_concept_map.get(ts_code, ""),
+                    "core_concept_code": core_concept_code_map.get(ts_code, ""),
                 }
                 for ts_code in ts_codes
             })
@@ -1362,12 +2229,16 @@ def _refresh_daily_factors_cache(pool_id: Optional[int] = None) -> int:
         except Exception:
             pass
         try:
+            provider.bulk_update_industry_snapshots(industry_snapshot_map)
+        except Exception:
+            pass
+        try:
             provider.bulk_update_instrument_profiles(instrument_profile_map)
         except Exception:
             pass
 
-        # 鍚姩涓庡叏閲忓埛鏂版椂锛岀粺涓€璁㈤槄 Pool1+Pool2 鑲＄エ锛堝幓閲嶅悗锛夈€?
-        # 杩欐牱鍗充娇鍓嶇灏氭湭杩炴帴 WS锛屼篃鑳芥彁鍓嶅缓绔嬭鎯呰闃呫€?
+        # 启动和全量刷新时，统一订阅 Pool1+Pool2 股票（去重后）。
+        # 这样即使前端尚未连接 WS，也能提前建立行情订阅。
         if pool_id is None:
             try:
                 target_codes = sorted(
@@ -1504,7 +2375,7 @@ def _refresh_daily_factors_cache(pool_id: Optional[int] = None) -> int:
         except Exception:
             pass
 
-        # Pool1 绛圭爜鐗瑰緛閾捐矾锛歝yq_perf -> provider.bulk_update_chip_features
+        # Pool1 筹码特征链路：cyq_perf -> provider.bulk_update_chip_features
         chip_map: dict[str, dict] = {}
         try:
             with _data_ro_conn_ctx() as data_conn:
@@ -1577,13 +2448,31 @@ def _build_member_data(conn: duckdb.DuckDBPyConnection, pool_id: int) -> list[di
     prev_day_volume_map: dict[str, float] = {}
     vol5_median_volume_map: dict[str, float] = {}
     instrument_profile_map: dict[str, dict] = {}
+    stock_industry_name_map: dict[str, str] = {}
+    stock_industry_code_map: dict[str, str] = {}
     stock_concepts_map: dict[str, list[str]] = {}
     core_concept_map: dict[str, str] = {}
     concept_snapshot_map: dict[str, dict] = {}
+    industry_snapshot_map: dict[str, dict] = {}
     try:
         placeholders = ",".join(["?"] * len(ts_codes))
         with _data_ro_conn_ctx() as dconn:
-            stock_concepts_map, core_concept_map, concept_snapshot_map = _load_concept_board_maps(dconn, ts_codes)
+            (
+                stock_concepts_map,
+                core_concept_map,
+                concept_snapshot_map,
+                stock_concept_code_map,
+                core_concept_code_map,
+            ) = _load_concept_board_maps(dconn, ts_codes)
+            stock_industry_name_map, stock_industry_code_map = _load_em_industry_member_maps(dconn, ts_codes)
+            industry_snapshot_map, _, _ = _fetch_realtime_industry_snapshot_map(force_refresh=False)
+            _attach_industry_snapshot_aliases(
+                industry_snapshot_map,
+                {
+                    str(stock_industry_name_map.get(str(m[0]), "") or str(m[2] or "")).strip()
+                    for m in members
+                },
+            )
             try:
                 schema_rows = dconn.execute("PRAGMA table_info('stk_factor_pro')").fetchall()
                 columns = {str(r[1]).lower() for r in schema_rows}
@@ -1737,15 +2626,34 @@ def _build_member_data(conn: duckdb.DuckDBPyConnection, pool_id: int) -> list[di
         tick = provider.get_tick(ts_code)
         daily = dict(daily_map.get(str(ts_code), {}))
         instrument_profile = dict(instrument_profile_map.get(str(ts_code), {}) or {})
+        runtime_industry = str(stock_industry_name_map.get(str(ts_code), "") or industry or "")
+        runtime_industry_code = str(stock_industry_code_map.get(str(ts_code), "") or "")
 
         m = {
             "ts_code": ts_code,
             "name": name,
-            "industry": str(industry or ""),
+            "industry": runtime_industry,
+            "industry_code": runtime_industry_code,
             "instrument_profile": instrument_profile,
             "concept_boards": list(stock_concepts_map.get(str(ts_code), []) or []),
+            "concept_codes": list(stock_concept_code_map.get(str(ts_code), []) or []),
             "core_concept_board": str(core_concept_map.get(str(ts_code), "") or ""),
-            "concept_ecology": dict(concept_snapshot_map.get(str(core_concept_map.get(str(ts_code), "") or ""), {}) or {}),
+            "core_concept_code": str(core_concept_code_map.get(str(ts_code), "") or ""),
+            "concept_ecology": _resolve_concept_snapshot(
+                concept_snapshot_map,
+                concept_name=core_concept_map.get(str(ts_code), ""),
+                concept_code=core_concept_code_map.get(str(ts_code), ""),
+            ),
+            "concept_ecology_multi": _build_concept_ecology_multi(
+                concept_snapshot_map,
+                concept_names=list(stock_concepts_map.get(str(ts_code), []) or []),
+                concept_codes=list(stock_concept_code_map.get(str(ts_code), []) or []),
+            ),
+            "industry_ecology": _resolve_industry_snapshot(
+                industry_snapshot_map,
+                industry_name=runtime_industry,
+                industry_code=runtime_industry_code,
+            ),
             "market_name": instrument_profile.get("market_name"),
             "list_date": instrument_profile.get("list_date"),
             "board_segment": instrument_profile.get("board_segment"),
@@ -1812,15 +2720,23 @@ def _build_member_data(conn: duckdb.DuckDBPyConnection, pool_id: int) -> list[di
                 m["pool1_last_reduce_at"] = int(pos.get("last_reduce_at", 0) or 0)
                 m["pool1_last_reduce_type"] = str(pos.get("last_reduce_type") or "")
                 m["pool1_last_reduce_ratio"] = round(float(pos.get("last_reduce_ratio", 0.0) or 0.0), 4)
+                m["pool1_last_reduce_source"] = str(pos.get("last_reduce_source") or "")
+                m["pool1_last_reduce_avwap_tier"] = str(pos.get("last_reduce_avwap_tier") or "")
                 m["pool1_reduce_streak"] = int(pos.get("reduce_streak", 0) or 0)
                 m["pool1_reduce_ratio_cum"] = round(float(pos.get("reduce_ratio_cum", 0.0) or 0.0), 4)
                 m["pool1_last_rebuild_at"] = int(pos.get("last_rebuild_at", 0) or 0)
                 m["pool1_last_rebuild_type"] = str(pos.get("last_rebuild_type") or "")
+                m["pool1_last_rebuild_add_ratio_base"] = round(float(pos.get("last_rebuild_add_ratio_base", 0.0) or 0.0), 4)
+                m["pool1_last_rebuild_add_ratio_bias"] = round(float(pos.get("last_rebuild_add_ratio_bias", 0.0) or 0.0), 4)
                 m["pool1_last_rebuild_from_partial_count"] = int(pos.get("last_rebuild_from_partial_count", 0) or 0)
                 m["pool1_last_rebuild_from_partial_ratio"] = round(float(pos.get("last_rebuild_from_partial_ratio", 0.0) or 0.0), 4)
+                m["pool1_last_rebuild_from_partial_source"] = str(pos.get("last_rebuild_from_partial_source") or "")
+                m["pool1_last_rebuild_from_partial_avwap_tier"] = str(pos.get("last_rebuild_from_partial_avwap_tier") or "")
                 m["pool1_last_exit_after_partial"] = bool(pos.get("last_exit_after_partial", False))
                 m["pool1_last_exit_partial_count"] = int(pos.get("last_exit_partial_count", 0) or 0)
                 m["pool1_last_exit_reduce_ratio_cum"] = round(float(pos.get("last_exit_reduce_ratio_cum", 0.0) or 0.0), 4)
+                m["pool1_last_exit_reduce_source"] = str(pos.get("last_exit_reduce_source") or "")
+                m["pool1_last_exit_reduce_avwap_tier"] = str(pos.get("last_exit_reduce_avwap_tier") or "")
                 m["pool1_left_quick_clear_streak"] = int(pos.get("left_quick_clear_streak", 0) or 0)
                 m["pool1_last_left_quick_clear_at"] = int(pos.get("last_left_quick_clear_at", 0) or 0)
             else:
@@ -1836,15 +2752,23 @@ def _build_member_data(conn: duckdb.DuckDBPyConnection, pool_id: int) -> list[di
                 m["pool1_last_reduce_at"] = 0
                 m["pool1_last_reduce_type"] = ""
                 m["pool1_last_reduce_ratio"] = 0.0
+                m["pool1_last_reduce_source"] = ""
+                m["pool1_last_reduce_avwap_tier"] = ""
                 m["pool1_reduce_streak"] = 0
                 m["pool1_reduce_ratio_cum"] = 0.0
                 m["pool1_last_rebuild_at"] = 0
                 m["pool1_last_rebuild_type"] = ""
+                m["pool1_last_rebuild_add_ratio_base"] = 0.0
+                m["pool1_last_rebuild_add_ratio_bias"] = 0.0
                 m["pool1_last_rebuild_from_partial_count"] = 0
                 m["pool1_last_rebuild_from_partial_ratio"] = 0.0
+                m["pool1_last_rebuild_from_partial_source"] = ""
+                m["pool1_last_rebuild_from_partial_avwap_tier"] = ""
                 m["pool1_last_exit_after_partial"] = False
                 m["pool1_last_exit_partial_count"] = 0
                 m["pool1_last_exit_reduce_ratio_cum"] = 0.0
+                m["pool1_last_exit_reduce_source"] = ""
+                m["pool1_last_exit_reduce_avwap_tier"] = ""
                 m["pool1_left_quick_clear_streak"] = 0
                 m["pool1_last_left_quick_clear_at"] = 0
             chip = chip_map.get(str(ts_code), {})
@@ -1857,6 +2781,20 @@ def _build_member_data(conn: duckdb.DuckDBPyConnection, pool_id: int) -> list[di
                     bars_1m = mootdx_client.get_minute_bars(ts_code, 240)
                 if bars_1m:
                     m["minute_bars_1m"] = bars_1m
+                    try:
+                        cum_amt = sum(float(b.get("amount", 0) or 0) for b in bars_1m)
+                        cum_vol = sum(float(b.get("volume", 0) or 0) for b in bars_1m)
+                        m["vwap"] = cum_amt / cum_vol if cum_vol > 0 else None
+                    except Exception:
+                        m["vwap"] = None
+                    try:
+                        m["intraday_prices"] = [
+                            float(b.get("close", 0) or 0)
+                            for b in bars_1m
+                            if float(b.get("close", 0) or 0) > 0
+                        ]
+                    except Exception:
+                        m["intraday_prices"] = None
                     rv, rinfo = sig.compute_pool1_resonance_60m(bars_1m, fallback=False)
                     if isinstance(rinfo, dict):
                         rinfo = dict(rinfo)
@@ -1946,19 +2884,29 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
         row["pool1_last_reduce_at"] = 0
         row["pool1_last_reduce_type"] = ""
         row["pool1_last_reduce_ratio"] = 0.0
+        row["pool1_last_reduce_source"] = ""
+        row["pool1_last_reduce_avwap_tier"] = ""
         row["pool1_reduce_streak"] = 0
         row["pool1_reduce_ratio_cum"] = 0.0
         row["pool1_last_rebuild_at"] = 0
         row["pool1_last_rebuild_type"] = ""
         row["pool1_last_rebuild_transition"] = ""
         row["pool1_last_rebuild_add_ratio"] = 0.0
+        row["pool1_last_rebuild_add_ratio_base"] = 0.0
+        row["pool1_last_rebuild_add_ratio_bias"] = 0.0
         row["pool1_last_rebuild_from_partial_count"] = 0
         row["pool1_last_rebuild_from_partial_ratio"] = 0.0
+        row["pool1_last_rebuild_from_partial_source"] = ""
+        row["pool1_last_rebuild_from_partial_avwap_tier"] = ""
         row["pool1_last_exit_after_partial"] = False
         row["pool1_last_exit_partial_count"] = 0
         row["pool1_last_exit_reduce_ratio_cum"] = 0.0
+        row["pool1_last_exit_reduce_source"] = ""
+        row["pool1_last_exit_reduce_avwap_tier"] = ""
         row["pool1_left_quick_clear_streak"] = 0
         row["pool1_last_left_quick_clear_at"] = 0
+        row["pool1_reduce_source"] = ""
+        row["pool1_reduce_avwap_tier"] = ""
         try:
             pos = provider.get_pool1_position_state(code)
             if isinstance(pos, dict):
@@ -1974,17 +2922,25 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
                 row["pool1_last_reduce_at"] = int(pos.get("last_reduce_at", 0) or 0)
                 row["pool1_last_reduce_type"] = str(pos.get("last_reduce_type") or "")
                 row["pool1_last_reduce_ratio"] = round(float(pos.get("last_reduce_ratio", 0.0) or 0.0), 4)
+                row["pool1_last_reduce_source"] = str(pos.get("last_reduce_source") or "")
+                row["pool1_last_reduce_avwap_tier"] = str(pos.get("last_reduce_avwap_tier") or "")
                 row["pool1_reduce_streak"] = int(pos.get("reduce_streak", 0) or 0)
                 row["pool1_reduce_ratio_cum"] = round(float(pos.get("reduce_ratio_cum", 0.0) or 0.0), 4)
                 row["pool1_last_rebuild_at"] = int(pos.get("last_rebuild_at", 0) or 0)
                 row["pool1_last_rebuild_type"] = str(pos.get("last_rebuild_type") or "")
                 row["pool1_last_rebuild_transition"] = str(pos.get("last_rebuild_transition") or "")
                 row["pool1_last_rebuild_add_ratio"] = round(float(pos.get("last_rebuild_add_ratio", 0.0) or 0.0), 4)
+                row["pool1_last_rebuild_add_ratio_base"] = round(float(pos.get("last_rebuild_add_ratio_base", 0.0) or 0.0), 4)
+                row["pool1_last_rebuild_add_ratio_bias"] = round(float(pos.get("last_rebuild_add_ratio_bias", 0.0) or 0.0), 4)
                 row["pool1_last_rebuild_from_partial_count"] = int(pos.get("last_rebuild_from_partial_count", 0) or 0)
                 row["pool1_last_rebuild_from_partial_ratio"] = round(float(pos.get("last_rebuild_from_partial_ratio", 0.0) or 0.0), 4)
+                row["pool1_last_rebuild_from_partial_source"] = str(pos.get("last_rebuild_from_partial_source") or "")
+                row["pool1_last_rebuild_from_partial_avwap_tier"] = str(pos.get("last_rebuild_from_partial_avwap_tier") or "")
                 row["pool1_last_exit_after_partial"] = bool(pos.get("last_exit_after_partial", False))
                 row["pool1_last_exit_partial_count"] = int(pos.get("last_exit_partial_count", 0) or 0)
                 row["pool1_last_exit_reduce_ratio_cum"] = round(float(pos.get("last_exit_reduce_ratio_cum", 0.0) or 0.0), 4)
+                row["pool1_last_exit_reduce_source"] = str(pos.get("last_exit_reduce_source") or "")
+                row["pool1_last_exit_reduce_avwap_tier"] = str(pos.get("last_exit_reduce_avwap_tier") or "")
                 row["pool1_left_quick_clear_streak"] = int(pos.get("left_quick_clear_streak", 0) or 0)
                 row["pool1_last_left_quick_clear_at"] = int(pos.get("last_left_quick_clear_at", 0) or 0)
         except Exception:
@@ -2029,6 +2985,8 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
         decision_clear_level = ""
         decision_clear_family = ""
         decision_reduce_ratio = 0.0
+        decision_reduce_source = ""
+        decision_reduce_avwap_tier = ""
 
         if status == "holding":
             if clear_actionable:
@@ -2049,6 +3007,8 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
                 decision_clear_level = clear_level
                 decision_clear_family = clear_family
                 decision_reduce_ratio = round(max(0.0, min(1.0, reduce_ratio)), 4)
+                decision_reduce_source = str(best_details.get("reduce_ratio_source") or "")
+                decision_reduce_avwap_tier = str(best_details.get("avwap_exit_tier") or "")
             else:
                 decision = "hold"
                 decision_label = "建议持有"
@@ -2068,6 +3028,8 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
                     decision_clear_level = clear_level
                     decision_clear_family = clear_family
                     decision_reduce_ratio = round(max(0.0, min(1.0, reduce_ratio)), 4)
+                    decision_reduce_source = str(best_details.get("reduce_ratio_source") or "")
+                    decision_reduce_avwap_tier = str(best_details.get("avwap_exit_tier") or "")
                 else:
                     decision_reason = "主线趋势未出现确认级清仓条件"
         else:
@@ -2098,6 +3060,8 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
         row["pool1_clear_level"] = decision_clear_level
         row["pool1_clear_family"] = decision_clear_family
         row["pool1_reduce_ratio"] = round(float(decision_reduce_ratio), 4)
+        row["pool1_reduce_source"] = decision_reduce_source
+        row["pool1_reduce_avwap_tier"] = decision_reduce_avwap_tier
 
         if signals:
             patched = []
@@ -2118,6 +3082,8 @@ def _evaluate_signals_fast_internal(pool_id: int, members: list, provider, tick_
                     "clear_level": decision_clear_level,
                     "clear_family": decision_clear_family,
                     "reduce_ratio": round(float(decision_reduce_ratio), 4),
+                    "reduce_source": decision_reduce_source,
+                    "reduce_avwap_tier": decision_reduce_avwap_tier,
                 }
                 sc["details"] = details
                 patched.append(sc)
@@ -2163,7 +3129,25 @@ def tick_provider_info():
     p = get_tick_provider()
     return {"name": p.name, "display_name": p.display_name}
 def realtime_ui_config():
-    return {"data": REALTIME_UI_CONFIG}
+    cfg = dict(REALTIME_UI_CONFIG or {})
+    rebuild_cfg = dict((POOL1_SIGNAL_CONFIG or {}).get("rebuild") or {})
+    cfg["pool1_rebuild_ui"] = {
+        "enabled": bool(rebuild_cfg.get("enabled", False)),
+        "require_stage1_pass": bool(rebuild_cfg.get("require_stage1_pass", True)),
+        "min_position_gap": round(float(rebuild_cfg.get("min_position_gap", 0.12) or 0.12), 4),
+        "min_minutes_after_reduce": round(float(rebuild_cfg.get("min_minutes_after_reduce", 20.0) or 20.0), 2),
+        "min_signal_strength": round(float(rebuild_cfg.get("min_signal_strength", 78.0) or 78.0), 2),
+        "add_ratio": round(float(rebuild_cfg.get("add_ratio", 0.50) or 0.50), 4),
+        "observe_tier_add_ratio_bias": round(float(rebuild_cfg.get("observe_tier_add_ratio_bias", 0.15) or 0.15), 4),
+        "full_tier_add_ratio_bias": round(float(rebuild_cfg.get("full_tier_add_ratio_bias", -0.15) or -0.15), 4),
+        "soft_source_add_ratio_bias": round(float(rebuild_cfg.get("soft_source_add_ratio_bias", 0.10) or 0.10), 4),
+        "core_source_add_ratio_bias": round(float(rebuild_cfg.get("core_source_add_ratio_bias", -0.15) or -0.15), 4),
+        "full_tier_extra_delay_minutes": round(float(rebuild_cfg.get("full_tier_extra_delay_minutes", 20.0) or 20.0), 2),
+        "core_source_extra_delay_minutes": round(float(rebuild_cfg.get("core_source_extra_delay_minutes", 15.0) or 15.0), 2),
+        "allow_left_side_buy": bool(rebuild_cfg.get("allow_left_side_buy", True)),
+        "allow_right_side_breakout": bool(rebuild_cfg.get("allow_right_side_breakout", True)),
+    }
+    return {"data": cfg}
 def pool1_observe_stats():
     provider = get_tick_provider()
     stats = provider.get_pool1_observe_stats()
@@ -2325,19 +3309,48 @@ def pool1_decision_summary():
     concept_board_map: dict[str, list[str]] = {}
     core_concept_map: dict[str, str] = {}
     concept_snapshot_map: dict[str, dict] = {}
+    industry_snapshot_map: dict[str, dict] = {}
+    concept_code_map: dict[str, list[str]] = {}
+    core_concept_code_map: dict[str, str] = {}
+    stock_industry_name_map: dict[str, str] = {}
+    stock_industry_code_map: dict[str, str] = {}
     member_meta: dict[str, dict] = {}
     if eval_members:
         try:
             with _data_ro_conn_ctx() as data_conn:
-                concept_board_map, core_concept_map, concept_snapshot_map = _load_concept_board_maps(data_conn, [x[0] for x in eval_members])
+                (
+                    concept_board_map,
+                    core_concept_map,
+                    concept_snapshot_map,
+                    concept_code_map,
+                    core_concept_code_map,
+                ) = _load_concept_board_maps(data_conn, [x[0] for x in eval_members])
+                stock_industry_name_map, stock_industry_code_map = _load_em_industry_member_maps(
+                    data_conn,
+                    [x[0] for x in eval_members],
+                )
+                industry_snapshot_map, _, _ = _fetch_realtime_industry_snapshot_map(force_refresh=False)
+                _attach_industry_snapshot_aliases(
+                    industry_snapshot_map,
+                    {
+                        str(stock_industry_name_map.get(str(m[0]), "") or str(m[2] or "")).strip()
+                        for m in members
+                    },
+                )
         except Exception:
             concept_board_map = {}
             core_concept_map = {}
             concept_snapshot_map = {}
+            industry_snapshot_map = {}
+            concept_code_map = {}
+            core_concept_code_map = {}
+            stock_industry_name_map = {}
+            stock_industry_code_map = {}
     for m in members:
         code = str(m[0] or "")
         name = str(m[1] or "")
-        industry = str(m[2] or "")
+        industry = str(stock_industry_name_map.get(code, "") or m[2] or "")
+        industry_code = str(stock_industry_code_map.get(code, "") or "")
         board_segment = "unknown"
         if infer_instrument_profile is not None:
             try:
@@ -2348,10 +3361,27 @@ def pool1_decision_summary():
         member_meta[code] = {
             "name": name,
             "industry": industry,
+            "industry_code": industry_code,
             "board_segment": board_segment,
             "concept_boards": list(concept_board_map.get(code, []) or []),
+            "concept_codes": list(concept_code_map.get(code, []) or []),
             "core_concept_board": str(core_concept_map.get(code, "") or ""),
-            "concept_ecology": dict(concept_snapshot_map.get(str(core_concept_map.get(code, "") or ""), {}) or {}),
+            "core_concept_code": str(core_concept_code_map.get(code, "") or ""),
+            "concept_ecology": _resolve_concept_snapshot(
+                concept_snapshot_map,
+                concept_name=core_concept_map.get(code, ""),
+                concept_code=core_concept_code_map.get(code, ""),
+            ),
+            "concept_ecology_multi": _build_concept_ecology_multi(
+                concept_snapshot_map,
+                concept_names=list(concept_board_map.get(code, []) or []),
+                concept_codes=list(concept_code_map.get(code, []) or []),
+            ),
+            "industry_ecology": _resolve_industry_snapshot(
+                industry_snapshot_map,
+                industry_name=industry,
+                industry_code=industry_code,
+            ),
         }
     decision_counts = {"build": 0, "hold": 0, "clear": 0, "observe": 0}
     mode_counts = {"actionable": 0, "watch": 0, "neutral": 0}
@@ -2391,17 +3421,27 @@ def pool1_decision_summary():
             "clear_level": str(row.get("pool1_clear_level") or ""),
             "clear_family": str(row.get("pool1_clear_family") or ""),
             "reduce_ratio": round(float(row.get("pool1_reduce_ratio", 0.0) or 0.0), 4),
+            "reduce_source": str(row.get("pool1_reduce_source") or ""),
+            "reduce_avwap_tier": str(row.get("pool1_reduce_avwap_tier") or ""),
+            "last_reduce_source": str(row.get("pool1_last_reduce_source") or ""),
+            "last_reduce_avwap_tier": str(row.get("pool1_last_reduce_avwap_tier") or ""),
             "reduce_streak": int(row.get("pool1_reduce_streak", 0) or 0),
             "reduce_ratio_cum": round(float(row.get("pool1_reduce_ratio_cum", 0.0) or 0.0), 4),
             "last_rebuild_at": int(row.get("pool1_last_rebuild_at", 0) or 0),
             "last_rebuild_type": str(row.get("pool1_last_rebuild_type") or ""),
             "last_rebuild_transition": str(row.get("pool1_last_rebuild_transition") or ""),
             "last_rebuild_add_ratio": round(float(row.get("pool1_last_rebuild_add_ratio", 0.0) or 0.0), 4),
+            "last_rebuild_add_ratio_base": round(float(row.get("pool1_last_rebuild_add_ratio_base", 0.0) or 0.0), 4),
+            "last_rebuild_add_ratio_bias": round(float(row.get("pool1_last_rebuild_add_ratio_bias", 0.0) or 0.0), 4),
             "last_rebuild_from_partial_count": int(row.get("pool1_last_rebuild_from_partial_count", 0) or 0),
             "last_rebuild_from_partial_ratio": round(float(row.get("pool1_last_rebuild_from_partial_ratio", 0.0) or 0.0), 4),
+            "last_rebuild_from_partial_source": str(row.get("pool1_last_rebuild_from_partial_source") or ""),
+            "last_rebuild_from_partial_avwap_tier": str(row.get("pool1_last_rebuild_from_partial_avwap_tier") or ""),
             "last_exit_after_partial": bool(row.get("pool1_last_exit_after_partial", False)),
             "last_exit_partial_count": int(row.get("pool1_last_exit_partial_count", 0) or 0),
             "last_exit_reduce_ratio_cum": round(float(row.get("pool1_last_exit_reduce_ratio_cum", 0.0) or 0.0), 4),
+            "last_exit_reduce_source": str(row.get("pool1_last_exit_reduce_source") or ""),
+            "last_exit_reduce_avwap_tier": str(row.get("pool1_last_exit_reduce_avwap_tier") or ""),
             "holding_days": round(float(row.get("pool1_holding_days", 0.0) or 0.0), 4),
             "signal_types": list(row.get("pool1_decision_signal_types") or []),
             "industry": str((member_meta.get(str(row.get("ts_code") or ""), {}) or {}).get("industry") or ""),
@@ -2574,14 +3614,14 @@ def pool1_decision_summary():
         mode_counts[mode] += 1
         position_counts[position_status] += 1
         decision_reason = str(row.get("pool1_decision_reason") or "")
-        if "宸︿晶鎶戝埗:" in decision_reason:
+        if "左侧抑制:" in decision_reason:
             left_suppressed_count += 1
         if (
-            "宸︿晶鎶戝埗:repeat_retreat_after_quick_clear" in decision_reason
-            or "宸︿晶鎶戝埗:repeat_weak_after_quick_clear" in decision_reason
+            "左侧抑制:repeat_retreat_after_quick_clear" in decision_reason
+            or "左侧抑制:repeat_weak_after_quick_clear" in decision_reason
         ):
             left_repeat_suppressed_count += 1
-        if "姒傚康鐢熸€?retreat" in decision_reason and mode == "watch":
+        if "概念生态:" in decision_reason and "retreat" in decision_reason and mode == "watch":
             concept_retreat_watch_count += 1
         item = _pack_item(row)
         decision_examples[decision].append(item)
@@ -2662,6 +3702,10 @@ def pool1_decision_summary():
                     "rebuild_from_partial_count": int(pos.get("last_rebuild_from_partial_count", 0) or 0),
                     "rebuild_from_partial_ratio": round(float(pos.get("last_rebuild_from_partial_ratio", 0.0) or 0.0), 4),
                     "rebuild_add_ratio": last_rebuild_add_ratio,
+                    "rebuild_add_ratio_base": round(float(pos.get("last_rebuild_add_ratio_base", 0.0) or 0.0), 4),
+                    "rebuild_add_ratio_bias": round(float(pos.get("last_rebuild_add_ratio_bias", 0.0) or 0.0), 4),
+                    "rebuild_from_partial_source": str(pos.get("last_rebuild_from_partial_source") or ""),
+                    "rebuild_from_partial_avwap_tier": str(pos.get("last_rebuild_from_partial_avwap_tier") or ""),
                     "current_position_status": position_status,
                     "current_position_ratio": round(float(row.get("pool1_position_ratio", 0.0) or 0.0), 4),
                     "current_decision": decision,
@@ -2694,6 +3738,8 @@ def pool1_decision_summary():
                     "signal_type": str(pos.get("last_reduce_type") or ""),
                     "signal_price": float(pos.get("last_reduce_price", 0.0) or 0.0),
                     "reduce_ratio": round(float(pos.get("last_reduce_ratio", 0.0) or 0.0), 4),
+                    "reduce_source": str(pos.get("last_reduce_source") or ""),
+                    "reduce_avwap_tier": str(pos.get("last_reduce_avwap_tier") or ""),
                     "reduce_streak": reduce_streak,
                     "reduce_ratio_cum": reduce_ratio_cum,
                     "current_position_status": position_status,
@@ -2730,6 +3776,8 @@ def pool1_decision_summary():
                     "exit_after_partial": bool(last_exit_after_partial or last_exit_partial_count > 0 or str(pos.get("last_sell_type") or "").endswith("partial_exhausted")),
                     "exit_partial_count": last_exit_partial_count,
                     "exit_reduce_ratio_cum": last_exit_reduce_ratio_cum,
+                    "exit_reduce_source": str(pos.get("last_exit_reduce_source") or ""),
+                    "exit_reduce_avwap_tier": str(pos.get("last_exit_reduce_avwap_tier") or ""),
                     "current_position_status": position_status,
                     "current_decision": decision,
                     "current_decision_label": str(row.get("pool1_decision_label") or "建议观望"),
@@ -2878,16 +3926,26 @@ def get_members(pool_id: int):
         ).fetchall()
         stock_concepts_map: dict[str, list[str]] = {}
         core_concept_map: dict[str, str] = {}
+        stock_concept_code_map: dict[str, list[str]] = {}
+        core_concept_code_map: dict[str, str] = {}
         if rows:
             try:
                 with _data_ro_conn_ctx() as data_conn:
-                    stock_concepts_map, core_concept_map, _concept_snapshot_map = _load_concept_board_maps(
+                    (
+                        stock_concepts_map,
+                        core_concept_map,
+                        _concept_snapshot_map,
+                        stock_concept_code_map,
+                        core_concept_code_map,
+                    ) = _load_concept_board_maps(
                         data_conn,
                         [str(r[0] or "") for r in rows],
                     )
             except Exception:
                 stock_concepts_map = {}
                 core_concept_map = {}
+                stock_concept_code_map = {}
+                core_concept_code_map = {}
         data = []
         for r in rows:
             ts_code = str(r[0] or "")
@@ -2900,7 +3958,9 @@ def get_members(pool_id: int):
                     "note": r[4],
                     "sort_order": r[5],
                     "concept_boards": list(stock_concepts_map.get(ts_code, []) or []),
+                    "concept_codes": list(stock_concept_code_map.get(ts_code, []) or []),
                     "core_concept_board": str(core_concept_map.get(ts_code, "") or ""),
+                    "core_concept_code": str(core_concept_code_map.get(ts_code, "") or ""),
                 }
             )
         return {"pool_id": pool_id, "count": len(data), "data": data}

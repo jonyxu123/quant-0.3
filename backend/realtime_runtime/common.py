@@ -115,6 +115,9 @@ _DB_WRITER_REDIS_KEY = str(_DB_WRITER_REDIS_CFG.get("list_key", os.getenv("REALT
 _db_writer_redis = None
 _db_writer_redis_warn_at = 0.0
 _db_writer_redis_next_retry_at = 0.0
+_TICK_DB_PERSIST_ENABLED = str(os.getenv("REALTIME_TICK_DB_PERSIST_ENABLED", "0") or "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 _RUNTIME_STATE_CFG = REALTIME_RUNTIME_STATE_CONFIG.get("redis", {}) if isinstance(REALTIME_RUNTIME_STATE_CONFIG, dict) else {}
 _RUNTIME_STATE_REDIS_ENABLED = bool(_RUNTIME_STATE_CFG.get("enabled", False))
 _RUNTIME_STATE_REDIS_URL = str(_RUNTIME_STATE_CFG.get("url", os.getenv("RUNTIME_STATE_REDIS_URL", _DB_WRITER_REDIS_URL)))
@@ -294,6 +297,9 @@ def _compact_history_snapshot(signal_obj: Optional[dict]) -> Optional[str]:
     details = signal_obj.get("details") if isinstance(signal_obj.get("details"), dict) else {}
     threshold = details.get("threshold") if isinstance(details.get("threshold"), dict) else {}
     trend_guard = details.get("trend_guard") if isinstance(details.get("trend_guard"), dict) else {}
+    concept_ecology = details.get("concept_ecology") if isinstance(details.get("concept_ecology"), dict) else {}
+    left_state_machine = details.get("left_state_machine") if isinstance(details.get("left_state_machine"), dict) else {}
+    left_reclaim = details.get("left_reclaim") if isinstance(details.get("left_reclaim"), dict) else {}
     compact = {
         "type": str(signal_obj.get("type") or ""),
         "direction": str(signal_obj.get("direction") or ""),
@@ -301,6 +307,7 @@ def _compact_history_snapshot(signal_obj: Optional[dict]) -> Optional[str]:
         "message": str(signal_obj.get("message", "") or ""),
         "veto": str(details.get("veto") or ""),
         "observe_only": bool(details.get("observe_only", False)),
+        "observe_reason": str(details.get("observe_reason") or ""),
         "score_status": str(details.get("score_status") or ""),
         "trigger_items": list(details.get("trigger_items") or []) if isinstance(details.get("trigger_items"), list) else [],
         "confirm_items": list(details.get("confirm_items") or []) if isinstance(details.get("confirm_items"), list) else [],
@@ -320,6 +327,53 @@ def _compact_history_snapshot(signal_obj: Optional[dict]) -> Optional[str]:
         "super_order_bias": details.get("super_order_bias"),
         "super_net_flow_bps": details.get("super_net_flow_bps"),
         "trend_guard_override": bool(details.get("trend_guard_override", False)),
+        "concept_ecology": {
+            "core_concept_board": concept_ecology.get("core_concept_board"),
+            "state": concept_ecology.get("state"),
+            "score": concept_ecology.get("score"),
+            "observe_only": bool(concept_ecology.get("observe_only", False)),
+            "observe_reason": concept_ecology.get("observe_reason"),
+            "source": concept_ecology.get("source"),
+            "updated_at_iso": concept_ecology.get("updated_at_iso"),
+        },
+        "left_reclaim": {
+            "candidate": bool(left_reclaim.get("candidate", False)),
+            "reason": left_reclaim.get("reason"),
+            "required_confirms": left_reclaim.get("required_confirms"),
+            "score_bonus": left_reclaim.get("score_bonus"),
+            "bias_vwap": left_reclaim.get("bias_vwap"),
+            "short_zscore": left_reclaim.get("short_zscore"),
+            "extreme_items": list(left_reclaim.get("extreme_items") or []) if isinstance(left_reclaim.get("extreme_items"), list) else [],
+            "confirm_items": list(left_reclaim.get("confirm_items") or []) if isinstance(left_reclaim.get("confirm_items"), list) else [],
+        },
+        "left_state_machine": {
+            "name": left_state_machine.get("name"),
+            "candidate_ready": bool(left_state_machine.get("candidate_ready", False)),
+            "reclaim_ready": bool(left_state_machine.get("reclaim_ready", False)),
+            "executable_ready": bool(left_state_machine.get("executable_ready", False)),
+            "observe_only": bool(left_state_machine.get("observe_only", False)),
+            "observe_reason": left_state_machine.get("observe_reason"),
+            "stage_a": {
+                "passed": bool(((left_state_machine.get("stage_a") or {}) if isinstance(left_state_machine.get("stage_a"), dict) else {}).get("passed", False)),
+                "reason": (((left_state_machine.get("stage_a") or {}) if isinstance(left_state_machine.get("stage_a"), dict) else {})).get("reason"),
+                "extreme_items": list((((left_state_machine.get("stage_a") or {}) if isinstance(left_state_machine.get("stage_a"), dict) else {})).get("extreme_items") or []) if isinstance((((left_state_machine.get("stage_a") or {}) if isinstance(left_state_machine.get("stage_a"), dict) else {})).get("extreme_items"), list) else [],
+            },
+            "stage_b": {
+                "passed": bool(((left_state_machine.get("stage_b") or {}) if isinstance(left_state_machine.get("stage_b"), dict) else {}).get("passed", False)),
+                "reason": (((left_state_machine.get("stage_b") or {}) if isinstance(left_state_machine.get("stage_b"), dict) else {})).get("reason"),
+                "required_confirms": (((left_state_machine.get("stage_b") or {}) if isinstance(left_state_machine.get("stage_b"), dict) else {})).get("required_confirms"),
+                "confirm_items": list((((left_state_machine.get("stage_b") or {}) if isinstance(left_state_machine.get("stage_b"), dict) else {})).get("confirm_items") or []) if isinstance((((left_state_machine.get("stage_b") or {}) if isinstance(left_state_machine.get("stage_b"), dict) else {})).get("confirm_items"), list) else [],
+            },
+            "stage_c": {
+                "passed": bool(((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {}).get("passed", False)),
+                "reason": (((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("reason"),
+                "observe_only": bool((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("observe_only", False)),
+                "observe_reason": (((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("observe_reason"),
+                "items": list((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("items") or []) if isinstance((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("items"), list) else [],
+                "high_position_catchdown": bool((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("high_position_catchdown", False)),
+                "distribution_structure": bool((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("distribution_structure", False)),
+            },
+        },
         "threshold": {
             "threshold_version": threshold.get("threshold_version"),
             "market_phase": threshold.get("market_phase"),
