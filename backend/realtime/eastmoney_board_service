@@ -1,0 +1,1118 @@
+# -*- coding: utf-8 -*-
+"""
+东方财富板块实时服务模块
+
+用途：
+1. 获取所有概念板块 / 行业板块实时快照
+2. 获取板块成分股
+3. 内存缓存板块成分股映射
+4. 生成强势板块
+5. 生成强势板块候选股票池
+6. 给择时模块 / T+0 模块直接调用
+
+特点：
+- 不保存 CSV
+- 返回 pandas.DataFrame
+- 支持缓存
+- 支持限频与重试
+"""
+
+import time
+import random
+import logging
+from typing import Literal, Optional, Iterable
+
+import requests
+import pandas as pd
+
+
+BoardType = Literal["concept", "industry"]
+
+
+class EastMoneyBoardService:
+    URL = "https://push2.eastmoney.com/api/qt/clist/get"
+
+    BOARD_FS = {
+        "concept": "m:90 t:3 f:!50",   # 概念板块
+        "industry": "m:90 t:2 f:!50",  # 行业板块
+    }
+
+    BOARD_NAME = {
+        "concept": "概念板块",
+        "industry": "行业板块",
+    }
+
+    BOARD_FIELD_MAP = {
+        "f2": "最新价",
+        "f3": "涨跌幅",
+        "f4": "涨跌额",
+        "f5": "成交量",
+        "f6": "成交额",
+        "f8": "换手率",
+        "f12": "板块代码",
+        "f14": "板块名称",
+        "f20": "总市值",
+        "f104": "上涨家数",
+        "f105": "下跌家数",
+        "f128": "领涨股票",
+        "f140": "领涨股票代码",
+        "f141": "领涨股票市场",
+        "f136": "领涨股票涨跌幅",
+    }
+
+    STOCK_FIELD_MAP = {
+        "f2": "股票最新价",
+        "f3": "股票涨跌幅",
+        "f4": "股票涨跌额",
+        "f5": "股票成交量",
+        "f6": "股票成交额",
+        "f7": "股票振幅",
+        "f8": "股票换手率",
+        "f9": "股票市盈率动态",
+        "f10": "股票量比",
+        "f12": "股票代码",
+        "f13": "市场标识",
+        "f14": "股票名称",
+        "f15": "股票最高价",
+        "f16": "股票最低价",
+        "f17": "股票开盘价",
+        "f18": "股票昨收价",
+        "f20": "股票总市值",
+        "f21": "股票流通市值",
+        "f23": "股票市净率",
+        "f62": "股票主力净流入",
+        "f115": "股票市盈率TTM",
+    }
+
+    BOARD_NUMERIC_COLUMNS = [
+        "最新价",
+        "涨跌幅",
+        "涨跌额",
+        "成交量",
+        "成交额",
+        "换手率",
+        "总市值",
+        "上涨家数",
+        "下跌家数",
+        "领涨股票涨跌幅",
+    ]
+
+    STOCK_NUMERIC_COLUMNS = [
+        "股票最新价",
+        "股票涨跌幅",
+        "股票涨跌额",
+        "股票成交量",
+        "股票成交额",
+        "股票振幅",
+        "股票换手率",
+        "股票市盈率动态",
+        "股票量比",
+        "股票最高价",
+        "股票最低价",
+        "股票开盘价",
+        "股票昨收价",
+        "股票总市值",
+        "股票流通市值",
+        "股票市净率",
+        "股票主力净流入",
+        "股票市盈率TTM",
+    ]
+
+    def __init__(
+        self,
+        min_request_interval: float = 0.8,
+        timeout: int = 10,
+        max_retries: int = 3,
+        snapshot_cache_seconds: int = 5,
+    ):
+        self.min_request_interval = min_request_interval
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.snapshot_cache_seconds = snapshot_cache_seconds
+
+        self.last_request_time = 0.0
+
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/132.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://quote.eastmoney.com/center/boardlist.html",
+            "Accept": "application/json,text/plain,*/*",
+        })
+
+        # 盘中实时板块快照缓存
+        self.board_snapshot_cache: pd.DataFrame = pd.DataFrame()
+        self.board_snapshot_ts: float = 0.0
+
+        # 板块成分股缓存，建议每日盘前/启动时刷新一次
+        self.board_members_cache: pd.DataFrame = pd.DataFrame()
+        self.board_members_ts: float = 0.0
+
+    def _rate_limit(self):
+        now = time.time()
+        elapsed = now - self.last_request_time
+
+        if elapsed < self.min_request_interval:
+            time.sleep(self.min_request_interval - elapsed)
+
+        time.sleep(random.uniform(0.05, 0.2))
+        self.last_request_time = time.time()
+
+    @staticmethod
+    def _safe_numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+        for col in columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+
+    @staticmethod
+    def normalize_stock_code(code: str) -> str:
+        """
+        将股票代码统一成 000001.SZ / 600000.SH / 430000.BJ 格式。
+        """
+        if code is None:
+            return ""
+
+        code = str(code).strip().upper()
+
+        if not code:
+            return ""
+
+        if "." in code:
+            raw, market = code.split(".", 1)
+            raw = raw.zfill(6)
+            return f"{raw}.{market}"
+
+        code = code.zfill(6)
+
+        if code.startswith("6"):
+            return f"{code}.SH"
+
+        if code.startswith("8") or code.startswith("4"):
+            return f"{code}.BJ"
+
+        return f"{code}.SZ"
+
+    @staticmethod
+    def _build_stock_code(code, market) -> str:
+        if pd.isna(code):
+            return ""
+
+        code = str(code).strip()
+
+        if not code or code == "-":
+            return ""
+
+        if code.isdigit() and len(code) < 6:
+            code = code.zfill(6)
+
+        try:
+            market = int(market)
+        except Exception:
+            market = None
+
+        if market == 0:
+            return f"{code}.SZ"
+        elif market == 1:
+            return f"{code}.SH"
+        elif market == 2:
+            return f"{code}.BJ"
+        else:
+            return EastMoneyBoardService.normalize_stock_code(code)
+
+    def _request_clist(self, params: dict) -> dict:
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                self._rate_limit()
+
+                response = self.session.get(
+                    self.URL,
+                    params=params,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+
+                data = response.json()
+
+                if not data.get("data"):
+                    raise RuntimeError(f"东方财富返回空 data: {data}")
+
+                return data
+
+            except Exception as e:
+                last_error = e
+                wait_seconds = min(3 * attempt, 15)
+
+                logging.warning(
+                    "东方财富请求失败，第 %s/%s 次重试，等待 %s 秒，原因：%s",
+                    attempt,
+                    self.max_retries,
+                    wait_seconds,
+                    e,
+                )
+
+                time.sleep(wait_seconds)
+
+        raise RuntimeError(f"东方财富请求最终失败：{last_error}")
+
+    def _fetch_paged(
+        self,
+        fs: str,
+        fields: str,
+        page_size: int = 500,
+        sort_field: str = "f3",
+    ) -> pd.DataFrame:
+        all_rows = []
+        page = 1
+        total = None
+
+        while True:
+            params = {
+                "pn": str(page),
+                "pz": str(page_size),
+                "po": "1",
+                "np": "1",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": "2",
+                "invt": "2",
+                "fid": sort_field,
+                "fs": fs,
+                "fields": fields,
+                "_": str(int(time.time() * 1000)),
+            }
+
+            data = self._request_clist(params)
+            payload = data.get("data") or {}
+
+            rows = payload.get("diff") or []
+            total = payload.get("total", total)
+
+            if not rows:
+                break
+
+            all_rows.extend(rows)
+
+            if total is not None and len(all_rows) >= int(total):
+                break
+
+            if len(rows) < page_size:
+                break
+
+            page += 1
+
+        if not all_rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame(all_rows)
+
+    def fetch_boards(self, board_type: BoardType) -> pd.DataFrame:
+        """
+        获取概念板块或行业板块实时快照。
+        """
+        if board_type not in self.BOARD_FS:
+            raise ValueError("board_type 只能是 concept 或 industry")
+
+        fields = (
+            "f2,f3,f4,f5,f6,f8,"
+            "f12,f14,f20,"
+            "f104,f105,"
+            "f128,f136,f140,f141"
+        )
+
+        raw_df = self._fetch_paged(
+            fs=self.BOARD_FS[board_type],
+            fields=fields,
+            page_size=500,
+            sort_field="f3",
+        )
+
+        if raw_df.empty:
+            return raw_df
+
+        df = raw_df.rename(columns=self.BOARD_FIELD_MAP).copy()
+        df["采集时间"] = pd.Timestamp.now()
+        df["板块类型"] = self.BOARD_NAME[board_type]
+
+        df = self._safe_numeric(df, self.BOARD_NUMERIC_COLUMNS)
+
+        df["领涨股票完整代码"] = df.apply(
+            lambda row: self._build_stock_code(
+                row.get("领涨股票代码"),
+                row.get("领涨股票市场"),
+            ),
+            axis=1,
+        )
+
+        total_count = df["上涨家数"].fillna(0) + df["下跌家数"].fillna(0)
+        denominator = total_count.mask(total_count == 0)
+
+        df["上涨占比"] = df["上涨家数"] / denominator
+        df["上涨占比"] = pd.to_numeric(df["上涨占比"], errors="coerce").round(4)
+
+        keep_cols = [
+            "采集时间",
+            "板块类型",
+            "板块代码",
+            "板块名称",
+            "最新价",
+            "涨跌幅",
+            "涨跌额",
+            "成交量",
+            "成交额",
+            "换手率",
+            "总市值",
+            "上涨家数",
+            "下跌家数",
+            "上涨占比",
+            "领涨股票",
+            "领涨股票代码",
+            "领涨股票市场",
+            "领涨股票完整代码",
+            "领涨股票涨跌幅",
+        ]
+
+        for col in keep_cols:
+            if col not in df.columns:
+                df[col] = None
+
+        df = df[keep_cols]
+        df = df.sort_values("涨跌幅", ascending=False, na_position="last")
+        df = df.reset_index(drop=True)
+
+        return df
+
+    def fetch_all_boards_snapshot(self) -> pd.DataFrame:
+        """
+        获取所有概念板块 + 行业板块实时快照。
+        """
+        concept_df = self.fetch_boards("concept")
+        industry_df = self.fetch_boards("industry")
+
+        dfs = []
+
+        if not concept_df.empty:
+            dfs.append(concept_df)
+
+        if not industry_df.empty:
+            dfs.append(industry_df)
+
+        if not dfs:
+            return pd.DataFrame()
+
+        df = pd.concat(dfs, ignore_index=True)
+        df = self.score_boards(df)
+
+        return df
+
+    def get_board_snapshot(self, force: bool = False) -> pd.DataFrame:
+        """
+        获取板块实时快照。
+
+        默认使用短缓存，避免多个模块重复请求。
+        """
+        now = time.time()
+
+        if (
+            not force
+            and not self.board_snapshot_cache.empty
+            and now - self.board_snapshot_ts <= self.snapshot_cache_seconds
+        ):
+            return self.board_snapshot_cache.copy()
+
+        df = self.fetch_all_boards_snapshot()
+
+        self.board_snapshot_cache = df.copy()
+        self.board_snapshot_ts = time.time()
+
+        return df.copy()
+
+    def score_boards(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        给板块打分。
+
+        分数用于择时/T+0：
+        - 涨跌幅越高越强
+        - 成交额越大越强
+        - 上涨占比越高越强
+        - 领涨股票涨幅越高越强
+        """
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        score_fields = [
+            "涨跌幅",
+            "成交额",
+            "上涨占比",
+            "领涨股票涨跌幅",
+        ]
+
+        for field in score_fields:
+            if field not in df.columns:
+                df[field] = 0
+
+            df[field] = pd.to_numeric(df[field], errors="coerce").fillna(0)
+
+        # 在概念板块、行业板块内部各自排名，避免行业数量少被概念板块淹没
+        df["涨跌幅分位"] = df.groupby("板块类型")["涨跌幅"].rank(pct=True)
+        df["成交额分位"] = df.groupby("板块类型")["成交额"].rank(pct=True)
+        df["上涨占比分位"] = df.groupby("板块类型")["上涨占比"].rank(pct=True)
+        df["领涨股分位"] = df.groupby("板块类型")["领涨股票涨跌幅"].rank(pct=True)
+
+        df["板块强度分"] = (
+            df["涨跌幅分位"] * 45
+            + df["成交额分位"] * 25
+            + df["上涨占比分位"] * 20
+            + df["领涨股分位"] * 10
+        ).round(2)
+
+        df = df.sort_values(
+            ["板块类型", "板块强度分", "涨跌幅"],
+            ascending=[True, False, False],
+            na_position="last",
+        ).reset_index(drop=True)
+
+        return df
+
+    def get_strong_boards(
+        self,
+        min_pct: float = 1.0,
+        min_up_ratio: float = 0.55,
+        min_amount: float = 500_000_000,
+        min_score: float = 65,
+        top_n_each_type: Optional[int] = None,
+        force_refresh: bool = False,
+    ) -> pd.DataFrame:
+        """
+        获取强势板块，给择时模块使用。
+        """
+        df = self.get_board_snapshot(force=force_refresh)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        strong = df[
+            (df["涨跌幅"] >= min_pct)
+            & (df["上涨占比"] >= min_up_ratio)
+            & (df["成交额"] >= min_amount)
+            & (df["板块强度分"] >= min_score)
+        ].copy()
+
+        strong = strong.sort_values(
+            ["板块类型", "板块强度分", "涨跌幅", "成交额"],
+            ascending=[True, False, False, False],
+        )
+
+        if top_n_each_type is not None:
+            strong = (
+                strong.groupby("板块类型", group_keys=False)
+                .head(top_n_each_type)
+                .reset_index(drop=True)
+            )
+
+        return strong.reset_index(drop=True)
+
+    def fetch_board_members(
+        self,
+        board_code: str,
+        board_name: str,
+        board_type_name: str,
+    ) -> pd.DataFrame:
+        """
+        根据板块代码获取成分股。
+
+        例如：
+        board_code = BK1173
+        fs = b:BK1173
+        """
+        fields = (
+            "f2,f3,f4,f5,f6,f7,f8,f9,f10,"
+            "f12,f13,f14,"
+            "f15,f16,f17,f18,"
+            "f20,f21,f23,f62,f115"
+        )
+
+        raw_df = self._fetch_paged(
+            fs=f"b:{board_code}",
+            fields=fields,
+            page_size=500,
+            sort_field="f3",
+        )
+
+        if raw_df.empty:
+            return raw_df
+
+        df = raw_df.rename(columns=self.STOCK_FIELD_MAP).copy()
+
+        df["采集时间"] = pd.Timestamp.now()
+        df["板块类型"] = board_type_name
+        df["板块代码"] = board_code
+        df["板块名称"] = board_name
+
+        df = self._safe_numeric(df, self.STOCK_NUMERIC_COLUMNS)
+
+        df["股票完整代码"] = df.apply(
+            lambda row: self._build_stock_code(
+                row.get("股票代码"),
+                row.get("市场标识"),
+            ),
+            axis=1,
+        )
+
+        keep_cols = [
+            "采集时间",
+            "板块类型",
+            "板块代码",
+            "板块名称",
+            "股票代码",
+            "市场标识",
+            "股票完整代码",
+            "股票名称",
+            "股票最新价",
+            "股票涨跌幅",
+            "股票涨跌额",
+            "股票成交量",
+            "股票成交额",
+            "股票振幅",
+            "股票换手率",
+            "股票量比",
+            "股票开盘价",
+            "股票最高价",
+            "股票最低价",
+            "股票昨收价",
+            "股票总市值",
+            "股票流通市值",
+            "股票市盈率动态",
+            "股票市盈率TTM",
+            "股票市净率",
+            "股票主力净流入",
+        ]
+
+        for col in keep_cols:
+            if col not in df.columns:
+                df[col] = None
+
+        df = df[keep_cols]
+        df = df.sort_values("股票涨跌幅", ascending=False, na_position="last")
+        df = df.reset_index(drop=True)
+
+        return df
+
+    def refresh_members_cache(
+        self,
+        boards_df: Optional[pd.DataFrame] = None,
+        max_boards: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        刷新板块成分股缓存。
+
+        建议：
+        - 启动时刷新一次
+        - 每天盘前刷新一次
+        - 不要盘中每5秒刷新
+        """
+        if boards_df is None:
+            boards_df = self.get_board_snapshot(force=True)
+
+        if boards_df.empty:
+            self.board_members_cache = pd.DataFrame()
+            return self.board_members_cache
+
+        work_df = boards_df[["板块类型", "板块代码", "板块名称"]].drop_duplicates()
+
+        if max_boards is not None:
+            work_df = work_df.head(max_boards)
+
+        result = []
+        total = len(work_df)
+
+        for idx, row in enumerate(work_df.itertuples(index=False), start=1):
+            board_type = getattr(row, "板块类型")
+            board_code = getattr(row, "板块代码")
+            board_name = getattr(row, "板块名称")
+
+            logging.info(
+                "刷新成分股缓存：%s/%s %s %s %s",
+                idx,
+                total,
+                board_type,
+                board_code,
+                board_name,
+            )
+
+            try:
+                member_df = self.fetch_board_members(
+                    board_code=board_code,
+                    board_name=board_name,
+                    board_type_name=board_type,
+                )
+
+                if not member_df.empty:
+                    result.append(member_df)
+
+            except Exception as e:
+                logging.exception(
+                    "获取成分股失败：%s %s %s，原因：%s",
+                    board_type,
+                    board_code,
+                    board_name,
+                    e,
+                )
+
+        if result:
+            self.board_members_cache = pd.concat(result, ignore_index=True)
+        else:
+            self.board_members_cache = pd.DataFrame()
+
+        self.board_members_ts = time.time()
+
+        logging.info(
+            "板块成分股缓存刷新完成，行数：%s",
+            len(self.board_members_cache),
+        )
+
+        return self.board_members_cache.copy()
+
+    def get_members_for_boards(
+        self,
+        boards_df: pd.DataFrame,
+        lazy_fetch_if_cache_empty: bool = True,
+    ) -> pd.DataFrame:
+        """
+        根据板块列表获取成分股。
+
+        优先使用缓存；
+        如果缓存为空，可以只拉取传入板块的成分股。
+        """
+        if boards_df.empty:
+            return pd.DataFrame()
+
+        board_keys = boards_df[["板块类型", "板块代码", "板块名称"]].drop_duplicates()
+
+        if not self.board_members_cache.empty:
+            cache = self.board_members_cache.copy()
+
+            merged = cache.merge(
+                board_keys,
+                on=["板块类型", "板块代码", "板块名称"],
+                how="inner",
+            )
+
+            return merged.reset_index(drop=True)
+
+        if not lazy_fetch_if_cache_empty:
+            return pd.DataFrame()
+
+        result = []
+
+        for row in board_keys.itertuples(index=False):
+            board_type = getattr(row, "板块类型")
+            board_code = getattr(row, "板块代码")
+            board_name = getattr(row, "板块名称")
+
+            try:
+                member_df = self.fetch_board_members(
+                    board_code=board_code,
+                    board_name=board_name,
+                    board_type_name=board_type,
+                )
+
+                if not member_df.empty:
+                    result.append(member_df)
+
+            except Exception as e:
+                logging.exception(
+                    "懒加载成分股失败：%s %s %s，原因：%s",
+                    board_type,
+                    board_code,
+                    board_name,
+                    e,
+                )
+
+        if not result:
+            return pd.DataFrame()
+
+        return pd.concat(result, ignore_index=True)
+
+    def build_candidate_pool_from_strong_boards(
+        self,
+        strong_boards: Optional[pd.DataFrame] = None,
+        top_n_boards_each_type: int = 15,
+        max_stocks: int = 100,
+        lazy_fetch_members: bool = True,
+    ) -> pd.DataFrame:
+        """
+        从强势板块中生成候选股票池。
+
+        用途：
+        - 给 Level2 订阅池
+        - 给择时模块
+        - 给 T+0 关注池
+        """
+        if strong_boards is None:
+            strong_boards = self.get_strong_boards(
+                top_n_each_type=top_n_boards_each_type,
+                force_refresh=True,
+            )
+
+        if strong_boards.empty:
+            return pd.DataFrame()
+
+        members = self.get_members_for_boards(
+            strong_boards,
+            lazy_fetch_if_cache_empty=lazy_fetch_members,
+        )
+
+        if members.empty:
+            return pd.DataFrame()
+
+        board_cols = [
+            "板块类型",
+            "板块代码",
+            "板块名称",
+            "板块强度分",
+            "涨跌幅",
+            "成交额",
+            "上涨占比",
+            "领涨股票",
+            "领涨股票完整代码",
+            "领涨股票涨跌幅",
+        ]
+
+        board_info = strong_boards[board_cols].copy()
+        board_info = board_info.rename(columns={
+            "涨跌幅": "板块涨跌幅",
+            "成交额": "板块成交额",
+            "上涨占比": "板块上涨占比",
+            "领涨股票": "板块领涨股票",
+            "领涨股票完整代码": "板块领涨股票完整代码",
+            "领涨股票涨跌幅": "板块领涨股票涨跌幅",
+        })
+
+        joined = members.merge(
+            board_info,
+            on=["板块类型", "板块代码", "板块名称"],
+            how="inner",
+        )
+
+        if joined.empty:
+            return pd.DataFrame()
+
+        joined = joined.sort_values(
+            ["股票完整代码", "板块强度分"],
+            ascending=[True, False],
+        )
+
+        best_board = joined.drop_duplicates("股票完整代码").copy()
+
+        agg = joined.groupby("股票完整代码").agg(
+            股票名称=("股票名称", "first"),
+            股票最新价=("股票最新价", "first"),
+            股票涨跌幅=("股票涨跌幅", "first"),
+            股票成交额=("股票成交额", "first"),
+            股票换手率=("股票换手率", "first"),
+            股票量比=("股票量比", "first"),
+            所属强势板块数量=("板块代码", "nunique"),
+            最高板块强度分=("板块强度分", "max"),
+            平均板块强度分=("板块强度分", "mean"),
+            最高板块涨跌幅=("板块涨跌幅", "max"),
+        ).reset_index()
+
+        best_cols = [
+            "股票完整代码",
+            "板块类型",
+            "板块代码",
+            "板块名称",
+            "板块强度分",
+            "板块涨跌幅",
+            "板块成交额",
+            "板块上涨占比",
+        ]
+
+        best_board = best_board[best_cols].rename(columns={
+            "板块类型": "最强板块类型",
+            "板块代码": "最强板块代码",
+            "板块名称": "最强板块名称",
+            "板块强度分": "最强板块强度分",
+            "板块涨跌幅": "最强板块涨跌幅",
+            "板块成交额": "最强板块成交额",
+            "板块上涨占比": "最强板块上涨占比",
+        })
+
+        result = agg.merge(best_board, on="股票完整代码", how="left")
+
+        result["候选股票评分"] = (
+            result["最高板块强度分"] * 0.6
+            + result["平均板块强度分"] * 0.25
+            + result["所属强势板块数量"].clip(upper=5) * 3
+            + result["股票涨跌幅"].fillna(0).clip(lower=-5, upper=10) * 1.2
+        ).round(2)
+
+        result = result.sort_values(
+            ["候选股票评分", "最高板块强度分", "股票成交额"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+
+        result = result.reset_index(drop=True)
+
+        if max_stocks is not None:
+            result = result.head(max_stocks)
+
+        return result
+
+    def get_stock_board_exposure(
+        self,
+        stock_codes: Iterable[str],
+        board_snapshot: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        查询某批股票属于哪些强势板块。
+
+        用途：
+        - T+0持仓股判断是否处于强势题材
+        - 判断持仓是否应该优先做正T/倒T
+        """
+        if self.board_members_cache.empty:
+            logging.warning("板块成分股缓存为空，请先调用 refresh_members_cache()")
+            return pd.DataFrame()
+
+        normalized_codes = {
+            self.normalize_stock_code(code)
+            for code in stock_codes
+            if code
+        }
+
+        members = self.board_members_cache[
+            self.board_members_cache["股票完整代码"].isin(normalized_codes)
+        ].copy()
+
+        if members.empty:
+            return pd.DataFrame()
+
+        if board_snapshot is None:
+            board_snapshot = self.get_board_snapshot(force=False)
+
+        if board_snapshot.empty:
+            return members
+
+        board_cols = [
+            "板块类型",
+            "板块代码",
+            "板块名称",
+            "板块强度分",
+            "涨跌幅",
+            "成交额",
+            "上涨占比",
+            "领涨股票",
+            "领涨股票完整代码",
+        ]
+
+        board_info = board_snapshot[board_cols].copy()
+        board_info = board_info.rename(columns={
+            "涨跌幅": "板块涨跌幅",
+            "成交额": "板块成交额",
+            "上涨占比": "板块上涨占比",
+            "领涨股票": "板块领涨股票",
+            "领涨股票完整代码": "板块领涨股票完整代码",
+        })
+
+        joined = members.merge(
+            board_info,
+            on=["板块类型", "板块代码", "板块名称"],
+            how="left",
+        )
+
+        joined["板块强度分"] = joined["板块强度分"].fillna(0)
+        joined["板块涨跌幅"] = joined["板块涨跌幅"].fillna(0)
+        joined["板块上涨占比"] = joined["板块上涨占比"].fillna(0)
+
+        joined = joined.sort_values(
+            ["股票完整代码", "板块强度分", "板块涨跌幅"],
+            ascending=[True, False, False],
+        )
+
+        return joined.reset_index(drop=True)
+
+    def build_t0_context(
+        self,
+        holdings: Optional[Iterable[str]] = None,
+        watchlist: Optional[Iterable[str]] = None,
+        top_n_boards_each_type: int = 15,
+        max_candidate_stocks: int = 100,
+    ) -> dict[str, pd.DataFrame]:
+        """
+        构建 T+0 / 择时模块的一次性上下文。
+
+        返回：
+        {
+            "board_snapshot": 全部板块实时快照,
+            "strong_boards": 强势板块,
+            "candidate_pool": 强势板块候选股票池,
+            "holding_exposure": 持仓股所属板块强弱,
+            "watchlist_exposure": 自选股所属板块强弱,
+        }
+        """
+        board_snapshot = self.get_board_snapshot(force=True)
+
+        strong_boards = self.get_strong_boards(
+            top_n_each_type=top_n_boards_each_type,
+            force_refresh=False,
+        )
+
+        candidate_pool = self.build_candidate_pool_from_strong_boards(
+            strong_boards=strong_boards,
+            top_n_boards_each_type=top_n_boards_each_type,
+            max_stocks=max_candidate_stocks,
+            lazy_fetch_members=True,
+        )
+
+        holding_exposure = pd.DataFrame()
+        watchlist_exposure = pd.DataFrame()
+
+        if holdings:
+            holding_exposure = self.get_stock_board_exposure(
+                holdings,
+                board_snapshot=board_snapshot,
+            )
+
+        if watchlist:
+            watchlist_exposure = self.get_stock_board_exposure(
+                watchlist,
+                board_snapshot=board_snapshot,
+            )
+
+        return {
+            "board_snapshot": board_snapshot,
+            "strong_boards": strong_boards,
+            "candidate_pool": candidate_pool,
+            "holding_exposure": holding_exposure,
+            "watchlist_exposure": watchlist_exposure,
+        }
+
+
+def demo_for_timing_and_t0():
+    """
+    示例：给择时和 T+0 调用。
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+
+    service = EastMoneyBoardService(
+        min_request_interval=0.8,
+        timeout=10,
+        max_retries=3,
+        snapshot_cache_seconds=5,
+    )
+
+    # 1. 启动时刷新一次板块成分股缓存
+    # 正式系统建议：每天盘前或程序启动时调用一次
+    service.refresh_members_cache()
+
+    # 2. 你的持仓股
+    holdings = [
+        "002176.SZ",
+        "603906.SH",
+        "000001.SZ",
+    ]
+
+    # 3. 你的自选观察池
+    watchlist = [
+        "002407.SZ",
+        "603318.SH",
+        "300750.SZ",
+    ]
+
+    # 4. 盘中每 5 秒调用一次
+    context = service.build_t0_context(
+        holdings=holdings,
+        watchlist=watchlist,
+        top_n_boards_each_type=15,
+        max_candidate_stocks=100,
+    )
+
+    strong_boards = context["strong_boards"]
+    candidate_pool = context["candidate_pool"]
+    holding_exposure = context["holding_exposure"]
+    watchlist_exposure = context["watchlist_exposure"]
+
+    print("\n强势板块：")
+    print(
+        strong_boards[
+            [
+                "板块类型",
+                "板块代码",
+                "板块名称",
+                "涨跌幅",
+                "成交额",
+                "上涨占比",
+                "板块强度分",
+                "领涨股票",
+                "领涨股票完整代码",
+            ]
+        ].head(20).to_string(index=False)
+    )
+
+    print("\n强势板块候选股票池：")
+    print(
+        candidate_pool[
+            [
+                "股票完整代码",
+                "股票名称",
+                "股票涨跌幅",
+                "股票成交额",
+                "所属强势板块数量",
+                "最高板块强度分",
+                "最强板块名称",
+                "候选股票评分",
+            ]
+        ].head(30).to_string(index=False)
+    )
+
+    print("\n持仓股板块暴露：")
+    if not holding_exposure.empty:
+        print(
+            holding_exposure[
+                [
+                    "股票完整代码",
+                    "股票名称",
+                    "板块类型",
+                    "板块名称",
+                    "板块涨跌幅",
+                    "板块上涨占比",
+                    "板块强度分",
+                ]
+            ].head(50).to_string(index=False)
+        )
+    else:
+        print("暂无持仓股板块暴露数据")
+
+    print("\n自选股板块暴露：")
+    if not watchlist_exposure.empty:
+        print(
+            watchlist_exposure[
+                [
+                    "股票完整代码",
+                    "股票名称",
+                    "板块类型",
+                    "板块名称",
+                    "板块涨跌幅",
+                    "板块上涨占比",
+                    "板块强度分",
+                ]
+            ].head(50).to_string(index=False)
+        )
+    else:
+        print("暂无自选股板块暴露数据")
+
+
+if __name__ == "__main__":
+    demo_for_timing_and_t0()

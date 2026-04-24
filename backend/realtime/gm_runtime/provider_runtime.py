@@ -1,4 +1,3 @@
-"""gm runtime provider/subscription runtime."""
 from __future__ import annotations
 
 import backend.realtime.gm_runtime.common as gm_common
@@ -8,7 +7,6 @@ from .observe_service import *  # noqa: F401,F403
 from .signal_engine import _compute_signals_for_tick, _postprocess_fired_signals, _start_signal_state_refresh_thread
 
 class _TickSyncManager(BaseManager):
-    """跨进程共享 Queue 与 Cache 的 Manager。"""
     pass
 
 
@@ -17,7 +15,6 @@ _TickSyncManager.register('get_cache', callable=lambda: _main_cache)
 
 
 def _save_subscribed_codes():
-    """保存订阅列表到文件（供 gm 策略脚本 init 读取）。"""
     try:
         with open(_SUBS_FILE, 'w') as f:
             f.write(','.join(_subscribed_codes))
@@ -26,7 +23,6 @@ def _save_subscribed_codes():
 
 
 def _load_subscribed_codes():
-    """从文件加载订阅列表。"""
     try:
         if os.path.exists(_SUBS_FILE):
             with open(_SUBS_FILE, 'r') as f:
@@ -38,11 +34,18 @@ def _load_subscribed_codes():
         _subscribed_codes.clear()
 
 
+def _ensure_gm_log_dir():
+    try:
+        appdata = os.getenv("APPDATA")
+        if not appdata:
+            return
+        log_dir = os.path.join(appdata, "Goldminer3", "log")
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception as e:
+        logger.debug(f"准备 gm 日志目录失败: {e}")
+
+
 def seed_subscribed_codes(ts_codes: list[str], overwrite: bool = True) -> int:
-    """
-    预写 gm 订阅文件（用于 gm.run() 启动前注入初始订阅列表）。
-    返回写入后的订阅总数。
-    """
     cleaned = sorted(
         {
             str(c).strip()
@@ -60,7 +63,6 @@ def seed_subscribed_codes(ts_codes: list[str], overwrite: bool = True) -> int:
 
 
 def _start_manager_server():
-    """启动 BaseManager TCP server（主进程调用一次）。"""
     global _manager_server, _TICK_MGR_ADDRESS
     if _manager_server is not None:
         return
@@ -70,7 +72,7 @@ def _start_manager_server():
     actual_addr = _manager_server.address  # (host, port)
     _TICK_MGR_ADDRESS = actual_addr
 
-    # 通过环境变量传给 gm 子进程，使其连接此 server
+    # 通过环境变量传给 gm 子进程，连接当前 manager server
     os.environ['GM_TICK_MGR_HOST'] = str(actual_addr[0])
     os.environ['GM_TICK_MGR_PORT'] = str(actual_addr[1])
     os.environ['GM_TICK_MGR_AUTHKEY'] = _TICK_MGR_AUTHKEY.hex()
@@ -81,14 +83,12 @@ def _start_manager_server():
 
 
 def init_persist_queue(maxsize: int = 100000) -> _StdQueue:
-    """Initialize Layer3 persistence queue for realtime writer consumption."""
     if gm_common._persist_queue is None:
         gm_common._persist_queue = _StdQueue(maxsize=maxsize)
         logger.info(f"Layer3 persistence queue created (maxsize={maxsize})")
     return gm_common._persist_queue
 
 def _start_consumer_thread():
-    """启动消费线程：queue->cache->Layer2 信号计算。"""
     global _consumer_thread_started
     if _consumer_thread_started:
         return
@@ -167,10 +167,10 @@ def _start_consumer_thread():
                         else:
                             dropped_invalid_ticks += 1
                             if dropped_invalid_ticks <= 3 or dropped_invalid_ticks % 200 == 0:
-                                logger.debug(f"[消费线程] 丢弃无效tick {ts_code} price={px} dropped={dropped_invalid_ticks}")
+                                logger.debug(f"[消费线程] 丢弃无效 tick {ts_code} price={px} dropped={dropped_invalid_ticks}")
                             continue
 
-                    # 1. 更新 tick cache
+                    # 1. 更新 tick 缓存
                     _main_cache[ts_code] = item
                     count += 1
 
@@ -179,7 +179,7 @@ def _start_consumer_thread():
                         if gm_common._TICK_DB_PERSIST_ENABLED and gm_common._persist_queue is not None:
                             gm_common._persist_queue.put_nowait(('tick', ts_code, item, None))
                     except Exception:
-                        pass  # 队列满时丢弃，保证消费线程不阻塞
+                        pass  # 队列满时丢弃，避免阻塞消费线程
                     # 2. Layer2：若已加载日线指标，则立即计算信号
                     daily = _main_daily_cache.get(ts_code)
                     if daily:
@@ -228,20 +228,15 @@ def _start_consumer_thread():
 # GmTickProvider
 # ============================================================
 class GmTickProvider(TickProvider):
-    """
-    掘金量化(gm) Tick Provider（subscribe 订阅模式）。
-    由 gm.run() 驱动 on_tick 写入缓存，get_tick() 从内存缓存读取。"""
-
     @property
     def name(self) -> str:
-        return 'gm'
+        return "gm"
 
     @property
     def display_name(self) -> str:
-        return '掘金量化(gm)'
+        return "gm subscribe cache"
 
     def get_tick(self, ts_code: str) -> dict:
-        """从主进程内存 cache 读取最新 tick，O(1) 访问。"""
         tick = self.get_cached_tick(ts_code)
         if tick is not None:
             return tick
@@ -278,16 +273,12 @@ class GmTickProvider(TickProvider):
         }
 
     def get_cached_tick(self, ts_code: str) -> Optional[dict]:
-        """读取缓存 tick，不触发网络请求。"""
         tick = _main_cache.get(ts_code)
         if tick is None:
             return None
         return _with_pre_close_fallback(ts_code, tick)
 
     def subscribe_symbols(self, ts_codes: list[str]):
-        """
-        更新订阅列表，并将结果持久化到文件供 gm 策略脚本读取。
-        """
         new_codes = []
         with _tick_lock:
             for code in ts_codes:
@@ -300,7 +291,6 @@ class GmTickProvider(TickProvider):
             _save_subscribed_codes()
 
     def unsubscribe_symbols(self, ts_codes: list[str]):
-        """取消订阅。"""
         with _tick_lock:
             for code in ts_codes:
                 _subscribed_codes.discard(code)
@@ -309,39 +299,30 @@ class GmTickProvider(TickProvider):
     # Layer2 数据更新入口
     # ========================================================
     def update_daily_factors(self, ts_code: str, factors: dict):
-        """更新单只股票的日线因子缓存（供消费线程计算信号使用）。"""
         _main_daily_cache[ts_code] = dict(factors)
 
     def bulk_update_daily_factors(self, factors_map: dict[str, dict]):
-        """批量更新日线因子缓存（用于定时刷新）。"""
         _main_daily_cache.update(factors_map)
         logger.info(f"Layer2 日线因子缓存已更新: {len(factors_map)}")
 
     def bulk_update_chip_features(self, features_map: dict[str, dict]):
-        """批量更新筹码特征缓存（Pool1 筹码加分）。"""
         _main_chip_cache.update(features_map)
         logger.info(f"Layer2 筹码特征缓存已更新: {len(features_map)}")
 
     def update_stock_pools(self, ts_code: str, pool_ids: set):
-        """更新单只股票的池归属（set of pool_id）。"""
         _main_stock_pools[ts_code] = set(pool_ids)
 
     def bulk_update_stock_pools(self, mapping: dict[str, set]):
-        """
-        批量更新股票->池映射。mapping: {ts_code: {pool_id, ...}}
-        """
         _main_stock_pools.clear()
         for k, v in mapping.items():
             _main_stock_pools[k] = set(v)
         logger.info(f"Layer2 股票池映射已更新: {len(mapping)}")
 
     def update_stock_industry(self, ts_code: str, industry: str, industry_code: str = ""):
-        """????????????????????????????"""
         _main_stock_industry[ts_code] = str(industry or "")
         _main_stock_industry_code[ts_code] = str(industry_code or "").strip().upper()
 
     def bulk_update_stock_industry(self, mapping: dict[str, dict | str]):
-        """???????????mapping: {ts_code: industry|{industry_name,industry_code}}"""
         _main_stock_industry.clear()
         _main_stock_industry_code.clear()
         for k, payload in (mapping or {}).items():
@@ -356,10 +337,9 @@ class GmTickProvider(TickProvider):
                 industry_code = ""
             _main_stock_industry[ts_code] = industry_name
             _main_stock_industry_code[ts_code] = industry_code
-        logger.info(f"Layer2 ?????????: {len(mapping or {})}")
+        logger.info(f"Layer2 股票行业映射已更新: {len(mapping or {})}")
 
     def bulk_update_stock_concepts(self, mapping: dict[str, dict | list | tuple | str]):
-        """批量更新股票到东方财富概念板块映射。"""
         _main_stock_concepts.clear()
         _main_stock_core_concept.clear()
         _main_stock_concept_codes.clear()
@@ -406,7 +386,6 @@ class GmTickProvider(TickProvider):
         logger.info(f"Layer2 东方财富概念映射已更新: {len(mapping or {})}")
 
     def bulk_update_concept_snapshots(self, mapping: dict[str, dict]):
-        """批量更新东方财富概念板块生态快照。"""
         _main_concept_snapshot.clear()
         for concept_name, payload in (mapping or {}).items():
             item = dict(payload or {})
@@ -435,40 +414,33 @@ class GmTickProvider(TickProvider):
                 _main_industry_snapshot[name] = dict(item)
             if key:
                 _main_industry_snapshot[key] = dict(item)
-        logger.info(f"Layer2 ??????? {len(mapping or {})}")
+        logger.info(f"Layer2 东方财富行业快照已更新: {len(mapping or {})}")
 
     def update_instrument_profile(self, ts_code: str, profile: dict):
-        """更新单只股票的制度画像。"""
         _main_instrument_profile[str(ts_code)] = dict(profile or {})
 
     def bulk_update_instrument_profiles(self, mapping: dict[str, dict]):
-        """批量更新股票制度画像。mapping: {ts_code: {...}}"""
         _main_instrument_profile.clear()
         for k, v in (mapping or {}).items():
             _main_instrument_profile[str(k)] = dict(v or {})
         logger.info(f"Layer2 标的制度画像已更新: {len(mapping or {})}")
 
     def update_recent_txns(self, ts_code: str, txns: list):
-        """更新单只股票的逐笔成交缓存。"""
         if txns:
             _main_recent_txns[ts_code] = list(txns)[-TXN_ANALYZE_COUNT:]
 
     def bulk_update_recent_txns(self, mapping: dict):
-        """批量更新逐笔成交缓存。"""
         for k, v in mapping.items():
             if v:
                 _main_recent_txns[k] = list(v)[-TXN_ANALYZE_COUNT:]
 
     def get_cached_signals(self, ts_code: str) -> Optional[dict]:
-        """读取指定 ts_code 的信号缓存（秒级响应）。"""
         return _main_signal_cache.get(ts_code)
 
     def get_cached_transactions(self, ts_code: str) -> Optional[list]:
-        """读取指定 ts_code 的逐笔成交缓存（秒级响应）。"""
         return _main_recent_txns.get(ts_code)
 
     def get_prev_price(self, ts_code: str) -> Optional[float]:
-        """读取上一笔价格（用于慢路径突破跨越确认）。"""
         try:
             v = _main_prev_price.get(ts_code)
             return float(v) if v is not None else None
@@ -476,7 +448,6 @@ class GmTickProvider(TickProvider):
             return None
 
     def get_cached_signals_bulk(self, ts_codes: list[str]) -> list[dict]:
-        """批量读取信号缓存，用于盯盘池列表。"""
         result = []
         for code in ts_codes:
             entry = _main_signal_cache.get(code)
@@ -485,23 +456,27 @@ class GmTickProvider(TickProvider):
         return result
 
     def get_pool1_observe_stats(self) -> Optional[dict]:
-        """读取 Pool1 两阶段统计快照。"""
         return get_pool1_observe_stats()
 
     def get_pool1_position_state(self, ts_code: str) -> Optional[dict]:
-        """读取 Pool1 单票持仓状态快照（observe/holding）。"""
         return get_pool1_position_state(ts_code)
 
     def get_pool1_position_storage_status(self) -> Optional[dict]:
-        """读取 Pool1 持仓状态存储运行态（redis/file 来源）。"""
         return get_pool1_position_storage_status()
 
     def get_signal_perf_stats(self) -> Optional[dict]:
-        """读取 Layer2 信号计算性能快照（毫秒级）。"""
         return get_signal_perf_stats()
 
+    def get_pool2_t0_inventory_state(self, ts_code: str) -> Optional[dict]:
+        return get_pool2_t0_inventory_state(ts_code)
+
+    def get_pool2_t0_inventory_storage_status(self) -> Optional[dict]:
+        return get_pool2_t0_inventory_storage_status()
+
+    def update_pool2_t0_inventory_state(self, ts_code: str, updates: dict) -> Optional[dict]:
+        return update_pool2_t0_inventory_state(ts_code, updates)
+
     def start(self):
-        """启动 gm 后台订阅进程。"""
         if not _GM_AVAILABLE:
             logger.warning("gm 未安装，GmTickProvider 将仅返回空数据")
             return
@@ -514,17 +489,19 @@ class GmTickProvider(TickProvider):
             logger.warning("GM_TOKEN 未配置，GmTickProvider 将仅返回空数据")
             return
 
-        # 策略脚本存在性检查
+        # 检查策略脚本是否存在
         if not os.path.exists(_STRATEGY_FILE):
             logger.error(f"gm strategy script not found: {_STRATEGY_FILE}")
             logger.error("please ensure _gm_strategy.py exists in project root")
             return
 
+        _ensure_gm_log_dir()
+
         # 1. 启动 BaseManager TCP server（共享 queue + cache）
         _start_manager_server()
         # 2. 启动消费线程（queue -> cache）
         _start_consumer_thread()
-        # 2.1 启动状态机时间刷新线程（午休/尾盘）
+        # 2.1 启动状态机时间刷新线程（午休 / 尾盘）
         _start_signal_state_refresh_thread()
         # 3. 启动 gm 后台进程（通过 env 连接 manager）
         process = multiprocessing.Process(target=self._run_gm, daemon=True, name='gm-subscribe')
@@ -532,12 +509,10 @@ class GmTickProvider(TickProvider):
         logger.info(f"gm subscribe process started (strategy: {_STRATEGY_FILE})")
 
     def stop(self):
-        """停止 gm 后台进程（当前为请求停止）。"""
         logger.info("gm subscribe process stop requested")
 
     @staticmethod
     def _run_gm():
-        """在独立进程中运行 gm.run()。"""
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         from config import GM_TOKEN, GM_MODE
@@ -547,6 +522,7 @@ class GmTickProvider(TickProvider):
             original_dir = os.getcwd()
             os.chdir(_PROJECT_ROOT)
             logger.info(f"switch cwd to {_PROJECT_ROOT}")
+            _ensure_gm_log_dir()
 
             logger.info(f"gm.run() 启动, mode={GM_MODE}, token={GM_TOKEN[:8]}...")
             run(
@@ -569,3 +545,4 @@ class GmTickProvider(TickProvider):
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
+

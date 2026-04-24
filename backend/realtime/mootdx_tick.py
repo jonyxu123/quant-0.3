@@ -107,6 +107,27 @@ class MootdxTickProvider(TickProvider):
         except Exception:
             return None
 
+    def get_pool2_t0_inventory_state(self, ts_code: str) -> Optional[dict]:
+        try:
+            from backend.realtime import gm_tick
+            return gm_tick.get_pool2_t0_inventory_state(ts_code)
+        except Exception:
+            return None
+
+    def get_pool2_t0_inventory_storage_status(self) -> Optional[dict]:
+        try:
+            from backend.realtime import gm_tick
+            return gm_tick.get_pool2_t0_inventory_storage_status()
+        except Exception:
+            return None
+
+    def update_pool2_t0_inventory_state(self, ts_code: str, updates: dict) -> Optional[dict]:
+        try:
+            from backend.realtime import gm_tick
+            return gm_tick.update_pool2_t0_inventory_state(ts_code, updates)
+        except Exception:
+            return None
+
     def bulk_update_daily_factors(self, factors_map: dict):
         try:
             from backend.realtime import gm_tick

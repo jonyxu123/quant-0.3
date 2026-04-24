@@ -16,6 +16,7 @@ import Watchlist from './pages/Watchlist'
 import StockDetail from './pages/StockDetail'
 import RealtimeMonitor from './pages/RealtimeMonitor'
 import T0ReverseReplay from './pages/T0ReverseReplay'
+import T0PositiveReplay from './pages/T0PositiveReplay'
 import Pool1LeftReplay from './pages/Pool1LeftReplay'
 import ConceptBoards from './pages/ConceptBoards'
 import ConceptFundFlow from './pages/ConceptFundFlow'
@@ -84,6 +85,7 @@ const NAV_ITEMS: NavItem[] = [
     children: [
       { path: '/realtime', label: '实时盯盘', icon: Eye },
       { path: '/realtime-pool1-left-replay', label: '左侧回放', icon: ChevronRight },
+      { path: '/realtime-t0-positive-replay', label: '正T回放', icon: ChevronRight },
       { path: '/realtime-t0-replay', label: '反T回放', icon: ChevronRight },
       { path: '/realtime-concept-flow', label: '概念资金流向', icon: ChevronRight },
       { path: '/realtime-market-changes', label: '盘口异动', icon: ChevronRight },
@@ -294,17 +296,17 @@ function GlobalSignalNotifier() {
                   cursor: 'pointer', fontSize: 14, lineHeight: 1,
                 }}
               >
-                脳
+                x
               </button>
             </div>
             <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>寮哄害 <span style={{ color: '#e8eaf0' }}>{Math.round(t.strength)}</span></span>
-              <span>浠锋牸 <span style={{ color: '#e8eaf0' }}>{t.price > 0 ? t.price.toFixed(2) : '--'}</span></span>
-              <span>娑ㄨ穼骞?<span style={{ color: c }}>{up ? '+' : ''}{t.pctChg.toFixed(2)}%</span></span>
+              <span>强度 <span style={{ color: '#e8eaf0' }}>{Math.round(t.strength)}</span></span>
+              <span>价格 <span style={{ color: '#e8eaf0' }}>{t.price > 0 ? t.price.toFixed(2) : '--'}</span></span>
+              <span>涨跌幅 <span style={{ color: c }}>{up ? '+' : ''}{t.pctChg.toFixed(2)}%</span></span>
               <span style={{
                 flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#e8eaf0',
               }}>
-                {t.message || '淇″彿瑙﹀彂'}
+                {t.message || '信号触发'}
               </span>
             </div>
           </div>
@@ -346,7 +348,7 @@ function Sidebar() {
         </div>
       </div>
 
-      {/* 瀵艰埅鑿滃崟 */}
+      {/* 导航菜单 */}
       <nav style={{ flex: 1, padding: '10px 8px', overflowY: 'auto' }}>
         {NAV_ITEMS.map(item => {
           const active = location.pathname === item.path
@@ -356,7 +358,7 @@ function Sidebar() {
           return (
             <div key={item.path}>
               {item.children ? (
-                /* 鏈夊瓙鑿滃崟锛氱偣鍑诲睍寮€/鏀惰捣锛屽悓鏃朵篃鍙鑸?*/
+                /* 有子菜单：点击展开/收起，同时也可导航 */
                 <div
                   onClick={() => toggle(item.path)}
                   style={{ ...linkStyle(active || !!childActive), cursor: 'pointer', userSelect: 'none' }}
@@ -372,7 +374,7 @@ function Sidebar() {
                 </Link>
               )}
 
-              {/* 瀛愯彍鍗?*/}
+              {/* 子菜单 */}
               {item.children && open && item.children.map(sub => {
                 const subActive = location.pathname === sub.path
                 return (
@@ -388,7 +390,7 @@ function Sidebar() {
       </nav>
 
       <div style={{ padding: '12px 18px', borderTop: '1px solid #1e2233', color: '#3a3f55', fontSize: 11 }}>
-        Quant System 漏 2026
+        Quant System (c) 2026
       </div>
     </aside>
   )
@@ -405,11 +407,11 @@ function Layout() {
       <GlobalSignalNotifier />
       <Sidebar />
       <div style={{ marginLeft: 200, flex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-        {/* 椤堕儴椤甸潰鏍囬鏍?*/}
+        {/* 顶部页面标题栏 */}
         <div style={{ padding: '16px 24px', borderBottom: '1px solid #1e2233', background: '#0f1117' }}>
           <span style={{ color: '#e8eaf0', fontSize: 16, fontWeight: 600 }}>{pageTitle}</span>
         </div>
-        {/* 鍐呭鍖?*/}
+        {/* 内容区 */}
         <main style={{ flex: 1, padding: ['/dataset', '/selection'].includes(location.pathname) ? 0 : '20px 24px', overflowY: ['/dataset', '/selection'].includes(location.pathname) ? 'hidden' : 'auto', display: 'flex', flexDirection: 'column' }}>
           <Routes>
             <Route path="/"         element={<Dashboard />} />
@@ -426,6 +428,7 @@ function Layout() {
             <Route path="/news-global-cls" element={<NewsFeeds />} />
             <Route path="/realtime" element={<RealtimeMonitor />} />
             <Route path="/realtime-pool1-left-replay" element={<Pool1LeftReplay />} />
+            <Route path="/realtime-t0-positive-replay" element={<T0PositiveReplay />} />
             <Route path="/realtime-t0-replay" element={<T0ReverseReplay />} />
             <Route path="/realtime-concept-flow" element={<ConceptFundFlow />} />
             <Route path="/realtime-market-changes" element={<MarketChanges />} />

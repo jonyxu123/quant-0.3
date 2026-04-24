@@ -457,6 +457,668 @@ def runtime_t0_reverse_replay(
         "count": len(rows),
         "rows": rows,
     }
+
+
+def runtime_t0_positive_replay(
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(120, ge=1, le=1000),
+    fee_bps: float = Query(16.0, ge=0, le=200),
+):
+    h = int(hours)
+    lim = int(limit)
+    fee = float(fee_bps)
+    since_dt = datetime.datetime.now() - datetime.timedelta(hours=h)
+    with _ro_conn_ctx() as conn:
+        hist_rows = conn.execute(
+            """
+            SELECT id, ts_code, name, signal_type, channel, signal_source, strength, message, price, pct_chg, details_json, triggered_at
+            FROM signal_history
+            WHERE pool_id = 2
+              AND signal_type = 'positive_t'
+              AND triggered_at >= ?
+            ORDER BY triggered_at DESC
+            LIMIT ?
+            """,
+            [since_dt, lim],
+        ).fetchall()
+        q_rows = conn.execute(
+            """
+            SELECT ts_code, signal_type, direction, trigger_time, trigger_price, eval_price,
+                   ret_bps, mfe_bps, mae_bps, direction_correct, market_phase,
+                   COALESCE(channel, '') AS channel,
+                   COALESCE(signal_source, '') AS signal_source,
+                   created_at
+            FROM t0_signal_quality
+            WHERE signal_type = 'positive_t'
+              AND eval_horizon_sec = 300
+              AND created_at >= ?
+            ORDER BY trigger_time DESC
+            """,
+            [since_dt],
+        ).fetchall()
+
+    quality_by_code: dict[str, list[dict]] = {}
+    for r in q_rows:
+        item = {
+            "ts_code": str(r[0] or ""),
+            "signal_type": str(r[1] or ""),
+            "direction": str(r[2] or ""),
+            "trigger_time": _to_epoch_seconds(r[3]),
+            "trigger_time_iso": _to_iso_datetime_text(r[3]),
+            "trigger_price": float(r[4] or 0),
+            "eval_price": float(r[5] or 0),
+            "ret_bps": float(r[6] or 0),
+            "mfe_bps": float(r[7] or 0),
+            "mae_bps": float(r[8] or 0),
+            "direction_correct": bool(r[9]),
+            "market_phase": str(r[10] or ""),
+            "channel": str(r[11] or ""),
+            "signal_source": str(r[12] or ""),
+            "created_at": r[13].isoformat() if hasattr(r[13], "isoformat") else str(r[13]),
+            "_used": False,
+        }
+        quality_by_code.setdefault(item["ts_code"], []).append(item)
+
+    def _classify_positive_row(match: Optional[dict], rebuild_quality: Optional[dict]) -> tuple[str, str]:
+        if not isinstance(match, dict):
+            return "pending", "等待 5 分钟回补质量评估"
+        rebuild = rebuild_quality if isinstance(rebuild_quality, dict) else {}
+        observe_only = bool(rebuild.get("observe_only", False))
+        observe_reasons = [str(x or "").strip() for x in (rebuild.get("observe_reasons") or [])] if isinstance(rebuild.get("observe_reasons"), list) else []
+        ret_bps = float(match.get("ret_bps", 0.0) or 0.0)
+        direction_correct = bool(match.get("direction_correct", False))
+        net_ret_bps = ret_bps - fee
+
+        if observe_only:
+            if direction_correct and net_ret_bps >= 0:
+                if "inventory_quality_degraded" in observe_reasons:
+                    return "observe_missed", "库存质量门偏严，过滤后仍出现覆盖成本回补"
+                return "observe_missed", "质量门偏严，过滤后仍出现覆盖成本回补"
+            if "inventory_quality_degraded" in observe_reasons:
+                return "observe_filtered", "库存质量门拦截后，5 分钟内未形成有效回补"
+            return "observe_filtered", "质量门拦截后，5 分钟内未形成有效回补"
+
+        if (not direction_correct) or ret_bps < 0:
+            return "false_rebuild", "回补后 5 分钟继续走弱，疑似接在下跌延续段"
+        if net_ret_bps < 0:
+            return "weak_rebuild", "回补方向正确，但净边际未覆盖成本"
+        return "good_rebuild", "回补后 5 分钟反抽覆盖成本"
+
+    rows: list[dict] = []
+    summary = {
+        "signals": 0,
+        "matched_quality": 0,
+        "pending": 0,
+        "good_rebuild": 0,
+        "weak_rebuild": 0,
+        "false_rebuild": 0,
+        "observe_filtered": 0,
+        "observe_missed": 0,
+        "quality_pass": 0,
+        "observe_only": 0,
+    }
+    quality_entries: list[dict] = []
+    ret_vals: list[float] = []
+    net_ret_vals: list[float] = []
+    direction_correct_count = 0
+    cost_covered_count = 0
+    tolerance_sec = 180.0
+
+    for r in hist_rows:
+        hist_id = r[0]
+        ts_code = str(r[1] or "")
+        name = str(r[2] or "")
+        strength = float(r[6] or 0)
+        details_raw = r[10]
+        triggered_at = r[11]
+        trigger_dt = triggered_at if isinstance(triggered_at, datetime.datetime) else None
+        trigger_ts = trigger_dt.timestamp() if trigger_dt is not None else 0.0
+        history_snapshot = pool_service_module._parse_history_snapshot_json(details_raw)
+        positive_rebuild_quality = None
+        t0_inventory = None
+        compact_entry = None
+        if isinstance(history_snapshot, dict):
+            prq = history_snapshot.get("positive_rebuild_quality")
+            if isinstance(prq, dict):
+                positive_rebuild_quality = prq
+                compact_entry = pool_service_module._compact_positive_rebuild_entry(
+                    prq,
+                    signal_obj={
+                        "triggered_at": int(trigger_ts) if trigger_ts > 0 else 0,
+                        "strength": strength,
+                    },
+                    source="signal_history",
+                )
+                if isinstance(compact_entry, dict):
+                    quality_entries.append(compact_entry)
+            inv = history_snapshot.get("t0_inventory")
+            if isinstance(inv, dict):
+                t0_inventory = inv
+
+        match = None
+        best_diff = None
+        for cand in quality_by_code.get(ts_code, []):
+            if cand.get("_used"):
+                continue
+            diff = abs(float(cand.get("trigger_time", 0) or 0) - trigger_ts)
+            if diff > tolerance_sec:
+                continue
+            if best_diff is None or diff < best_diff:
+                best_diff = diff
+                match = cand
+        if isinstance(match, dict):
+            match["_used"] = True
+
+        classification, classification_reason = _classify_positive_row(match, positive_rebuild_quality)
+        summary["signals"] += 1
+        if classification in summary:
+            summary[classification] += 1
+        if isinstance(positive_rebuild_quality, dict):
+            if bool(positive_rebuild_quality.get("quality_pass", False)):
+                summary["quality_pass"] += 1
+            if bool(positive_rebuild_quality.get("observe_only", False)):
+                summary["observe_only"] += 1
+        if isinstance(match, dict):
+            summary["matched_quality"] += 1
+            ret_bps = float(match.get("ret_bps", 0) or 0)
+            ret_vals.append(ret_bps)
+            net_ret_vals.append(ret_bps - fee)
+            if bool(match.get("direction_correct", False)):
+                direction_correct_count += 1
+            if (ret_bps - fee) >= 0:
+                cost_covered_count += 1
+
+        rows.append(
+            {
+                "id": hist_id,
+                "ts_code": ts_code,
+                "name": name,
+                "signal_type": str(r[3] or ""),
+                "channel": str(r[4] or ""),
+                "signal_source": str(r[5] or ""),
+                "strength": strength,
+                "message": str(r[7] or ""),
+                "price": float(r[8] or 0),
+                "pct_chg": float(r[9] or 0),
+                "history_snapshot": history_snapshot,
+                "positive_rebuild_quality": positive_rebuild_quality,
+                "t0_inventory": t0_inventory,
+                "triggered_at": trigger_dt.isoformat() if trigger_dt else str(triggered_at),
+                "quality": None if not isinstance(match, dict) else {
+                    "trigger_time": _to_epoch_seconds(match.get("trigger_time", 0)),
+                    "trigger_time_iso": _to_iso_datetime_text(match.get("trigger_time", "")),
+                    "trigger_price": float(match.get("trigger_price", 0) or 0),
+                    "eval_price": float(match.get("eval_price", 0) or 0),
+                    "ret_bps": float(match.get("ret_bps", 0) or 0),
+                    "mfe_bps": float(match.get("mfe_bps", 0) or 0),
+                    "mae_bps": float(match.get("mae_bps", 0) or 0),
+                    "direction_correct": bool(match.get("direction_correct", False)),
+                    "market_phase": str(match.get("market_phase", "") or ""),
+                    "channel": str(match.get("channel", "") or ""),
+                    "signal_source": str(match.get("signal_source", "") or ""),
+                    "created_at": str(match.get("created_at", "") or ""),
+                    "time_diff_sec": round(float(best_diff or 0.0), 3),
+                    "net_ret_bps_after_fee": round(float(match.get("ret_bps", 0) or 0) - fee, 2),
+                },
+                "classification": classification,
+                "classification_reason": classification_reason,
+                "fee_bps": fee,
+            }
+        )
+
+    quality_summary = pool_service_module._aggregate_positive_rebuild_entries(quality_entries)
+    if not isinstance(quality_summary, dict):
+        quality_summary = {}
+    matched_quality = int(summary.get("matched_quality", 0) or 0)
+    quality_summary.update(
+        {
+            "matched_quality_count": matched_quality,
+            "avg_ret_bps_5m": round((sum(ret_vals) / len(ret_vals)), 2) if ret_vals else None,
+            "avg_net_ret_bps_5m": round((sum(net_ret_vals) / len(net_ret_vals)), 2) if net_ret_vals else None,
+            "direction_correct_rate": round((direction_correct_count / matched_quality), 4) if matched_quality > 0 else None,
+            "cost_covered_count": int(cost_covered_count),
+            "cost_covered_rate": round((cost_covered_count / matched_quality), 4) if matched_quality > 0 else None,
+        }
+    )
+
+    return {
+        "ok": True,
+        "checked_at": datetime.datetime.now().isoformat(),
+        "hours": h,
+        "limit": lim,
+        "fee_bps": fee,
+        "summary": summary,
+        "quality_summary": quality_summary,
+        "count": len(rows),
+        "rows": rows,
+    }
+
+
+def _t0_positive_diag_sort_key(row: dict) -> tuple:
+    priority = {
+        "triggered": 1,
+        "trigger_observe_only": 2,
+        "veto": 3,
+        "trigger_score_filtered": 4,
+        "trigger_no_confirm": 5,
+        "candidate": 6,
+        "off_session_skip": 7,
+        "error": 8,
+        "idle": 9,
+    }
+    status = str(row.get("status") or "")
+    try:
+        strength = -float(row.get("strength", 0) or 0)
+    except Exception:
+        strength = 0.0
+    return (priority.get(status, 99), strength, str(row.get("ts_code") or ""))
+
+
+def _build_t0_positive_diag_row(member: dict, provider) -> dict:
+    from backend.realtime import gm_tick as gm_runtime
+    from backend.realtime.threshold_engine import build_signal_context, get_thresholds
+
+    m = dict(member or {})
+    ts_code = str(m.get("ts_code") or "")
+    name = str(m.get("name") or "")
+    if not ts_code:
+        return {"status": "error", "error": "missing_ts_code"}
+    market_open = bool(_is_market_open().get("is_open", False))
+
+    tick = {}
+    try:
+        tick = provider.get_cached_tick(ts_code) or {}
+    except Exception:
+        tick = {}
+    if not tick:
+        try:
+            tick = provider.get_tick(ts_code) or {}
+        except Exception:
+            tick = {}
+    if not isinstance(tick, dict) or not tick:
+        return {
+            "ts_code": ts_code,
+            "name": name,
+            "status": "error",
+            "error": "tick_unavailable",
+        }
+
+    price = float(tick.get("price", m.get("price", 0)) or 0)
+    pct_chg = float(tick.get("pct_chg", m.get("pct_chg", 0)) or 0)
+    if price > 0:
+        m["price"] = price
+    m["pct_chg"] = pct_chg
+    if (not market_open) and price <= 0:
+        return {
+            "ts_code": ts_code,
+            "name": name,
+            "price": round(price, 3),
+            "pct_chg": round(pct_chg, 3),
+            "status": "off_session_skip",
+            "has_signal": False,
+            "observe_only": False,
+            "strength": 0.0,
+            "message": "",
+            "veto": None,
+            "trigger_items": [],
+            "confirm_items": [],
+            "candidate_reasons": [],
+            "threshold": {},
+            "positive_rebuild_quality": {},
+            "t0_inventory": {},
+            "market_structure": {"reason": "off_session_skip"},
+            "feature_snapshot": {
+                "boll_break": False,
+                "bias_vwap": None,
+                "gub5_transition": None,
+                "bid_ask_ratio": None,
+                "volume_pace_ratio": None,
+                "volume_pace_state": "unknown",
+                "pct_chg": pct_chg,
+            },
+        }
+
+    txns = None
+    try:
+        txns = provider.get_cached_transactions(ts_code)
+    except Exception:
+        txns = None
+    if txns is None:
+        try:
+            txns = mootdx_client.get_transactions(ts_code, int(_TXN_ANALYZE_COUNT))
+        except Exception:
+            txns = None
+    txns = txns or []
+
+    ms = gm_runtime._analyze_market_structure(tick, txns)
+    state = gm_runtime._update_intraday_state(ts_code, tick)
+    vwap = m.get("vwap")
+    if vwap in (None, 0):
+        vwap = gm_runtime._compute_vwap(state)
+    gub5_trend = m.get("gub5_trend") or gm_runtime._compute_gub5_trend(state)
+    gub5_transition = gm_runtime._compute_gub5_transition(state)
+    pw = state.get("price_window") or []
+    intraday_prices = m.get("intraday_prices") or [p for _, p, _ in pw]
+
+    ma5 = float(m.get("ma5", 0) or 0)
+    ma10 = float(m.get("ma10", 0) or 0)
+    ma20 = float(m.get("ma20", 0) or 0)
+    trend_up = bool(ma5 > ma10 > ma20 > 0)
+
+    feat = sig.build_t0_features(
+        tick_price=price,
+        boll_lower=m.get("boll_lower", 0),
+        boll_upper=m.get("boll_upper", 0),
+        vwap=vwap,
+        intraday_prices=intraday_prices,
+        pct_chg=pct_chg,
+        trend_up=trend_up,
+        gub5_trend=gub5_trend,
+        gub5_transition=gub5_transition,
+        bid_ask_ratio=m.get("bid_ask_ratio"),
+        lure_short=bool(ms.get("lure_short", False)),
+        wash_trade=bool(ms.get("wash_trade", False)),
+        spread_abnormal=bool(m.get("spread_abnormal", False)),
+        v_power_divergence=False,
+        ask_wall_building=bool(ms.get("lure_long", False)),
+        real_buy_fading=bool(ms.get("active_buy_fading", False)),
+        wash_trade_severe=bool(ms.get("wash_trade", False) and abs(float(ms.get("big_order_bias", 0.0) or 0.0)) < 0.05),
+        liquidity_drain=bool(m.get("liquidity_drain", False)),
+        ask_wall_absorb_ratio=ms.get("ask_wall_absorb_ratio"),
+        bid_wall_break_ratio=ms.get("bid_wall_break_ratio"),
+        spoofing_vol_ratio=m.get("spoofing_vol_ratio"),
+        big_order_bias=ms.get("big_order_bias"),
+        big_net_flow_bps=ms.get("big_net_flow_bps"),
+        super_order_bias=ms.get("super_order_bias"),
+        super_net_flow_bps=ms.get("super_net_flow_bps"),
+        volume_pace_ratio=m.get("volume_pace_ratio"),
+        volume_pace_state=m.get("volume_pace_state"),
+    )
+
+    ctx = build_signal_context(
+        ts_code,
+        2,
+        tick=tick,
+        daily=m,
+        intraday={
+            "vwap": feat.get("vwap"),
+            "bias_vwap": feat.get("bias_vwap"),
+            "robust_zscore": feat.get("robust_zscore"),
+            "gub5_ratio": m.get("gub5_ratio"),
+            "gub5_transition": feat.get("gub5_transition"),
+            "volume_pace_ratio": feat.get("volume_pace_ratio"),
+            "volume_pace_state": feat.get("volume_pace_state"),
+            "progress_ratio": m.get("volume_pace_progress"),
+        },
+        market={
+            "industry": m.get("industry"),
+            "vol_20": m.get("vol_20"),
+            "atr_14": m.get("atr_14"),
+            "name": m.get("name"),
+            "market_name": m.get("market_name"),
+            "list_date": m.get("list_date"),
+            "industry_ecology": m.get("industry_ecology"),
+            "concept_boards": m.get("concept_boards"),
+            "concept_codes": m.get("concept_codes"),
+            "core_concept_board": m.get("core_concept_board"),
+            "core_concept_code": m.get("core_concept_code"),
+            "concept_ecology": m.get("concept_ecology"),
+            "concept_ecology_multi": m.get("concept_ecology_multi"),
+            "instrument_profile": m.get("instrument_profile"),
+        },
+    )
+    thresholds = get_thresholds("positive_t", ctx)
+
+    inventory_state = {}
+    try:
+        inv = provider.get_pool2_t0_inventory_state(ts_code)
+        if isinstance(inv, dict):
+            inventory_state = dict(inv)
+    except Exception:
+        inventory_state = {}
+
+    pos = sig.detect_positive_t(
+        tick_price=feat["tick_price"],
+        boll_lower=feat["boll_lower"],
+        vwap=feat["vwap"],
+        gub5_trend=feat.get("gub5_trend"),
+        gub5_transition=feat.get("gub5_transition"),
+        bid_ask_ratio=feat.get("bid_ask_ratio"),
+        lure_short=bool(feat.get("lure_short", False)),
+        wash_trade=bool(feat.get("wash_trade", False)),
+        spread_abnormal=bool(feat.get("spread_abnormal", False)),
+        boll_break=bool(feat.get("boll_break", False)),
+        ask_wall_absorb=bool(feat.get("ask_wall_absorb", False)),
+        ask_wall_absorb_ratio=feat.get("ask_wall_absorb_ratio"),
+        spoofing_suspected=bool(feat.get("spoofing_suspected", False)),
+        bias_vwap=feat.get("bias_vwap"),
+        super_order_bias=feat.get("super_order_bias"),
+        super_net_flow_bps=feat.get("super_net_flow_bps"),
+        volume_pace_ratio=feat.get("volume_pace_ratio"),
+        volume_pace_state=feat.get("volume_pace_state"),
+        ts_code=ts_code,
+        thresholds=thresholds,
+        position_state=inventory_state,
+        industry_ecology=m.get("industry_ecology"),
+        concept_ecology=m.get("concept_ecology"),
+        concept_ecology_multi=m.get("concept_ecology_multi"),
+    )
+
+    try:
+        bias_vwap_th = float((thresholds or {}).get("bias_vwap_th"))
+    except Exception:
+        bias_vwap_th = float(getattr(sig, "_BIAS_VWAP_PCT", -1.8))
+    try:
+        eps_break_th = float((thresholds or {}).get("eps_break"))
+    except Exception:
+        eps_break_th = float(getattr(sig, "_EPS_BREAK", 0.003))
+
+    trigger_items: list[str] = []
+    if bool(feat.get("boll_break", False)):
+        trigger_items.append("boll_break")
+    try:
+        bias_vwap = float(feat.get("bias_vwap")) if feat.get("bias_vwap") is not None else None
+    except Exception:
+        bias_vwap = None
+    if bias_vwap is not None and bias_vwap < bias_vwap_th:
+        trigger_items.append("bias_vwap")
+
+    confirm_items: list[str] = []
+    if feat.get("gub5_transition") in getattr(sig, "_GUB5_TRANSITIONS", set()):
+        confirm_items.append("gub5_transition")
+    try:
+        if feat.get("bid_ask_ratio") is not None and float(feat.get("bid_ask_ratio")) > float(getattr(sig, "_BID_ASK_TH", 1.05)):
+            confirm_items.append("bid_ask_ratio")
+    except Exception:
+        pass
+    if bool(feat.get("lure_short", False)):
+        confirm_items.append("lure_short")
+    if bool(feat.get("ask_wall_absorb", False)):
+        confirm_items.append("ask_wall_absorb")
+    try:
+        if feat.get("super_order_bias") is not None and float(feat.get("super_order_bias")) >= float(getattr(sig, "_SUPER_ORDER_BIAS_BUY_TH", 0.20)):
+            confirm_items.append("super_order_bias")
+    except Exception:
+        pass
+    try:
+        if feat.get("super_net_flow_bps") is not None and float(feat.get("super_net_flow_bps")) >= float(getattr(sig, "_SUPER_NET_INFLOW_BUY_BPS", 120.0)):
+            confirm_items.append("super_net_flow_bps")
+    except Exception:
+        pass
+
+    details = pos.get("details") if isinstance(pos.get("details"), dict) else {}
+    veto = str(details.get("veto") or "")
+    has_signal = bool(pos.get("has_signal", False))
+    observe_only = bool(details.get("observe_only", False))
+    strength = float(pos.get("strength", 0) or 0)
+    positive_rebuild_quality = details.get("positive_rebuild_quality") if isinstance(details.get("positive_rebuild_quality"), dict) else {}
+    t0_inventory = details.get("t0_inventory") if isinstance(details.get("t0_inventory"), dict) else inventory_state
+
+    candidate_reasons: list[str] = []
+    boll_lower = float(feat.get("boll_lower", 0) or 0)
+    if not trigger_items:
+        if boll_lower > 0 and price <= boll_lower * (1 + max(0.001, eps_break_th * 0.25)):
+            candidate_reasons.append("near_boll_lower")
+        if bias_vwap is not None and bias_vwap <= (bias_vwap_th + 0.5):
+            candidate_reasons.append("near_bias_tail")
+        if bool(feat.get("ask_wall_absorb", False)) and bool(feat.get("lure_short", False)):
+            candidate_reasons.append("repairing_microstructure")
+
+    if has_signal:
+        status = "trigger_observe_only" if observe_only else "triggered"
+    elif veto:
+        status = "veto"
+    elif trigger_items and not confirm_items:
+        status = "trigger_no_confirm"
+    elif trigger_items and confirm_items:
+        status = "trigger_score_filtered"
+    elif candidate_reasons:
+        status = "candidate"
+    else:
+        status = "idle"
+
+    return {
+        "ts_code": ts_code,
+        "name": name,
+        "price": round(price, 3),
+        "pct_chg": round(pct_chg, 3),
+        "status": status,
+        "has_signal": has_signal,
+        "observe_only": observe_only,
+        "strength": round(strength, 2),
+        "message": str(pos.get("message", "") or ""),
+        "veto": veto or None,
+        "trigger_items": trigger_items,
+        "confirm_items": confirm_items,
+        "candidate_reasons": candidate_reasons,
+        "threshold": details.get("threshold") if isinstance(details.get("threshold"), dict) else thresholds,
+        "positive_rebuild_quality": positive_rebuild_quality,
+        "t0_inventory": t0_inventory,
+        "market_structure": {
+            "tag": ms.get("tag"),
+            "big_order_bias": ms.get("big_order_bias"),
+            "big_net_flow_bps": ms.get("big_net_flow_bps"),
+            "super_order_bias": ms.get("super_order_bias"),
+            "super_net_flow_bps": ms.get("super_net_flow_bps"),
+            "bid_ask_ratio": ms.get("bid_ask_ratio"),
+            "ask_wall_absorb_ratio": ms.get("ask_wall_absorb_ratio"),
+            "bid_wall_break_ratio": ms.get("bid_wall_break_ratio"),
+            "ask_wall_absorbed": bool(ms.get("ask_wall_absorbed", False)),
+            "lure_short": bool(ms.get("lure_short", False)),
+            "wash_trade": bool(ms.get("wash_trade", False)),
+            "active_buy_fading": bool(ms.get("active_buy_fading", False)),
+            "peak_gain_pct": ms.get("peak_gain_pct"),
+            "retrace_from_high_pct": ms.get("retrace_from_high_pct"),
+        },
+        "feature_snapshot": {
+            "boll_break": bool(feat.get("boll_break", False)),
+            "bias_vwap": feat.get("bias_vwap"),
+            "gub5_trend": feat.get("gub5_trend"),
+            "gub5_transition": feat.get("gub5_transition"),
+            "bid_ask_ratio": feat.get("bid_ask_ratio"),
+            "ask_wall_absorb": bool(feat.get("ask_wall_absorb", False)),
+            "super_order_bias": feat.get("super_order_bias"),
+            "super_net_flow_bps": feat.get("super_net_flow_bps"),
+            "volume_pace_ratio": feat.get("volume_pace_ratio"),
+            "volume_pace_state": feat.get("volume_pace_state"),
+            "pct_chg": feat.get("pct_chg"),
+        },
+    }
+
+
+def runtime_t0_positive_diagnostics(
+    limit: int = Query(200, ge=1, le=1000),
+    interesting_only: bool = Query(False),
+    ts_codes: str = Query("", description="comma separated ts_code list"),
+):
+    with _ro_conn_ctx() as conn:
+        members_data = _build_member_data(conn, 2)
+
+    code_filter = {
+        str(x or "").strip().upper()
+        for x in str(ts_codes or "").split(",")
+        if str(x or "").strip()
+    }
+    if code_filter:
+        members_data = [m for m in (members_data or []) if str((m or {}).get("ts_code") or "").strip().upper() in code_filter]
+
+    provider = get_tick_provider()
+    rows: list[dict] = []
+    for m in members_data or []:
+        try:
+            rows.append(_build_t0_positive_diag_row(m, provider))
+        except Exception as e:
+            rows.append(
+                {
+                    "ts_code": str((m or {}).get("ts_code") or ""),
+                    "name": str((m or {}).get("name") or ""),
+                    "status": "error",
+                    "error": str(e),
+                }
+            )
+
+    total_rows = len(rows)
+    summary = {
+        "members": total_rows,
+        "triggered": 0,
+        "observe_only": 0,
+        "veto": 0,
+        "trigger_no_confirm": 0,
+        "trigger_score_filtered": 0,
+        "candidate": 0,
+        "off_session_skip": 0,
+        "error": 0,
+        "quality_pass": 0,
+        "recovery_quality_low": 0,
+        "net_executable_edge_low": 0,
+        "inventory_degraded": 0,
+    }
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status == "triggered":
+            summary["triggered"] += 1
+        elif status == "trigger_observe_only":
+            summary["triggered"] += 1
+            summary["observe_only"] += 1
+        elif status == "veto":
+            summary["veto"] += 1
+        elif status == "trigger_no_confirm":
+            summary["trigger_no_confirm"] += 1
+        elif status == "trigger_score_filtered":
+            summary["trigger_score_filtered"] += 1
+        elif status == "candidate":
+            summary["candidate"] += 1
+        elif status == "off_session_skip":
+            summary["off_session_skip"] += 1
+        elif status == "error":
+            summary["error"] += 1
+
+        quality = row.get("positive_rebuild_quality") if isinstance(row.get("positive_rebuild_quality"), dict) else {}
+        if bool(quality.get("quality_pass", False)):
+            summary["quality_pass"] += 1
+        observe_reasons = [str(x or "").strip() for x in (quality.get("observe_reasons") or [])] if isinstance(quality.get("observe_reasons"), list) else []
+        if "recovery_quality_low" in observe_reasons:
+            summary["recovery_quality_low"] += 1
+        if "net_executable_edge_low" in observe_reasons:
+            summary["net_executable_edge_low"] += 1
+        if "inventory_quality_degraded" in observe_reasons:
+            summary["inventory_degraded"] += 1
+
+    if interesting_only:
+        rows = [r for r in rows if str(r.get("status") or "") not in {"idle", "off_session_skip"}]
+    rows.sort(key=_t0_positive_diag_sort_key)
+
+    return {
+        "ok": True,
+        "checked_at": datetime.datetime.now().isoformat(),
+        "interesting_only": bool(interesting_only),
+        "summary": summary,
+        "rows_total": total_rows,
+        "count": len(rows[: int(limit)]),
+        "rows": rows[: int(limit)],
+    }
+
+
 def runtime_db_metrics():
     m = _metrics_snapshot()
     m["db_realtime_path"] = _REALTIME_DB
@@ -1140,6 +1802,33 @@ def runtime_concept_snapshot_refresh():
             "fetch_error": error_text,
             "status": status,
         }
+
+
+def runtime_board_catalog_status():
+    status = runtime_jobs._get_board_catalog_status()
+    return status
+
+
+def runtime_board_catalog_refresh(
+    force: bool = Query(False, description="是否强制重刷今天已同步过的板块目录与成分股"),
+):
+    checked_at = datetime.datetime.now()
+    before = runtime_jobs._get_board_catalog_status()
+    ok = runtime_jobs._run_board_catalog_sync_once(reason="api_manual", force=bool(force))
+    after = runtime_jobs._get_board_catalog_status()
+    message = "board catalog already fresh" if (before.get("ok") and not bool(force)) else "board catalog refresh finished"
+    if not ok:
+        message = "board catalog refresh failed"
+    return {
+        "ok": bool(ok and after.get("ok")),
+        "checked_at": checked_at.isoformat(timespec="seconds"),
+        "force": bool(force),
+        "message": message,
+        "before": before,
+        "after": after,
+    }
+
+
 def _table_probe(conn: duckdb.DuckDBPyConnection, table_name: str) -> tuple[bool, Optional[str]]:
     try:
         conn.execute(f'SELECT 1 FROM "{table_name}" LIMIT 1').fetchone()
@@ -1748,6 +2437,13 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
             "name": m.get("name"),
             "market_name": m.get("market_name"),
             "list_date": m.get("list_date"),
+            "industry_ecology": m.get("industry_ecology"),
+            "concept_boards": m.get("concept_boards"),
+            "concept_codes": m.get("concept_codes"),
+            "core_concept_board": m.get("core_concept_board"),
+            "core_concept_code": m.get("core_concept_code"),
+            "concept_ecology": m.get("concept_ecology"),
+            "concept_ecology_multi": m.get("concept_ecology_multi"),
             "instrument_profile": m.get("instrument_profile"),
         },
     )
@@ -1779,6 +2475,9 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
         volume_pace_state=feat.get("volume_pace_state"),
         main_rally_guard=bool(feat.get("main_rally_guard", False)),
         main_rally_info=feat.get("main_rally_info"),
+        industry_ecology=m.get("industry_ecology"),
+        concept_ecology=m.get("concept_ecology"),
+        concept_ecology_multi=m.get("concept_ecology_multi"),
         ts_code=ts_code,
         thresholds=thresholds,
     )

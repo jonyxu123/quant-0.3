@@ -111,10 +111,11 @@ class TickProvider(ABC):
         pass
 
     def bulk_update_industry_snapshots(self, mapping: dict):
+        """批量更新东方财富行业板块生态快照。默认空实现。"""
         pass
 
     def bulk_update_instrument_profiles(self, mapping: dict):
-        """???????????"""
+        """批量更新标的制度画像。默认空实现。"""
         pass
 
     def get_cached_signals(self, ts_code: str) -> Optional[dict]:
@@ -171,6 +172,15 @@ class TickProvider(ABC):
     def get_pool1_position_storage_status(self) -> Optional[dict]:
         return None
 
+    def get_pool2_t0_inventory_state(self, ts_code: str) -> Optional[dict]:
+        return None
+
+    def get_pool2_t0_inventory_storage_status(self) -> Optional[dict]:
+        return None
+
+    def update_pool2_t0_inventory_state(self, ts_code: str, updates: dict) -> Optional[dict]:
+        return None
+
 
 # ============================================================
 # 工厂函数
@@ -201,11 +211,11 @@ def get_tick_provider() -> TickProvider:
         if TICK_PROVIDER == 'gm':
             from backend.realtime.gm_tick import GmTickProvider
             _instance = GmTickProvider()
-            logger.info(f"Tick 数据源: 掘金量化(gm) subscribe 模式")
+            logger.info("Tick 数据源: 掘金量化(gm) subscribe 模式")
         else:
             from backend.realtime.mootdx_tick import MootdxTickProvider
             _instance = MootdxTickProvider()
-            logger.info(f"Tick 数据源: 通达信(mootdx) 主动查询模式")
+            logger.info("Tick 数据源: 通达信(mootdx) 主动查询模式")
 
         # 启动 Provider（gm 需要启动后台订阅进程）
         _instance.start()

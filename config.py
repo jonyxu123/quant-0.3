@@ -423,6 +423,19 @@ T0_SIGNAL_CONFIG = {
         "reverse_bidask_block_th": float(os.getenv("T0_REVERSE_BIDASK_BLOCK_TH", "1.22")),
         "reverse_vwap_premium_bps": float(os.getenv("T0_REVERSE_VWAP_PREMIUM_BPS", "18")),
     },
+    "positive_rebuild_quality": {
+        "enabled": os.getenv("T0_POS_REBUILD_QUALITY_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
+        "min_recovery_score": int(os.getenv("T0_POS_REBUILD_MIN_RECOVERY_SCORE", "58")),
+        "min_net_edge_bps": float(os.getenv("T0_POS_REBUILD_MIN_NET_EDGE_BPS", "8")),
+        "fee_bps": float(os.getenv("T0_POS_REBUILD_FEE_BPS", os.getenv("T0_ROUNDTRIP_FEE_BPS", "16"))),
+        "slippage_bps": float(os.getenv("T0_POS_REBUILD_SLIPPAGE_BPS", "4")),
+        "impact_bps": float(os.getenv("T0_POS_REBUILD_IMPACT_BPS", "3")),
+        "min_reverse_room_ratio_after": float(os.getenv("T0_POS_REBUILD_MIN_REVERSE_ROOM_RATIO_AFTER", "0.35")),
+        "max_temp_inventory_ratio": float(os.getenv("T0_POS_REBUILD_MAX_TEMP_INVENTORY_RATIO", "0.35")),
+        "anchor_cost_raise_bps_max": float(os.getenv("T0_POS_REBUILD_ANCHOR_COST_RAISE_BPS_MAX", "6")),
+        "flow_weak_bps": float(os.getenv("T0_POS_REBUILD_FLOW_WEAK_BPS", "-60")),
+        "bid_ask_weak_ratio": float(os.getenv("T0_POS_REBUILD_BIDASK_WEAK", "0.92")),
+    },
     # 盘中量能进度（pace_ratio = (cum_vol / prev_day_vol) / progress_ratio）
     "volume_pace": {
         "enabled": os.getenv("T0_VOLUME_PACE_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
@@ -467,9 +480,76 @@ T0_SIGNAL_CONFIG = {
         "surge_absorb_super_inflow_bps_min": float(os.getenv("T0_TREND_GUARD_SURGE_SUPER_INFLOW_BPS_MIN", "100")),
         "surge_absorb_min_bearish_confirms": int(os.getenv("T0_TREND_GUARD_SURGE_MIN_BEARISH_HARD", "4")),
     },
+    "theme_leadership_guard": {
+        "enabled": os.getenv("T0_THEME_GUARD_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
+        "min_theme_score": float(os.getenv("T0_THEME_GUARD_MIN_THEME_SCORE", "30")),
+        "min_leader_pct": float(os.getenv("T0_THEME_GUARD_MIN_LEADER_PCT", "2.0")),
+        "min_breadth_ratio": float(os.getenv("T0_THEME_GUARD_MIN_BREADTH_RATIO", "0.12")),
+        "min_core_component": float(os.getenv("T0_THEME_GUARD_MIN_CORE_COMPONENT", "4")),
+        "min_industry_score": float(os.getenv("T0_THEME_GUARD_MIN_INDUSTRY_SCORE", "5")),
+        "min_guard_score": int(os.getenv("T0_THEME_GUARD_MIN_SCORE", "4")),
+        "secondary_support_min_count": int(os.getenv("T0_THEME_GUARD_SECONDARY_SUPPORT_MIN", "1")),
+        "min_distribution_confirms": int(os.getenv("T0_THEME_GUARD_MIN_DISTRIBUTION", "2")),
+        "distribution_super_outflow_bps": float(os.getenv("T0_THEME_GUARD_SUPER_OUT_BPS", "-80")),
+        "distribution_bidask_weak": float(os.getenv("T0_THEME_GUARD_BIDASK_WEAK", "0.92")),
+        "avwap_break_bps": float(os.getenv("T0_THEME_GUARD_AVWAP_BREAK_BPS", "25")),
+    },
+    "do_not_t_env": {
+        "enabled": os.getenv("T0_DO_NOT_T_ENV_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
+        "block_session_policies": tuple(
+            x.strip()
+            for x in os.getenv("T0_DO_NOT_T_BLOCK_POLICIES", "auction_pause,open_strict,lunch_pause,close_reduce").split(",")
+            if x.strip()
+        ),
+        "block_limit_magnet": os.getenv("T0_DO_NOT_T_LIMIT_MAGNET", "1").lower() in ("1", "true", "yes", "on"),
+        "block_board_seal_env": os.getenv("T0_DO_NOT_T_BOARD_SEAL_ENV", "1").lower() in ("1", "true", "yes", "on"),
+        "block_risk_warning": os.getenv("T0_DO_NOT_T_RISK_WARNING", "1").lower() in ("1", "true", "yes", "on"),
+        "block_ipo_early": os.getenv("T0_DO_NOT_T_IPO_EARLY", "1").lower() in ("1", "true", "yes", "on"),
+        "block_volume_drought_spread": os.getenv("T0_DO_NOT_T_DROUGHT_SPREAD", "1").lower() in ("1", "true", "yes", "on"),
+        "block_theme_acceleration": os.getenv("T0_DO_NOT_T_THEME_ACCEL", "1").lower() in ("1", "true", "yes", "on"),
+        "block_breadth_climax": os.getenv("T0_DO_NOT_T_BREADTH_CLIMAX", "1").lower() in ("1", "true", "yes", "on"),
+        "require_whitelist_for_execute": os.getenv("T0_DO_NOT_T_REQUIRE_WHITELIST", "1").lower() in ("1", "true", "yes", "on"),
+        "theme_accel_score": float(os.getenv("T0_DO_NOT_T_THEME_ACCEL_SCORE", "45")),
+        "theme_climax_breadth": float(os.getenv("T0_DO_NOT_T_CLIMAX_BREADTH", "0.45")),
+        "theme_climax_leader_pct": float(os.getenv("T0_DO_NOT_T_CLIMAX_LEADER_PCT", "7.0")),
+        "low_liquidity_bidask": float(os.getenv("T0_DO_NOT_T_LOW_LIQ_BIDASK", "0.75")),
+        "whitelist_bidask_support": float(os.getenv("T0_DO_NOT_T_WHITELIST_BIDASK", "1.05")),
+    },
     "quality": {
         "horizons_sec": [60, 180, 300],
         "alert_precision_drop": 0.08,
+    },
+    "inventory_state": {
+        "enabled": os.getenv("T0_INVENTORY_STATE_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
+        "require_state_for_execute": os.getenv("T0_INVENTORY_REQUIRE_STATE_FOR_EXECUTE", "1").lower() in ("1", "true", "yes", "on"),
+        "observe_on_state_missing": os.getenv("T0_INVENTORY_OBSERVE_ON_STATE_MISSING", "1").lower() in ("1", "true", "yes", "on"),
+        "lot_size": int(os.getenv("T0_INVENTORY_LOT_SIZE", "100")),
+        "positive_action_ratio": float(os.getenv("T0_INVENTORY_POSITIVE_ACTION_RATIO", "0.25")),
+        "reverse_action_ratio": float(os.getenv("T0_INVENTORY_REVERSE_ACTION_RATIO", "0.25")),
+        "max_t_count_per_day": int(os.getenv("T0_INVENTORY_MAX_T_COUNT_PER_DAY", "4")),
+        "file": os.getenv("T0_INVENTORY_STATE_FILE", ".pool2_t0_inventory_state.json"),
+        "max_items": int(os.getenv("T0_INVENTORY_STATE_MAX_ITEMS", "5000")),
+        "file_fallback": os.getenv("T0_INVENTORY_STATE_FILE_FALLBACK", "1").lower() in ("1", "true", "yes", "on"),
+        "redis": {
+            "enabled": os.getenv(
+                "T0_INVENTORY_REDIS_ENABLED",
+                os.getenv("RUNTIME_STATE_REDIS_ENABLED", "0"),
+            ).lower() in ("1", "true", "yes", "on"),
+            "url": os.getenv(
+                "T0_INVENTORY_REDIS_URL",
+                os.getenv(
+                    "RUNTIME_STATE_REDIS_URL",
+                    os.getenv("REALTIME_DB_WRITER_REDIS_URL", "redis://127.0.0.1:6379/0"),
+                ),
+            ),
+            "key_prefix": os.getenv("T0_INVENTORY_REDIS_KEY_PREFIX", "quant:pool2:t0_inventory"),
+            "ttl_days": int(
+                os.getenv(
+                    "T0_INVENTORY_REDIS_TTL_DAYS",
+                    os.getenv("RUNTIME_STATE_REDIS_TTL_DAYS", "14"),
+                )
+            ),
+        },
     },
     "drift": {
         "psi_threshold": 0.2,

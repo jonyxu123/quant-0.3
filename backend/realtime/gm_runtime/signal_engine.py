@@ -345,7 +345,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
     if price <= 0 or boll_upper <= 0:
         return []
 
-    # 榄忔腑鐖昏櫩鎮ｈ棔
+    # 按股票所属池分流
     pools = _main_stock_pools.get(ts_code, set())
     if not pools:
         return []
@@ -1043,6 +1043,8 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
 
     # ===== Pool2：T+0 日内 =====
     if 2 in pools and ts_code:
+        now_ts = int(tick.get('timestamp') or time.time())
+        pool2_inventory_before = _pool2_get_t0_inventory_state(ts_code, now_ts=now_ts)
         state = intraday_state or _update_intraday_state(ts_code, tick)
         vwap = _compute_vwap(state)
         gub5 = _compute_gub5_trend(state)
@@ -1119,6 +1121,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     lure_short=feat['lure_short'],
                     wash_trade=feat['wash_trade'],
                     spread_abnormal=feat['spread_abnormal'],
+                    liquidity_drain=feat.get('liquidity_drain', False),
                     boll_break=feat['boll_break'],
                     ask_wall_absorb=feat['ask_wall_absorb'],
                     ask_wall_absorb_ratio=feat.get('ask_wall_absorb_ratio'),
@@ -1130,6 +1133,10 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     volume_pace_state=feat.get('volume_pace_state'),
                     ts_code=ts_code,
                     thresholds=t0_pos_th,
+                    position_state=pool2_inventory_before,
+                    industry_ecology=industry_ecology,
+                    concept_ecology=concept_ecology,
+                    concept_ecology_multi=concept_ecology_multi,
                 )
                 if pos_t.get('has_signal'):
                     fired_pool2.append(_attach_signal_channel_meta(pos_t, pool_id=2))
@@ -1164,8 +1171,12 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     volume_pace_state=feat.get('volume_pace_state'),
                     main_rally_guard=bool(feat.get('main_rally_guard', False)),
                     main_rally_info=feat.get('main_rally_info'),
+                    industry_ecology=industry_ecology,
+                    concept_ecology=concept_ecology,
+                    concept_ecology_multi=concept_ecology_multi,
                     ts_code=ts_code,
                     thresholds=t0_rev_th,
+                    position_state=pool2_inventory_before,
                 )
                 if rev_t and rev_t.get('has_signal'):
                     fired_pool2.append(_attach_signal_channel_meta(rev_t, pool_id=2))
@@ -1667,6 +1678,39 @@ def _postprocess_fired_signals(
             continue
 
         next_signals.append(s_out)
+
+    for s in next_signals:
+        sig_type = str(s.get('type') or '')
+        if sig_type not in {'positive_t', 'reverse_t'} or not s.get('is_new'):
+            continue
+        details = s.get('details') if isinstance(s.get('details'), dict) else {}
+        if bool(details.get('observe_only', False)):
+            continue
+        inventory_info = details.get('t0_inventory') if isinstance(details.get('t0_inventory'), dict) else {}
+        action_qty = int(inventory_info.get('suggested_action_qty', 0) or 0)
+        if action_qty <= 0:
+            continue
+        before_inventory, after_inventory = _pool2_apply_t0_signal(
+            ts_code,
+            signal_type=sig_type,
+            signal_price=float(s.get('price', tick.get('price', 0)) or 0.0),
+            action_qty=action_qty,
+            now_ts=now,
+        )
+        inventory_info = dict(inventory_info)
+        inventory_info['applied_action_qty'] = int(action_qty)
+        inventory_info['executed'] = True
+        inventory_info['state_before'] = before_inventory
+        inventory_info['state_after'] = after_inventory
+        details['t0_inventory'] = inventory_info
+        details['t0_action'] = {
+            'mode': str(inventory_info.get('action_path') or ''),
+            'role': str(inventory_info.get('action_role') or ''),
+            'family': 'base_rebalance',
+            'applied_action_qty': int(action_qty),
+            'inventory_unchanged_expected': True,
+        }
+        s['details'] = details
 
     price = tick.get('price', 0)
     pct_chg = tick.get('pct_chg', 0)

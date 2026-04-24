@@ -1,10 +1,10 @@
-"""Realtime pool service: pool members, signal evaluation, market/tick access, indices."""
+﻿"""Realtime pool service: pool members, signal evaluation, market/tick access, indices."""
 
 from __future__ import annotations
 
-import warnings
 import re
 import unicodedata
+from collections import Counter
 from difflib import SequenceMatcher
 
 from scripts.akshare_proxy_patch_free import install_patch
@@ -20,6 +20,7 @@ install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com
 
 from .common import *  # noqa: F401,F403
 from .persistence_service import *  # noqa: F401,F403
+from backend.realtime.eastmoney_board_service import get_eastmoney_board_service
 
 _CONCEPT_FLOW_CACHE_TTL_SEC = 60.0
 _concept_flow_cache_lock = threading.Lock()
@@ -45,11 +46,6 @@ _market_changes_cache_lock = threading.Lock()
 _market_changes_cache: dict[str, dict] = {}
 _news_feed_cache_lock = threading.Lock()
 _news_feed_cache: dict[str, dict] = {}
-
-try:
-    from pandas.errors import SettingWithCopyWarning as _SettingWithCopyWarning
-except Exception:
-    _SettingWithCopyWarning = Warning
 
 _NEWS_FEED_SOURCES: dict[str, dict[str, object]] = {
     "cjzc_em": {
@@ -245,35 +241,6 @@ _INDUSTRY_SNAPSHOT_ALIAS_MAP: dict[str, str] = {
     "食品": "食品加工制造",
     "装修装饰": "装修建材",
 }
-
-_INDUSTRY_SNAPSHOT_ALIAS_MAP.update({
-    "???": "??",
-    "????": "??",
-    "????": "????",
-    "????": "????",
-    "??": "????",
-    "????": "????",
-    "????": "????",
-    "????": "????",
-    "????": "????",
-    "????": "???????",
-    "???": "????",
-    "????": "????",
-    "????": "?????",
-    "????": "???",
-    "????": "????",
-    "????": "??????",
-    "???": "???",
-    "????": "??????",
-    "????": "?????",
-    "????": "????",
-    "????": "?????",
-    "????": "??????",
-    "????": "??????",
-    "???": "??",
-    "??": "????",
-    "????": "?????",
-})
 
 
 def _normalize_industry_name(raw: object) -> str:
@@ -530,7 +497,7 @@ def _write_concept_snapshot_runtime_state(snapshot_map: dict[str, dict], fetched
         "updated_at": fetched_ts,
         "updated_at_iso": datetime.datetime.fromtimestamp(fetched_ts).isoformat(timespec="seconds"),
         "count": int(len(snapshot_map)),
-        "source": "akshare_eastmoney_concept_realtime",
+        "source": "eastmoney_push2_concept_realtime",
         "error": str(error_text or ""),
         "snapshot_map": _clone_concept_snapshot_map(snapshot_map),
     }
@@ -747,14 +714,26 @@ def _fetch_realtime_concept_snapshot_map(force_refresh: bool = False) -> tuple[d
             _concept_snapshot_cache_at = float(redis_fetched_at)
         return dict(redis_snapshot_map), str(redis_error_text or ""), float(redis_fetched_at)
 
+    if not _is_board_snapshot_fetch_session():
+        skip_text = "非连续竞价时段，跳过东方财富概念板块实时快照抓取"
+        with _concept_snapshot_cache_lock:
+            if _concept_snapshot_cache_map:
+                return dict(_concept_snapshot_cache_map), skip_text, float(_concept_snapshot_cache_at or now)
+        if redis_snapshot_map:
+            redis_fallback = _clone_concept_snapshot_map(redis_snapshot_map, source_override="redis_off_session")
+            with _concept_snapshot_cache_lock:
+                _concept_snapshot_cache_map = dict(redis_fallback)
+                _concept_snapshot_cache_error = skip_text
+                _concept_snapshot_cache_at = float(redis_fetched_at or now)
+            return dict(redis_fallback), skip_text, float(redis_fetched_at or now)
+        return {}, skip_text, now
+
     snapshot_map: dict[str, dict] = {}
     error_text = ""
     fetched_at = time.time()
     try:
-        _ensure_akshare_runtime_patch()
-        import akshare as ak
-
-        df = _call_akshare_quiet(ak.stock_board_concept_name_em)
+        board_service = get_eastmoney_board_service()
+        df = board_service.fetch_boards("concept")
         fetched_at = time.time()
         if df is not None and not getattr(df, "empty", True):
             fund_flow_by_name: dict[str, dict] = {}
@@ -767,52 +746,31 @@ def _fetch_realtime_concept_snapshot_map(force_refresh: bool = False) -> tuple[d
                 }
             except Exception:
                 fund_flow_by_name = {}
-            columns = [str(c) for c in list(df.columns)]
-            name_col = _pick_df_column(columns, "板块名称", "概念名称", "名称")
-            pct_col = _pick_df_column(columns, "涨跌幅")
-            up_col = _pick_df_column(columns, "上涨家数", "上涨数")
-            down_col = _pick_df_column(columns, "下跌家数", "下跌数")
-            leader_col = _pick_df_column(columns, "领涨股票")
-            leader_pct_col = _pick_df_column(columns, "领涨股票-涨跌幅", "领涨股-涨跌幅")
-            turnover_col = _pick_df_column(columns, "换手率")
-            latest_col = _pick_df_column(columns, "最新价")
-            change_col = _pick_df_column(columns, "涨跌额")
-            total_mv_col = _pick_df_column(columns, "总市值")
-            code_col = _pick_df_column(columns, "板块代码")
-            fund_flow_col = _pick_df_column(
-                columns,
-                "今日主力净流入-净额",
-                "主力净流入-净额",
-                "主力净流入净额",
-                "主力净流入",
-                "净额",
-                "main_net_inflow",
-            )
-            if not name_col:
-                raise RuntimeError(f"东方财富概念实时接口缺少名称字段: {columns}")
 
             for rec in df.to_dict(orient="records"):
-                concept_name = str(rec.get(name_col) or "").strip()
+                concept_name = str(rec.get("board_name") or "").strip()
                 if not concept_name:
                     continue
                 fund_flow_info = dict(fund_flow_by_name.get(concept_name) or {})
                 snapshot = _compute_concept_ecology_snapshot(
                     concept_name=concept_name,
-                    pct_chg=rec.get(pct_col) if pct_col else None,
-                    up_count=rec.get(up_col) if up_col else None,
-                    down_count=rec.get(down_col) if down_col else None,
-                    leader_pct=rec.get(leader_pct_col) if leader_pct_col else fund_flow_info.get("leader_pct"),
-                    turnover=rec.get(turnover_col) if turnover_col else None,
-                    fund_flow=rec.get(fund_flow_col) if fund_flow_col else fund_flow_info.get("main_net_inflow"),
+                    pct_chg=rec.get("pct_chg"),
+                    up_count=rec.get("up_count"),
+                    down_count=rec.get("down_count"),
+                    leader_pct=rec.get("leader_pct") if rec.get("leader_pct") is not None else fund_flow_info.get("leader_pct"),
+                    turnover=rec.get("turnover"),
+                    fund_flow=fund_flow_info.get("main_net_inflow"),
                 )
                 snapshot.update(
                     {
-                        "source": "akshare_eastmoney_concept_realtime",
-                        "board_code": str(rec.get(code_col) or "").strip() if code_col else "",
-                        "leader_name": str(rec.get(leader_col) or "").strip() if leader_col else "",
-                        "latest_price": round(_safe_float_text(rec.get(latest_col), 0.0), 4) if latest_col else 0.0,
-                        "change_amount": round(_safe_float_text(rec.get(change_col), 0.0), 4) if change_col else 0.0,
-                        "total_mv": round(_safe_float_text(rec.get(total_mv_col), 0.0), 2) if total_mv_col else 0.0,
+                        "source": "eastmoney_push2_concept_realtime",
+                        "board_code": _normalize_concept_board_code(rec.get("board_code")),
+                        "leader_name": str(rec.get("leader_name") or "").strip(),
+                        "leader_code": str(rec.get("leader_code") or "").strip(),
+                        "leader_ts_code": str(rec.get("leader_ts_code") or "").strip(),
+                        "latest_price": round(_safe_float_text(rec.get("latest_price"), 0.0), 4),
+                        "change_amount": round(_safe_float_text(rec.get("change_amount"), 0.0), 4),
+                        "total_mv": round(_safe_float_text(rec.get("total_mv"), 0.0), 2),
                         "main_net_inflow_ratio": round(_safe_float_local(fund_flow_info.get("main_net_inflow_ratio"), 0.0), 3),
                         "updated_at": int(fetched_at),
                         "updated_at_iso": datetime.datetime.fromtimestamp(fetched_at).isoformat(timespec="seconds"),
@@ -851,7 +809,6 @@ def _fetch_realtime_concept_snapshot_map(force_refresh: bool = False) -> tuple[d
 
     return {}, error_text, fetched_at
 
-
 def _fetch_realtime_industry_snapshot_map(force_refresh: bool = False) -> tuple[dict[str, dict], str, float]:
     global _industry_snapshot_cache_at, _industry_snapshot_cache_map, _industry_snapshot_cache_error
     now = time.time()
@@ -863,51 +820,43 @@ def _fetch_realtime_industry_snapshot_map(force_refresh: bool = False) -> tuple[
         ):
             return dict(_industry_snapshot_cache_map), str(_industry_snapshot_cache_error or ""), _industry_snapshot_cache_at
 
+    if not _is_board_snapshot_fetch_session():
+        skip_text = "非连续竞价时段，跳过东方财富行业板块实时快照抓取"
+        with _industry_snapshot_cache_lock:
+            if _industry_snapshot_cache_map:
+                return dict(_industry_snapshot_cache_map), skip_text, float(_industry_snapshot_cache_at or now)
+        return {}, skip_text, now
+
     snapshot_map: dict[str, dict] = {}
     error_text = ""
     fetched_at = time.time()
     try:
-        _ensure_akshare_runtime_patch()
-        import akshare as ak
-
-        df = _call_akshare_quiet(ak.stock_board_industry_name_em)
+        board_service = get_eastmoney_board_service()
+        df = board_service.fetch_boards("industry")
         fetched_at = time.time()
         if df is not None and not getattr(df, "empty", True):
-            columns = [str(c) for c in list(df.columns)]
-            name_col = _pick_df_column(columns, "板块名称", "行业名称", "名称", "行业")
-            code_col = _pick_df_column(columns, "????", "????", "??", "board_code", "code")
-            pct_col = _pick_df_column(columns, "涨跌幅", "行业-涨跌幅")
-            up_col = _pick_df_column(columns, "上涨家数", "上涨数")
-            down_col = _pick_df_column(columns, "下跌家数", "下跌数")
-            leader_col = _pick_df_column(columns, "领涨股票", "领涨股")
-            leader_pct_col = _pick_df_column(columns, "领涨股票-涨跌幅", "领涨股-涨跌幅", "领涨股涨跌幅")
-            turnover_col = _pick_df_column(columns, "换手率")
-            latest_col = _pick_df_column(columns, "最新价")
-            change_col = _pick_df_column(columns, "涨跌额")
-            total_mv_col = _pick_df_column(columns, "总市值")
-            if not name_col:
-                raise RuntimeError(f"东方财富行业实时接口缺少名称字段: {columns}")
-
             for rec in df.to_dict(orient="records"):
-                industry_name = str(rec.get(name_col) or "").strip()
+                industry_name = str(rec.get("board_name") or "").strip()
                 if not industry_name:
                     continue
                 snapshot = _compute_industry_ecology_snapshot(
                     industry_name=industry_name,
-                    pct_chg=rec.get(pct_col) if pct_col else None,
-                    up_count=rec.get(up_col) if up_col else None,
-                    down_count=rec.get(down_col) if down_col else None,
-                    leader_pct=rec.get(leader_pct_col) if leader_pct_col else None,
-                    turnover=rec.get(turnover_col) if turnover_col else None,
+                    pct_chg=rec.get("pct_chg"),
+                    up_count=rec.get("up_count"),
+                    down_count=rec.get("down_count"),
+                    leader_pct=rec.get("leader_pct"),
+                    turnover=rec.get("turnover"),
                 )
                 snapshot.update(
                     {
-                        "source": "akshare_eastmoney_industry_realtime",
-                        "industry_code": _normalize_industry_board_code(rec.get(code_col)) if code_col else "",
-                        "leader_name": str(rec.get(leader_col) or "").strip() if leader_col else "",
-                        "latest_price": round(_safe_float_text(rec.get(latest_col), 0.0), 4) if latest_col else 0.0,
-                        "change_amount": round(_safe_float_text(rec.get(change_col), 0.0), 4) if change_col else 0.0,
-                        "total_mv": round(_safe_float_text(rec.get(total_mv_col), 0.0), 2) if total_mv_col else 0.0,
+                        "source": "eastmoney_push2_industry_realtime",
+                        "industry_code": _normalize_industry_board_code(rec.get("board_code")),
+                        "leader_name": str(rec.get("leader_name") or "").strip(),
+                        "leader_code": str(rec.get("leader_code") or "").strip(),
+                        "leader_ts_code": str(rec.get("leader_ts_code") or "").strip(),
+                        "latest_price": round(_safe_float_text(rec.get("latest_price"), 0.0), 4),
+                        "change_amount": round(_safe_float_text(rec.get("change_amount"), 0.0), 4),
+                        "total_mv": round(_safe_float_text(rec.get("total_mv"), 0.0), 2),
                         "updated_at": int(fetched_at),
                         "updated_at_iso": datetime.datetime.fromtimestamp(fetched_at).isoformat(timespec="seconds"),
                     }
@@ -933,7 +882,6 @@ def _fetch_realtime_industry_snapshot_map(force_refresh: bool = False) -> tuple[
         return dict(snapshot_map), error_text, fetched_at
 
     return {}, error_text, fetched_at
-
 
 def _load_concept_board_maps(
     data_conn: duckdb.DuckDBPyConnection,
@@ -1449,17 +1397,6 @@ def _safe_float_text(value: object, default: float = 0.0) -> float:
         return float(default)
 
 
-def _call_akshare_quiet(func, *args, **kwargs):
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="A value is trying to be set on a copy of a slice from a DataFrame.*",
-            category=_SettingWithCopyWarning,
-            module=r"akshare\.stock\.stock_board_concept_em",
-        )
-        return func(*args, **kwargs)
-
-
 def _ensure_akshare_runtime_patch() -> None:
     global _concept_flow_patch_ready
     if _concept_flow_patch_ready:
@@ -1515,7 +1452,7 @@ def _fetch_concept_fund_flow_rows(force_refresh: bool = False) -> tuple[list[dic
             outflow_amt_col = _pick_df_column(columns, "流出资金", "今日流出资金")
             company_count_col = _pick_df_column(columns, "公司家数", "成分股数量", "个股数")
             leader_col = _pick_df_column(columns, "领涨股", "领涨股票", "领涨股名称")
-            leader_pct_col = _pick_df_column(columns, "领涨股-涨跌幅", "领涨股票-涨跌幅", "领涨股涨跌幅")
+            leader_pct_col = _pick_df_column(columns, "领涨股涨跌幅", "领涨股票-涨跌幅", "领涨股涨跌")
             if not concept_col:
                 raise RuntimeError(f"概念资金流向字段缺少名称列: {columns}")
 
@@ -3130,6 +3067,36 @@ def tick_provider_info():
     return {"name": p.name, "display_name": p.display_name}
 def realtime_ui_config():
     cfg = dict(REALTIME_UI_CONFIG or {})
+    exit_cfg = dict((POOL1_SIGNAL_CONFIG or {}).get("exit") or {})
+    exit_anchor_cfg = dict((POOL1_SIGNAL_CONFIG or {}).get("exit_anchor") or {})
+    cfg["pool1_exit_ui"] = {
+        "enabled": bool(exit_cfg.get("enabled", True)),
+        "min_hold_days": round(float(exit_cfg.get("min_hold_days", 14.0) or 14.0), 2),
+        "long_hold_days": round(float(exit_cfg.get("long_hold_days", 14.0) or 14.0), 2),
+        "long_hold_min_confirm": int(exit_cfg.get("long_hold_min_confirm", 3) or 3),
+        "allow_early_risk_exit": bool(exit_cfg.get("allow_early_risk_exit", True)),
+        "partial_reduce_ratio": round(float(exit_cfg.get("partial_reduce_ratio", 0.50) or 0.50), 4),
+        "beta_reduce_ratio": round(float(exit_cfg.get("beta_reduce_ratio", 0.33) or 0.33), 4),
+        "observe_reduce_ratio": round(float(exit_cfg.get("observe_reduce_ratio", 0.25) or 0.25), 4),
+        "atr_low_pct": round(float(exit_cfg.get("atr_low_pct", 0.020) or 0.020), 4),
+        "atr_high_pct": round(float(exit_cfg.get("atr_high_pct", 0.045) or 0.045), 4),
+        "atr_low_extra_confirm": int(exit_cfg.get("atr_low_extra_confirm", 1) or 1),
+        "atr_high_relax_confirm": int(exit_cfg.get("atr_high_relax_confirm", 1) or 1),
+        "bid_ask_weak_ratio": round(float(exit_cfg.get("bid_ask_weak_ratio", 0.95) or 0.95), 4),
+        "big_net_outflow_bps_th": round(float(exit_cfg.get("big_net_outflow_bps_th", -80) or -80), 2),
+        "super_net_outflow_bps_th": round(float(exit_cfg.get("super_net_outflow_bps_th", -120) or -120), 2),
+        "entry_cost_break_pct": round(float(exit_anchor_cfg.get("entry_cost_break_pct", 1.20) or 1.20), 4),
+        "entry_avwap_break_pct": round(float(exit_anchor_cfg.get("entry_avwap_break_pct", 0.35) or 0.35), 4),
+        "entry_avwap_reduce_ratio": round(float(exit_anchor_cfg.get("entry_avwap_reduce_ratio", 1.00) or 1.00), 4),
+        "breakout_avwap_reduce_ratio": round(float(exit_anchor_cfg.get("breakout_avwap_reduce_ratio", 0.50) or 0.50), 4),
+        "event_avwap_reduce_ratio": round(float(exit_anchor_cfg.get("event_avwap_reduce_ratio", 0.40) or 0.40), 4),
+        "session_avwap_reduce_ratio": round(float(exit_anchor_cfg.get("session_avwap_reduce_ratio", 0.20) or 0.20), 4),
+        "entry_cost_reduce_ratio": round(float(exit_anchor_cfg.get("entry_cost_reduce_ratio", 0.25) or 0.25), 4),
+        "avwap_soft_weak_reduce_ratio": round(float(exit_anchor_cfg.get("avwap_soft_weak_reduce_ratio", 0.15) or 0.15), 4),
+        "intraday_avwap_min_bars": int(exit_anchor_cfg.get("intraday_avwap_min_bars", 8) or 8),
+        "session_avwap_enabled": bool(exit_anchor_cfg.get("session_avwap_enabled", True)),
+        "timing_clear_avwap_flow_required": bool(exit_anchor_cfg.get("timing_clear_avwap_flow_required", True)),
+    }
     rebuild_cfg = dict((POOL1_SIGNAL_CONFIG or {}).get("rebuild") or {})
     cfg["pool1_rebuild_ui"] = {
         "enabled": bool(rebuild_cfg.get("enabled", False)),
@@ -3265,6 +3232,289 @@ def pool1_position_summary():
         "storage": storage or {},
         "holdings": holdings_detail[:50],
     }
+
+
+def _parse_history_snapshot_json(raw) -> dict | None:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            return None
+    return None
+
+
+def _compact_positive_rebuild_entry(
+    quality_obj: Optional[dict],
+    *,
+    signal_obj: Optional[dict] = None,
+    source: str = "",
+) -> dict | None:
+    if not isinstance(quality_obj, dict) or not quality_obj:
+        return None
+    signal_data = signal_obj if isinstance(signal_obj, dict) else {}
+    triggered_at = int(signal_data.get("triggered_at", 0) or 0)
+    strength = signal_data.get("strength")
+    try:
+        signal_strength = round(float(strength), 1) if strength is not None else None
+    except Exception:
+        signal_strength = None
+    score = quality_obj.get("recover_after_rebuild_score")
+    net_edge = quality_obj.get("net_executable_edge_bps")
+    temp_ratio = quality_obj.get("temp_inventory_ratio")
+    reverse_room = quality_obj.get("reverse_room_ratio_after")
+    try:
+        score = int(round(float(score))) if score is not None else None
+    except Exception:
+        score = None
+    try:
+        net_edge = round(float(net_edge), 2) if net_edge is not None else None
+    except Exception:
+        net_edge = None
+    try:
+        temp_ratio = round(float(temp_ratio), 4) if temp_ratio is not None else None
+    except Exception:
+        temp_ratio = None
+    try:
+        reverse_room = round(float(reverse_room), 4) if reverse_room is not None else None
+    except Exception:
+        reverse_room = None
+    return {
+        "source": str(source or ""),
+        "triggered_at": int(triggered_at),
+        "triggered_at_iso": datetime.datetime.fromtimestamp(triggered_at).isoformat() if triggered_at > 0 else None,
+        "signal_strength": signal_strength,
+        "observe_only": bool(quality_obj.get("observe_only", False)),
+        "quality_pass": bool(quality_obj.get("quality_pass", False)),
+        "recover_after_rebuild_score": score,
+        "recover_after_rebuild_min_score": quality_obj.get("recover_after_rebuild_min_score"),
+        "expected_edge_bps": quality_obj.get("expected_edge_bps"),
+        "net_executable_edge_bps": net_edge,
+        "min_net_executable_edge_bps": quality_obj.get("min_net_executable_edge_bps"),
+        "temp_inventory_ratio": temp_ratio,
+        "reverse_room_ratio_after": reverse_room,
+        "anchor_cost_raise_bps_est": quality_obj.get("anchor_cost_raise_bps_est"),
+        "observe_reasons": list(quality_obj.get("observe_reasons") or []) if isinstance(quality_obj.get("observe_reasons"), list) else [],
+        "recovery_confirms": list(quality_obj.get("recovery_confirms") or []) if isinstance(quality_obj.get("recovery_confirms"), list) else [],
+        "continuation_risks": list(quality_obj.get("continuation_risks") or []) if isinstance(quality_obj.get("continuation_risks"), list) else [],
+        "inventory_warnings": list(quality_obj.get("inventory_warnings") or []) if isinstance(quality_obj.get("inventory_warnings"), list) else [],
+    }
+
+
+def _extract_live_positive_rebuild_entry(entry: Optional[dict]) -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+    signals = entry.get("signals")
+    if not isinstance(signals, list):
+        return None
+    best: dict | None = None
+    best_ts = -1
+    best_strength = -1.0
+    for item in signals:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "positive_t":
+            continue
+        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        quality_obj = details.get("positive_rebuild_quality") if isinstance(details.get("positive_rebuild_quality"), dict) else {}
+        compact = _compact_positive_rebuild_entry(quality_obj, signal_obj=item, source="live_cache")
+        if not compact:
+            continue
+        ts_val = int(compact.get("triggered_at", 0) or 0)
+        strength_val = float(compact.get("signal_strength") or 0.0)
+        if ts_val > best_ts or (ts_val == best_ts and strength_val >= best_strength):
+            best = compact
+            best_ts = ts_val
+            best_strength = strength_val
+    return best
+
+
+def _aggregate_positive_rebuild_entries(entries: list[dict]) -> dict:
+    usable = [dict(x) for x in entries if isinstance(x, dict)]
+    score_vals = [float(x.get("recover_after_rebuild_score")) for x in usable if x.get("recover_after_rebuild_score") is not None]
+    net_edge_vals = [float(x.get("net_executable_edge_bps")) for x in usable if x.get("net_executable_edge_bps") is not None]
+    temp_ratio_vals = [float(x.get("temp_inventory_ratio")) for x in usable if x.get("temp_inventory_ratio") is not None]
+    reverse_room_vals = [float(x.get("reverse_room_ratio_after")) for x in usable if x.get("reverse_room_ratio_after") is not None]
+    reason_counter: Counter[str] = Counter()
+    confirm_counter: Counter[str] = Counter()
+    risk_counter: Counter[str] = Counter()
+    inventory_counter: Counter[str] = Counter()
+    pass_count = 0
+    observe_count = 0
+    for item in usable:
+        if bool(item.get("quality_pass", False)):
+            pass_count += 1
+        if bool(item.get("observe_only", False)):
+            observe_count += 1
+        reason_counter.update(str(x) for x in (item.get("observe_reasons") or []) if str(x or "").strip())
+        confirm_counter.update(str(x) for x in (item.get("recovery_confirms") or []) if str(x or "").strip())
+        risk_counter.update(str(x) for x in (item.get("continuation_risks") or []) if str(x or "").strip())
+        inventory_counter.update(str(x) for x in (item.get("inventory_warnings") or []) if str(x or "").strip())
+
+    def _top(counter: Counter[str], limit: int = 5) -> list[dict]:
+        return [{"reason": k, "count": int(v)} for k, v in counter.most_common(limit)]
+
+    total = len(usable)
+    return {
+        "sample_count": int(total),
+        "quality_pass_count": int(pass_count),
+        "observe_only_count": int(observe_count),
+        "quality_pass_rate": round((pass_count / total), 4) if total > 0 else None,
+        "observe_only_rate": round((observe_count / total), 4) if total > 0 else None,
+        "avg_recovery_score": round((sum(score_vals) / len(score_vals)), 2) if score_vals else None,
+        "avg_net_executable_edge_bps": round((sum(net_edge_vals) / len(net_edge_vals)), 2) if net_edge_vals else None,
+        "avg_temp_inventory_ratio": round((sum(temp_ratio_vals) / len(temp_ratio_vals)), 4) if temp_ratio_vals else None,
+        "avg_reverse_room_ratio_after": round((sum(reverse_room_vals) / len(reverse_room_vals)), 4) if reverse_room_vals else None,
+        "top_observe_reasons": _top(reason_counter),
+        "top_recovery_confirms": _top(confirm_counter),
+        "top_continuation_risks": _top(risk_counter),
+        "top_inventory_warnings": _top(inventory_counter),
+    }
+
+
+def pool2_t0_inventory_summary():
+    provider = get_tick_provider()
+    with _ro_conn_ctx() as conn:
+        rows = conn.execute(
+            """
+            SELECT ts_code, name, industry, note
+            FROM monitor_pools
+            WHERE pool_id = 2
+            ORDER BY sort_order, added_at
+            """
+        ).fetchall()
+    storage = None
+    try:
+        got = provider.get_pool2_t0_inventory_storage_status()
+        if isinstance(got, dict):
+            storage = got
+    except Exception:
+        storage = None
+    items: list[dict] = []
+    ready_count = 0
+    base_qty_sum = 0
+    tradable_qty_sum = 0
+    reserve_qty_sum = 0
+    positive_qty_sum = 0
+    reverse_qty_sum = 0
+    cash_sum = 0.0
+    live_positive_rebuild_entries: list[dict] = []
+    for r in rows:
+        ts_code = str(r[0] or "")
+        name = str(r[1] or "")
+        industry = str(r[2] or "")
+        note = str(r[3] or "")
+        state = {}
+        tick = {}
+        live_signal_entry = None
+        try:
+            got = provider.get_pool2_t0_inventory_state(ts_code)
+            if isinstance(got, dict):
+                state = got
+        except Exception:
+            state = {}
+        try:
+            got_tick = provider.get_tick(ts_code)
+            if isinstance(got_tick, dict):
+                tick = got_tick
+        except Exception:
+            tick = {}
+        try:
+            got_signal_entry = provider.get_cached_signals(ts_code)
+            if isinstance(got_signal_entry, dict):
+                live_signal_entry = got_signal_entry
+        except Exception:
+            live_signal_entry = None
+        overnight_base_qty = int(state.get("overnight_base_qty", 0) or 0)
+        tradable_t_qty = int(state.get("tradable_t_qty", 0) or 0)
+        reserve_qty = int(state.get("reserve_qty", 0) or 0)
+        today_positive_t_qty = int(state.get("today_positive_t_qty", 0) or 0)
+        today_reverse_t_qty = int(state.get("today_reverse_t_qty", 0) or 0)
+        cash_available_for_t = round(float(state.get("cash_available_for_t", 0.0) or 0.0), 4)
+        inventory_anchor_cost = round(float(state.get("inventory_anchor_cost", 0.0) or 0.0), 4)
+        today_action_log = list(state.get("today_action_log") or []) if isinstance(state.get("today_action_log"), list) else []
+        state_ready = bool(state.get("state_ready", False))
+        if state_ready:
+            ready_count += 1
+        base_qty_sum += overnight_base_qty
+        tradable_qty_sum += tradable_t_qty
+        reserve_qty_sum += reserve_qty
+        positive_qty_sum += today_positive_t_qty
+        reverse_qty_sum += today_reverse_t_qty
+        cash_sum += cash_available_for_t
+        live_positive_rebuild = _extract_live_positive_rebuild_entry(live_signal_entry)
+        if live_positive_rebuild:
+            live_positive_rebuild_entries.append(live_positive_rebuild)
+        items.append(
+            {
+                "ts_code": ts_code,
+                "name": name,
+                "industry": industry,
+                "note": note,
+                "price": round(float(tick.get("price", 0.0) or 0.0), 4),
+                "pct_chg": round(float(tick.get("pct_chg", 0.0) or 0.0), 4),
+                "tick_source": str(tick.get("source") or ""),
+                "trade_date": str(state.get("trade_date") or ""),
+                "updated_at": int(state.get("updated_at", 0) or 0),
+                "updated_at_iso": datetime.datetime.fromtimestamp(int(state.get("updated_at", 0) or 0)).isoformat() if int(state.get("updated_at", 0) or 0) > 0 else None,
+                "overnight_base_qty": overnight_base_qty,
+                "tradable_t_qty": tradable_t_qty,
+                "remaining_tradable_t_qty": int(state.get("remaining_tradable_t_qty", tradable_t_qty) or tradable_t_qty),
+                "reserve_qty": reserve_qty,
+                "today_t_count": int(state.get("today_t_count", 0) or 0),
+                "today_positive_t_qty": today_positive_t_qty,
+                "today_reverse_t_qty": today_reverse_t_qty,
+                "cash_available_for_t": cash_available_for_t,
+                "inventory_anchor_cost": inventory_anchor_cost,
+                "last_signal_at": int(state.get("last_signal_at", 0) or 0),
+                "last_signal_type": str(state.get("last_signal_type") or ""),
+                "last_signal_price": round(float(state.get("last_signal_price", 0.0) or 0.0), 4),
+                "last_action_qty": int(state.get("last_action_qty", 0) or 0),
+                "last_action_mode": str(state.get("last_action_mode") or ""),
+                "last_action_role": str(state.get("last_action_role") or ""),
+                "today_action_log": today_action_log[-20:],
+                "today_action_count": len(today_action_log),
+                "last_reset_at": int(state.get("last_reset_at", 0) or 0),
+                "signal_seq": int(state.get("signal_seq", 0) or 0),
+                "lot_size": int(state.get("lot_size", 0) or 0),
+                "max_t_count_per_day": int(state.get("max_t_count_per_day", 0) or 0),
+                "state_ready": state_ready,
+                "live_positive_rebuild": live_positive_rebuild,
+            }
+        )
+    items.sort(
+        key=lambda x: (
+            0 if bool(x.get("state_ready")) else 1,
+            -int(x.get("overnight_base_qty", 0) or 0),
+            str(x.get("ts_code") or ""),
+        )
+    )
+    total = len(items)
+    live_positive_rebuild_summary = _aggregate_positive_rebuild_entries(live_positive_rebuild_entries)
+    return {
+        "pool_id": 2,
+        "provider": provider.name,
+        "checked_at": datetime.datetime.now().isoformat(),
+        "storage": storage or {},
+        "summary": {
+            "member_count": int(total),
+            "state_ready_count": int(ready_count),
+            "state_ready_ratio": round((ready_count / total), 4) if total > 0 else 0.0,
+            "base_qty_sum": int(base_qty_sum),
+            "tradable_qty_sum": int(tradable_qty_sum),
+            "reserve_qty_sum": int(reserve_qty_sum),
+            "today_positive_qty_sum": int(positive_qty_sum),
+            "today_reverse_qty_sum": int(reverse_qty_sum),
+            "cash_available_sum": round(cash_sum, 4),
+            "live_positive_rebuild": live_positive_rebuild_summary,
+        },
+        "data": items,
+    }
+
+
 def pool1_decision_summary():
     provider = get_tick_provider()
     trend_days = 5
@@ -3412,7 +3662,7 @@ def pool1_decision_summary():
             "ts_code": str(row.get("ts_code") or ""),
             "name": str(row.get("name") or ""),
             "decision": str(row.get("pool1_decision") or "observe"),
-            "decision_label": str(row.get("pool1_decision_label") or "建议观望"),
+            "decision_label": str(row.get("pool1_decision_label") or "寤鸿瑙傛湜"),
             "decision_reason": str(row.get("pool1_decision_reason") or ""),
             "decision_strength": round(strength, 1),
             "decision_mode": str(row.get("pool1_decision_mode") or "neutral"),
@@ -3662,7 +3912,7 @@ def pool1_decision_summary():
                     "ts_code": ts_code,
                     "name": str(row.get("name") or ""),
                     "transition": "observe->holding",
-                    "label": "观望->持仓",
+                    "label": "瑙傛湜->鎸佷粨",
                     "at": last_buy_at,
                     "at_iso": datetime.datetime.fromtimestamp(last_buy_at).isoformat() if last_buy_at > 0 else None,
                     "signal_type": str(pos.get("last_buy_type") or ""),
@@ -3672,7 +3922,7 @@ def pool1_decision_summary():
                     "rebuild_from_partial_ratio": 0.0,
                     "current_position_status": position_status,
                     "current_decision": decision,
-                    "current_decision_label": str(row.get("pool1_decision_label") or "建议观望"),
+                    "current_decision_label": str(row.get("pool1_decision_label") or "寤鸿瑙傛湜"),
                     "current_decision_mode": mode,
                     "current_decision_strength": round(float(row.get("pool1_decision_strength", 0.0) or 0.0), 1),
                     "current_signal_types": list(row.get("pool1_decision_signal_types") or []),
@@ -3709,7 +3959,7 @@ def pool1_decision_summary():
                     "current_position_status": position_status,
                     "current_position_ratio": round(float(row.get("pool1_position_ratio", 0.0) or 0.0), 4),
                     "current_decision": decision,
-                    "current_decision_label": str(row.get("pool1_decision_label") or "建议观望"),
+                    "current_decision_label": str(row.get("pool1_decision_label") or "寤鸿瑙傛湜"),
                     "current_decision_mode": mode,
                     "current_decision_strength": round(float(row.get("pool1_decision_strength", 0.0) or 0.0), 1),
                     "current_signal_types": list(row.get("pool1_decision_signal_types") or []),
@@ -3732,7 +3982,7 @@ def pool1_decision_summary():
                     "ts_code": ts_code,
                     "name": str(row.get("name") or ""),
                     "transition": "holding->holding(partial_chain)" if reduce_streak >= 2 else "holding->holding(partial)",
-                    "label": "连续减仓" if reduce_streak >= 2 else "持仓->减仓",
+                    "label": "杩炵画鍑忎粨" if reduce_streak >= 2 else "鎸佷粨->鍑忎粨",
                     "at": last_reduce_at,
                     "at_iso": datetime.datetime.fromtimestamp(last_reduce_at).isoformat() if last_reduce_at > 0 else None,
                     "signal_type": str(pos.get("last_reduce_type") or ""),
@@ -3745,7 +3995,7 @@ def pool1_decision_summary():
                     "current_position_status": position_status,
                     "current_position_ratio": round(float(row.get("pool1_position_ratio", 0.0) or 0.0), 4),
                     "current_decision": decision,
-                    "current_decision_label": str(row.get("pool1_decision_label") or "建议观望"),
+                    "current_decision_label": str(row.get("pool1_decision_label") or "寤鸿瑙傛湜"),
                     "current_decision_mode": mode,
                     "current_decision_strength": round(float(row.get("pool1_decision_strength", 0.0) or 0.0), 1),
                     "current_signal_types": list(row.get("pool1_decision_signal_types") or []),
@@ -3780,7 +4030,7 @@ def pool1_decision_summary():
                     "exit_reduce_avwap_tier": str(pos.get("last_exit_reduce_avwap_tier") or ""),
                     "current_position_status": position_status,
                     "current_decision": decision,
-                    "current_decision_label": str(row.get("pool1_decision_label") or "建议观望"),
+                    "current_decision_label": str(row.get("pool1_decision_label") or "寤鸿瑙傛湜"),
                     "current_decision_mode": mode,
                     "current_decision_strength": round(float(row.get("pool1_decision_strength", 0.0) or 0.0), 1),
                     "current_signal_types": list(row.get("pool1_decision_signal_types") or []),
@@ -3911,6 +4161,54 @@ class MemberItem(BaseModel):
     name: str
     industry: Optional[str] = None
     note: Optional[str] = None
+
+
+class Pool2InventoryItem(BaseModel):
+    overnight_base_qty: Optional[int] = None
+    tradable_t_qty: Optional[int] = None
+    reserve_qty: Optional[int] = None
+    today_t_count: Optional[int] = None
+    today_positive_t_qty: Optional[int] = None
+    today_reverse_t_qty: Optional[int] = None
+    cash_available_for_t: Optional[float] = None
+    inventory_anchor_cost: Optional[float] = None
+    reset_today: bool = False
+
+
+def update_pool2_t0_inventory(ts_code: str, item: Pool2InventoryItem):
+    code = str(ts_code or "").strip().upper()
+    if not code:
+        raise HTTPException(400, "ts_code 不能为空")
+    with _ro_conn_ctx() as conn:
+        row = conn.execute(
+            """
+            SELECT ts_code, name
+            FROM monitor_pools
+            WHERE pool_id = 2 AND ts_code = ?
+            LIMIT 1
+            """,
+            [code],
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, f"{code} 不在 Pool2")
+    provider = get_tick_provider()
+    payload = item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item.dict(exclude_none=True)
+    updated = None
+    try:
+        updated = provider.update_pool2_t0_inventory_state(code, payload)
+    except Exception as e:
+        raise HTTPException(500, f"更新 Pool2 底仓状态失败: {e}")
+    if not isinstance(updated, dict):
+        raise HTTPException(500, "更新 Pool2 底仓状态失败: provider 未返回有效结果")
+    return {
+        "ok": True,
+        "pool_id": 2,
+        "ts_code": code,
+        "name": str(row[1] or ""),
+        "item": updated,
+    }
+
+
 def get_members(pool_id: int):
     if pool_id not in POOLS:
         raise HTTPException(404, f"pool_id {pool_id} not found")
@@ -4239,9 +4537,28 @@ def get_t0_quality_summary(hours: int = Query(24, ge=1, le=168)):
             ORDER BY ts_code, triggered_at
             """
         ).fetchall()
+        pos_rows = conn.execute(
+            f"""
+            SELECT details_json
+            FROM signal_history
+            WHERE pool_id = 2
+              AND signal_type = 'positive_t'
+              AND triggered_at >= CURRENT_TIMESTAMP - INTERVAL '{h} hours'
+            ORDER BY triggered_at DESC
+            """
+        ).fetchall()
         df_signal = pd.DataFrame(sig_rows, columns=["ts_code", "signal_type", "triggered_at"])
         churn = _calc_churn_stats(df_signal, hours=h)
-        return _build_t0_quality_payload(df_quality, hours=h, churn=churn)
+        positive_rebuild_entries: list[dict] = []
+        for pr in pos_rows:
+            snapshot = _parse_history_snapshot_json(pr[0] if pr else None)
+            quality_obj = snapshot.get("positive_rebuild_quality") if isinstance(snapshot, dict) and isinstance(snapshot.get("positive_rebuild_quality"), dict) else {}
+            compact = _compact_positive_rebuild_entry(quality_obj, signal_obj=snapshot, source="signal_history")
+            if compact:
+                positive_rebuild_entries.append(compact)
+        payload = _build_t0_quality_payload(df_quality, hours=h, churn=churn)
+        payload["positive_rebuild_quality"] = _aggregate_positive_rebuild_entries(positive_rebuild_entries)
+        return payload
 def get_t0_drift_status(days: int = Query(3, ge=1, le=30)):
     with _ro_conn_ctx() as conn:
         d = int(days)
@@ -4353,3 +4670,5 @@ def get_t0_drift_status(days: int = Query(3, ge=1, le=30)):
             "alerts": sum(1 for r in rows if bool(r[8])),
             "quality_split_by_channel_source": quality_split,
         }
+
+

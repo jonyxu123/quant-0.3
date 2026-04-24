@@ -39,12 +39,70 @@ type Pool1RebuildUiConfig = {
   allowRightSideBreakout: boolean
 }
 
+type Pool1ExitUiConfig = {
+  enabled: boolean
+  minHoldDays: number
+  longHoldDays: number
+  longHoldMinConfirm: number
+  allowEarlyRiskExit: boolean
+  partialReduceRatio: number
+  betaReduceRatio: number
+  observeReduceRatio: number
+  atrLowPct: number
+  atrHighPct: number
+  atrLowExtraConfirm: number
+  atrHighRelaxConfirm: number
+  bidAskWeakRatio: number
+  bigNetOutflowBpsTh: number
+  superNetOutflowBpsTh: number
+  entryCostBreakPct: number
+  entryAvwapBreakPct: number
+  entryAvwapReduceRatio: number
+  breakoutAvwapReduceRatio: number
+  eventAvwapReduceRatio: number
+  sessionAvwapReduceRatio: number
+  entryCostReduceRatio: number
+  avwapSoftWeakReduceRatio: number
+  intradayAvwapMinBars: number
+  sessionAvwapEnabled: boolean
+  timingClearAvwapFlowRequired: boolean
+}
+
 const POOL1_OBSERVE_UI_DEFAULT: Pool1ObserveUiThresholds = {
   observePollSec: 10,
   staleWarnSec: 30,
   staleErrorSec: 120,
   sampleWarnMin: 50,
   sampleRecommendMin: 200,
+}
+
+const POOL1_EXIT_UI_DEFAULT: Pool1ExitUiConfig = {
+  enabled: true,
+  minHoldDays: 14,
+  longHoldDays: 14,
+  longHoldMinConfirm: 3,
+  allowEarlyRiskExit: true,
+  partialReduceRatio: 0.50,
+  betaReduceRatio: 0.33,
+  observeReduceRatio: 0.25,
+  atrLowPct: 0.020,
+  atrHighPct: 0.045,
+  atrLowExtraConfirm: 1,
+  atrHighRelaxConfirm: 1,
+  bidAskWeakRatio: 0.95,
+  bigNetOutflowBpsTh: -80,
+  superNetOutflowBpsTh: -120,
+  entryCostBreakPct: 1.20,
+  entryAvwapBreakPct: 0.35,
+  entryAvwapReduceRatio: 1.00,
+  breakoutAvwapReduceRatio: 0.50,
+  eventAvwapReduceRatio: 0.40,
+  sessionAvwapReduceRatio: 0.20,
+  entryCostReduceRatio: 0.25,
+  avwapSoftWeakReduceRatio: 0.15,
+  intradayAvwapMinBars: 8,
+  sessionAvwapEnabled: true,
+  timingClearAvwapFlowRequired: true,
 }
 
 const POOL1_REBUILD_UI_DEFAULT: Pool1RebuildUiConfig = {
@@ -70,6 +128,13 @@ let _uiConfigCacheAt = 0
 const OBSERVE_FAIL_WARN_COUNT = 3
 const FAST_SLOW_WARN_RATIO = 0.05
 const FAST_SLOW_CRIT_RATIO = 0.10
+const BOARD_CATALOG_TABLE_KEYS = ['concept', 'concept_detail', 'em_industry_board', 'em_industry_member'] as const
+const BOARD_CATALOG_TABLE_LABELS: Record<(typeof BOARD_CATALOG_TABLE_KEYS)[number], string> = {
+  concept: '概念目录',
+  concept_detail: '概念成分股',
+  em_industry_board: '行业目录',
+  em_industry_member: '行业成分股',
+}
 
 /* ===== 颜色 ===== */
 const C = {
@@ -140,6 +205,42 @@ interface QualityByPhase {
 }
 interface HorizonMetric { count: number; precision: number | null; avg_ret_bps: number | null; avg_mfe_bps: number | null; avg_mae_bps: number | null }
 interface SignalChurn { flip_count: number; sample_count: number; symbols: number; churn_ratio: number | null; flips_per_hour: number | null }
+interface PositiveRebuildReasonCount { reason: string; count: number }
+interface PositiveRebuildSummary {
+  sample_count: number
+  quality_pass_count: number
+  observe_only_count: number
+  quality_pass_rate?: number | null
+  observe_only_rate?: number | null
+  avg_recovery_score?: number | null
+  avg_net_executable_edge_bps?: number | null
+  avg_temp_inventory_ratio?: number | null
+  avg_reverse_room_ratio_after?: number | null
+  top_observe_reasons?: PositiveRebuildReasonCount[]
+  top_recovery_confirms?: PositiveRebuildReasonCount[]
+  top_continuation_risks?: PositiveRebuildReasonCount[]
+  top_inventory_warnings?: PositiveRebuildReasonCount[]
+}
+interface LivePositiveRebuild {
+  source?: string
+  triggered_at?: number
+  triggered_at_iso?: string | null
+  signal_strength?: number | null
+  observe_only?: boolean
+  quality_pass?: boolean
+  recover_after_rebuild_score?: number | null
+  recover_after_rebuild_min_score?: number | null
+  expected_edge_bps?: number | null
+  net_executable_edge_bps?: number | null
+  min_net_executable_edge_bps?: number | null
+  temp_inventory_ratio?: number | null
+  reverse_room_ratio_after?: number | null
+  anchor_cost_raise_bps_est?: number | null
+  observe_reasons?: string[]
+  recovery_confirms?: string[]
+  continuation_risks?: string[]
+  inventory_warnings?: string[]
+}
 interface QualitySummary {
   hours: number
   total_signals: number
@@ -163,6 +264,7 @@ interface QualitySummary {
     avg_ret_bps: number | null
   }>
   signal_churn?: SignalChurn
+  positive_rebuild_quality?: PositiveRebuildSummary
   message?: string
 }
 interface DriftFeature { psi: number | null; ks_stat: number | null; severity: string; drifted: boolean; precision_drop: number | null; alerted: boolean }
@@ -186,6 +288,96 @@ interface DriftStatus {
   }>
   message?: string
 }
+interface Pool2InventoryStorageStatus {
+  enabled?: boolean
+  redis_enabled?: boolean
+  redis_ready?: boolean
+  file_fallback?: boolean
+  source?: string
+}
+interface Pool2T0ActionLogItem {
+  at?: number
+  at_iso?: string
+  trade_date?: string
+  signal_type?: string
+  action_mode?: string
+  action_role?: string
+  price?: number
+  qty?: number
+  remaining_tradable_t_qty?: number
+  today_t_count?: number
+  signal_seq?: number
+}
+interface Pool2InventoryRow {
+  ts_code: string
+  name: string
+  industry?: string
+  note?: string
+  price?: number
+  pct_chg?: number
+  tick_source?: string
+  trade_date?: string
+  updated_at?: number
+  updated_at_iso?: string | null
+  overnight_base_qty: number
+  tradable_t_qty: number
+  remaining_tradable_t_qty?: number
+  reserve_qty: number
+  today_t_count: number
+  today_positive_t_qty: number
+  today_reverse_t_qty: number
+  cash_available_for_t: number
+  inventory_anchor_cost: number
+  last_signal_at?: number
+  last_signal_type?: string
+  last_signal_price?: number
+  last_action_qty?: number
+  last_action_mode?: string
+  last_action_role?: string
+  today_action_log?: Pool2T0ActionLogItem[]
+  today_action_count?: number
+  last_reset_at?: number
+  signal_seq?: number
+  lot_size?: number
+  max_t_count_per_day?: number
+  state_ready?: boolean
+  live_positive_rebuild?: LivePositiveRebuild | null
+}
+interface Pool2InventorySummaryResp {
+  pool_id: number
+  provider: string
+  checked_at?: string
+  storage?: Pool2InventoryStorageStatus
+  summary?: {
+    member_count: number
+    state_ready_count: number
+    state_ready_ratio: number
+    base_qty_sum: number
+    tradable_qty_sum: number
+    reserve_qty_sum: number
+    today_positive_qty_sum: number
+    today_reverse_qty_sum: number
+    cash_available_sum: number
+    live_positive_rebuild?: PositiveRebuildSummary
+  }
+  data: Pool2InventoryRow[]
+}
+type Pool2InventoryDraft = {
+  overnight_base_qty?: string
+  tradable_t_qty?: string
+  reserve_qty?: string
+  cash_available_for_t?: string
+  inventory_anchor_cost?: string
+}
+type Pool2InventoryFocusTarget =
+  | 'row'
+  | 'overnight_base_qty'
+  | 'tradable_t_qty'
+  | 'reserve_qty'
+  | 'cash_available_for_t'
+  | 'inventory_anchor_cost'
+  | 'today_status'
+  | 'reset_today_button'
 interface Pool1ObserveStats {
   screen_total: number
   screen_pass: number
@@ -555,6 +747,33 @@ interface ConceptSnapshotStatusResp {
   runtime?: ConceptSnapshotStateNode | null
   redis?: ConceptSnapshotStateNode | null
 }
+interface BoardCatalogTableStatus {
+  updated_at?: number | null
+  updated_at_iso?: string | null
+  count?: number
+  fresh?: boolean
+}
+interface BoardCatalogStatusResp {
+  ok: boolean
+  checked_at: string
+  enabled?: boolean
+  refresher_started?: boolean
+  schedule?: string
+  startup_cutoff_hhmm?: number
+  overnight_grace?: boolean
+  last_success_date?: string | null
+  stale?: boolean
+  count_error?: string | null
+  tables?: Record<string, BoardCatalogTableStatus>
+}
+interface BoardCatalogRefreshResp {
+  ok: boolean
+  checked_at: string
+  force: boolean
+  message?: string
+  before?: BoardCatalogStatusResp
+  after?: BoardCatalogStatusResp
+}
 interface IndustryMappingCoverageItem {
   pool_id: number
   ts_code: string
@@ -615,6 +834,34 @@ interface RealtimeUiConfigResp {
       stale_error_sec?: number
       sample_warn_min?: number
       sample_recommend_min?: number
+    }
+    pool1_exit_ui?: {
+      enabled?: boolean
+      min_hold_days?: number
+      long_hold_days?: number
+      long_hold_min_confirm?: number
+      allow_early_risk_exit?: boolean
+      partial_reduce_ratio?: number
+      beta_reduce_ratio?: number
+      observe_reduce_ratio?: number
+      atr_low_pct?: number
+      atr_high_pct?: number
+      atr_low_extra_confirm?: number
+      atr_high_relax_confirm?: number
+      bid_ask_weak_ratio?: number
+      big_net_outflow_bps_th?: number
+      super_net_outflow_bps_th?: number
+      entry_cost_break_pct?: number
+      entry_avwap_break_pct?: number
+      entry_avwap_reduce_ratio?: number
+      breakout_avwap_reduce_ratio?: number
+      event_avwap_reduce_ratio?: number
+      session_avwap_reduce_ratio?: number
+      entry_cost_reduce_ratio?: number
+      avwap_soft_weak_reduce_ratio?: number
+      intraday_avwap_min_bars?: number
+      session_avwap_enabled?: boolean
+      timing_clear_avwap_flow_required?: boolean
     }
     pool1_rebuild_ui?: {
       enabled?: boolean
@@ -2811,15 +3058,23 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [soundOn, setSoundOn] = useState(true)
   const [compact, setCompact] = useState(false)
   const [quality, setQuality] = useState<QualitySummary | null>(null)
+  const [pool2Inventory, setPool2Inventory] = useState<Pool2InventorySummaryResp | null>(null)
+  const [pool2InventoryOpen, setPool2InventoryOpen] = useState(true)
+  const [pool2InventoryLoading, setPool2InventoryLoading] = useState(false)
+  const [pool2InventoryDrafts, setPool2InventoryDrafts] = useState<Record<string, Pool2InventoryDraft>>({})
+  const [pool2InventorySaving, setPool2InventorySaving] = useState<Record<string, boolean>>({})
+  const [pool2InventoryOnlyMissing, setPool2InventoryOnlyMissing] = useState(false)
   const [qualityOpen, setQualityOpen] = useState(false)
   const [qualityHours, setQualityHours] = useState(24)
   const [drift, setDrift] = useState<DriftStatus | null>(null)
   const [pool1Observe, setPool1Observe] = useState<Pool1ObserveResp | null>(null)
   const [pool1ObserveUi, setPool1ObserveUi] = useState(POOL1_OBSERVE_UI_DEFAULT)
+  const [pool1ExitUi, setPool1ExitUi] = useState(POOL1_EXIT_UI_DEFAULT)
   const [pool1RebuildUi, setPool1RebuildUi] = useState(POOL1_REBUILD_UI_DEFAULT)
   const [pool1ObserveFailCount, setPool1ObserveFailCount] = useState(0)
   const [pool1DecisionSummary, setPool1DecisionSummary] = useState<Pool1DecisionSummaryResp | null>(null)
   const [pool1DecisionOpen, setPool1DecisionOpen] = useState(false)
+  const [pool1StrategyUiOpen, setPool1StrategyUiOpen] = useState(false)
   const [pool1DecisionFilter, setPool1DecisionFilter] = useState<'all' | 'build_actionable' | 'clear_actionable' | 'partial_actionable' | 'watch_only' | 'hold_only'>('all')
   const [pool1DecisionBoardFilter, setPool1DecisionBoardFilter] = useState('all')
   const [pool1DecisionIndustryFilter, setPool1DecisionIndustryFilter] = useState('all')
@@ -2834,6 +3089,8 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [pool1CandidateGroupSortBy, setPool1CandidateGroupSortBy] = useState<Record<string, 'default' | 'strength' | 'pct_chg' | 'holding_days'>>({})
   const [diffOpen, setDiffOpen] = useState(false)
   const [locateTsCode, setLocateTsCode] = useState('')
+  const [pool2LocateTsCode, setPool2LocateTsCode] = useState('')
+  const [pool2LocateTarget, setPool2LocateTarget] = useState<Pool2InventoryFocusTarget>('row')
   const [fastSlowDiff, setFastSlowDiff] = useState<FastSlowDiffResp | null>(null)
   const [fastSlowLoading, setFastSlowLoading] = useState(false)
   const [diffOnlyMismatch, setDiffOnlyMismatch] = useState(true)
@@ -2847,6 +3104,9 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [conceptSnapshotStatus, setConceptSnapshotStatus] = useState<ConceptSnapshotStatusResp | null>(null)
   const [conceptSnapshotLoading, setConceptSnapshotLoading] = useState(false)
   const [conceptSnapshotRefreshLoading, setConceptSnapshotRefreshLoading] = useState(false)
+  const [boardCatalogStatus, setBoardCatalogStatus] = useState<BoardCatalogStatusResp | null>(null)
+  const [boardCatalogLoading, setBoardCatalogLoading] = useState(false)
+  const [boardCatalogRefreshLoading, setBoardCatalogRefreshLoading] = useState(false)
   const [industryMappingCoverage, setIndustryMappingCoverage] = useState<IndustryMappingCoverageResp | null>(null)
   const [industryMappingCoverageLoading, setIndustryMappingCoverageLoading] = useState(false)
   const pool1ObserveReqInFlight = useRef(false)
@@ -2854,7 +3114,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const pool1DecisionReqInFlight = useRef(false)
   const pool1DecisionReqSeq = useRef(0)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const pool2InventoryRowRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const pool2InventoryFieldRefs = useRef<Record<string, HTMLElement | null>>({})
   const locateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pool2LocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pool1CandidateRef = useRef<HTMLDivElement | null>(null)
   const pool1TrajectoryRef = useRef<HTMLDivElement | null>(null)
   const trajectoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2872,7 +3135,33 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       .catch(() => {})
   }, [pool.pool_id, qualityHours])
 
+  const loadPool2Inventory = useCallback(() => {
+    if (pool.pool_id !== 2) {
+      setPool2Inventory(null)
+      return
+    }
+    setPool2InventoryLoading(true)
+    axios.get<Pool2InventorySummaryResp>(`${API}/api/realtime/pool/2/t0_inventory_summary`)
+      .then(r => setPool2Inventory(r.data || null))
+      .catch(() => {})
+      .finally(() => setPool2InventoryLoading(false))
+  }, [pool.pool_id])
+
   useEffect(() => { if (qualityOpen) loadQuality() }, [qualityOpen, loadQuality])
+
+  useEffect(() => {
+    if (pool.pool_id !== 2) return
+    loadPool2Inventory()
+    const preAuction = isPreAuctionStatus(marketStatus.status)
+    const baseMs = pool2InventoryOpen
+      ? (preAuction ? 60_000 : (marketStatus.is_open ? 15_000 : 90_000))
+      : (preAuction ? 120_000 : (marketStatus.is_open ? 45_000 : 180_000))
+    const visFactor = pageVisible ? 1 : 2
+    const timer = setInterval(() => {
+      loadPool2Inventory()
+    }, Math.max(10_000, baseMs * visFactor))
+    return () => clearInterval(timer)
+  }, [pool.pool_id, loadPool2Inventory, pool2InventoryOpen, marketStatus.is_open, marketStatus.status, pageVisible])
 
   useEffect(() => {
     const applyUiConfig = (resp: RealtimeUiConfigResp | null) => {
@@ -2884,6 +3173,37 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
           staleErrorSec: Number(observeCfg.stale_error_sec ?? POOL1_OBSERVE_UI_DEFAULT.staleErrorSec),
           sampleWarnMin: Number(observeCfg.sample_warn_min ?? POOL1_OBSERVE_UI_DEFAULT.sampleWarnMin),
           sampleRecommendMin: Number(observeCfg.sample_recommend_min ?? POOL1_OBSERVE_UI_DEFAULT.sampleRecommendMin),
+        })
+      }
+      const exitCfg = resp?.data?.pool1_exit_ui
+      if (exitCfg) {
+        setPool1ExitUi({
+          enabled: Boolean(exitCfg.enabled ?? POOL1_EXIT_UI_DEFAULT.enabled),
+          minHoldDays: Number(exitCfg.min_hold_days ?? POOL1_EXIT_UI_DEFAULT.minHoldDays),
+          longHoldDays: Number(exitCfg.long_hold_days ?? POOL1_EXIT_UI_DEFAULT.longHoldDays),
+          longHoldMinConfirm: Number(exitCfg.long_hold_min_confirm ?? POOL1_EXIT_UI_DEFAULT.longHoldMinConfirm),
+          allowEarlyRiskExit: Boolean(exitCfg.allow_early_risk_exit ?? POOL1_EXIT_UI_DEFAULT.allowEarlyRiskExit),
+          partialReduceRatio: Number(exitCfg.partial_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.partialReduceRatio),
+          betaReduceRatio: Number(exitCfg.beta_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.betaReduceRatio),
+          observeReduceRatio: Number(exitCfg.observe_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.observeReduceRatio),
+          atrLowPct: Number(exitCfg.atr_low_pct ?? POOL1_EXIT_UI_DEFAULT.atrLowPct),
+          atrHighPct: Number(exitCfg.atr_high_pct ?? POOL1_EXIT_UI_DEFAULT.atrHighPct),
+          atrLowExtraConfirm: Number(exitCfg.atr_low_extra_confirm ?? POOL1_EXIT_UI_DEFAULT.atrLowExtraConfirm),
+          atrHighRelaxConfirm: Number(exitCfg.atr_high_relax_confirm ?? POOL1_EXIT_UI_DEFAULT.atrHighRelaxConfirm),
+          bidAskWeakRatio: Number(exitCfg.bid_ask_weak_ratio ?? POOL1_EXIT_UI_DEFAULT.bidAskWeakRatio),
+          bigNetOutflowBpsTh: Number(exitCfg.big_net_outflow_bps_th ?? POOL1_EXIT_UI_DEFAULT.bigNetOutflowBpsTh),
+          superNetOutflowBpsTh: Number(exitCfg.super_net_outflow_bps_th ?? POOL1_EXIT_UI_DEFAULT.superNetOutflowBpsTh),
+          entryCostBreakPct: Number(exitCfg.entry_cost_break_pct ?? POOL1_EXIT_UI_DEFAULT.entryCostBreakPct),
+          entryAvwapBreakPct: Number(exitCfg.entry_avwap_break_pct ?? POOL1_EXIT_UI_DEFAULT.entryAvwapBreakPct),
+          entryAvwapReduceRatio: Number(exitCfg.entry_avwap_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.entryAvwapReduceRatio),
+          breakoutAvwapReduceRatio: Number(exitCfg.breakout_avwap_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.breakoutAvwapReduceRatio),
+          eventAvwapReduceRatio: Number(exitCfg.event_avwap_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.eventAvwapReduceRatio),
+          sessionAvwapReduceRatio: Number(exitCfg.session_avwap_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.sessionAvwapReduceRatio),
+          entryCostReduceRatio: Number(exitCfg.entry_cost_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.entryCostReduceRatio),
+          avwapSoftWeakReduceRatio: Number(exitCfg.avwap_soft_weak_reduce_ratio ?? POOL1_EXIT_UI_DEFAULT.avwapSoftWeakReduceRatio),
+          intradayAvwapMinBars: Number(exitCfg.intraday_avwap_min_bars ?? POOL1_EXIT_UI_DEFAULT.intradayAvwapMinBars),
+          sessionAvwapEnabled: Boolean(exitCfg.session_avwap_enabled ?? POOL1_EXIT_UI_DEFAULT.sessionAvwapEnabled),
+          timingClearAvwapFlowRequired: Boolean(exitCfg.timing_clear_avwap_flow_required ?? POOL1_EXIT_UI_DEFAULT.timingClearAvwapFlowRequired),
         })
       }
       const rebuildCfg = resp?.data?.pool1_rebuild_ui
@@ -3031,6 +3351,14 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       .finally(() => setConceptSnapshotLoading(false))
   }, [])
 
+  const loadBoardCatalogStatus = useCallback(() => {
+    setBoardCatalogLoading(true)
+    axios.get<BoardCatalogStatusResp>(`${API}/api/realtime/runtime/board_catalog_status`)
+      .then(r => setBoardCatalogStatus(r.data || null))
+      .catch(() => {})
+      .finally(() => setBoardCatalogLoading(false))
+  }, [])
+
   const loadIndustryMappingCoverage = useCallback(() => {
     setIndustryMappingCoverageLoading(true)
     axios.get(`${API}/api/realtime/runtime/industry_mapping_coverage`, {
@@ -3132,6 +3460,24 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       })
   }, [loadConceptSnapshotStatus])
 
+  const refreshBoardCatalog = useCallback((force = true) => {
+    setBoardCatalogRefreshLoading(true)
+    axios.post<BoardCatalogRefreshResp>(`${API}/api/realtime/runtime/board_catalog_refresh`, null, {
+      params: { force },
+    })
+      .then(r => {
+        const payload = r.data || null
+        if (payload?.after) {
+          setBoardCatalogStatus(payload.after)
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setBoardCatalogRefreshLoading(false)
+        loadBoardCatalogStatus()
+      })
+  }, [loadBoardCatalogStatus])
+
   useEffect(() => {
     if (!diffOpen) return
     loadFastSlowDiff()
@@ -3148,6 +3494,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   useEffect(() => {
     loadRuntimeHealth()
     loadConceptSnapshotStatus()
+    loadBoardCatalogStatus()
     loadIndustryMappingCoverage()
     const preAuction = isPreAuctionStatus(marketStatus.status)
     const baseMs = healthOpen
@@ -3157,10 +3504,11 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     const timer = setInterval(() => {
       loadRuntimeHealth()
       loadConceptSnapshotStatus()
+      loadBoardCatalogStatus()
       loadIndustryMappingCoverage()
     }, Math.max(15_000, baseMs * visFactor))
     return () => clearInterval(timer)
-  }, [loadRuntimeHealth, loadConceptSnapshotStatus, loadIndustryMappingCoverage, healthOpen, marketStatus.is_open, marketStatus.status, pageVisible])
+  }, [loadRuntimeHealth, loadConceptSnapshotStatus, loadBoardCatalogStatus, loadIndustryMappingCoverage, healthOpen, marketStatus.is_open, marketStatus.status, pageVisible])
 
   const diffSignalTypeOptions = useMemo(() => {
     const st = new Set<string>()
@@ -3408,6 +3756,200 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     axios.put(`${API}/api/realtime/pool/${pool.pool_id}/note/${ts_code}`, null, { params: { note } })
       .then(() => loadMembers()).catch(() => {})
   }
+
+  const updatePool2InventoryDraft = useCallback((ts_code: string, field: keyof Pool2InventoryDraft, value: string) => {
+    setPool2InventoryDrafts(prev => ({
+      ...prev,
+      [ts_code]: {
+        ...(prev[ts_code] || {}),
+        [field]: value,
+      },
+    }))
+  }, [])
+
+  const resetPool2InventoryDraft = useCallback((ts_code: string) => {
+    setPool2InventoryDrafts(prev => {
+      const next = { ...prev }
+      delete next[ts_code]
+      return next
+    })
+  }, [])
+
+  const savePool2InventoryRow = useCallback((row: Pool2InventoryRow, resetToday = false) => {
+    const draft = pool2InventoryDrafts[row.ts_code] || {}
+    const parseIntField = (field: keyof Pool2InventoryDraft, fallback: number) => {
+      const raw = draft[field]
+      if (raw == null || raw === '') return fallback
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : fallback
+    }
+    const parseFloatField = (field: keyof Pool2InventoryDraft, fallback: number) => {
+      const raw = draft[field]
+      if (raw == null || raw === '') return fallback
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback
+    }
+    const payload = {
+      overnight_base_qty: parseIntField('overnight_base_qty', Number(row.overnight_base_qty || 0)),
+      tradable_t_qty: parseIntField('tradable_t_qty', Number(row.tradable_t_qty || 0)),
+      reserve_qty: parseIntField('reserve_qty', Number(row.reserve_qty || 0)),
+      cash_available_for_t: parseFloatField('cash_available_for_t', Number(row.cash_available_for_t || 0)),
+      inventory_anchor_cost: parseFloatField('inventory_anchor_cost', Number(row.inventory_anchor_cost || 0)),
+      reset_today: resetToday,
+    }
+    setPool2InventorySaving(prev => ({ ...prev, [row.ts_code]: true }))
+    axios.put(`${API}/api/realtime/pool/2/t0_inventory/${row.ts_code}`, payload)
+      .then(() => {
+        resetPool2InventoryDraft(row.ts_code)
+        loadPool2Inventory()
+      })
+      .catch(err => {
+        const msg = String(err?.response?.data?.detail || err?.message || '更新失败')
+        alert(`更新 ${row.ts_code} 底仓状态失败: ${msg}`)
+      })
+      .finally(() => {
+        setPool2InventorySaving(prev => ({ ...prev, [row.ts_code]: false }))
+      })
+  }, [pool2InventoryDrafts, loadPool2Inventory, resetPool2InventoryDraft])
+
+  const pool2ActionLogCount = useMemo(() => {
+    return (pool2Inventory?.data || []).reduce((sum, row) => (
+      sum + (Array.isArray(row.today_action_log) ? row.today_action_log.length : 0)
+    ), 0)
+  }, [pool2Inventory])
+
+  const exportPool2ActionLogCsv = useCallback(() => {
+    const rows: (string | number | boolean | null | undefined)[][] = []
+    for (const item of (pool2Inventory?.data || [])) {
+      const logs = Array.isArray(item.today_action_log) ? item.today_action_log : []
+      for (const log of logs) {
+        const at = Number(log.at || 0)
+        const atIso = String(log.at_iso || (at > 0 ? new Date(at * 1000).toISOString() : ''))
+        const mode = String(log.action_mode || '')
+        const signalType = String(log.signal_type || '')
+        const actionLabel = mode === 'buy_then_sell_old' || signalType === 'positive_t'
+          ? 'positive_t'
+          : (mode === 'sell_old_then_buy_back' || signalType === 'reverse_t' ? 'reverse_t' : signalType)
+        rows.push([
+          log.trade_date || item.trade_date || '',
+          atIso,
+          item.ts_code,
+          item.name,
+          item.industry || '',
+          actionLabel,
+          signalType,
+          mode,
+          log.action_role || '',
+          log.price ?? '',
+          log.qty ?? '',
+          log.remaining_tradable_t_qty ?? '',
+          log.today_t_count ?? '',
+          log.signal_seq ?? '',
+          item.overnight_base_qty,
+          item.tradable_t_qty,
+          item.remaining_tradable_t_qty ?? item.tradable_t_qty,
+          item.reserve_qty,
+          item.today_positive_t_qty,
+          item.today_reverse_t_qty,
+          item.cash_available_for_t,
+          item.inventory_anchor_cost,
+          item.price ?? '',
+          item.pct_chg ?? '',
+        ])
+      }
+    }
+    if (rows.length <= 0) return
+    rows.sort((a, b) => String(a[1] || '').localeCompare(String(b[1] || '')) || String(a[2] || '').localeCompare(String(b[2] || '')))
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    downloadCsv(
+      `pool2_t0_action_log_${stamp}.csv`,
+      [
+        'trade_date',
+        'action_at',
+        'ts_code',
+        'name',
+        'industry',
+        'action_label',
+        'signal_type',
+        'action_mode',
+        'action_role',
+        'action_price',
+        'action_qty',
+        'remaining_tradable_t_qty',
+        'today_t_count_after',
+        'signal_seq',
+        'overnight_base_qty',
+        'tradable_t_qty_current',
+        'remaining_tradable_t_qty_current',
+        'reserve_qty',
+        'today_positive_t_qty',
+        'today_reverse_t_qty',
+        'cash_available_for_t',
+        'inventory_anchor_cost',
+        'current_price',
+        'current_pct_chg',
+      ],
+      rows,
+    )
+  }, [pool2Inventory])
+
+  const pool2InventoryRows = useMemo(() => {
+    let rows = (pool2Inventory?.data || []) as Pool2InventoryRow[]
+    if (pool2InventoryOnlyMissing) {
+      rows = rows.filter(r => !r.state_ready)
+    }
+    return rows
+  }, [pool2Inventory, pool2InventoryOnlyMissing])
+
+  const pool2InventoryMap = useMemo(() => {
+    const map = new Map<string, Pool2InventoryRow>()
+    for (const row of (pool2Inventory?.data || [])) {
+      if (row?.ts_code) map.set(String(row.ts_code), row)
+    }
+    return map
+  }, [pool2Inventory])
+
+  const openPool2InventoryRow = useCallback((ts_code: string, target: Pool2InventoryFocusTarget = 'row') => {
+    const code = String(ts_code || '').trim().toUpperCase()
+    if (!code) return
+    const row = pool2InventoryMap.get(code)
+    if (pool2InventoryOnlyMissing && row?.state_ready) {
+      setPool2InventoryOnlyMissing(false)
+    }
+    setPool2InventoryOpen(true)
+    setPool2LocateTarget(target)
+    setPool2LocateTsCode(code)
+  }, [pool2InventoryMap, pool2InventoryOnlyMissing])
+
+  useEffect(() => {
+    if (!pool2LocateTsCode || !pool2InventoryOpen) return
+    const timer = setTimeout(() => {
+      const el = pool2InventoryRowRefs.current[pool2LocateTsCode]
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+      const targetEl = pool2InventoryFieldRefs.current[`${pool2LocateTsCode}:${pool2LocateTarget}`]
+      if (targetEl) {
+        window.setTimeout(() => {
+          try {
+            targetEl.focus({ preventScroll: true } as FocusOptions)
+          } catch {
+            try { targetEl.focus() } catch {}
+          }
+          if (targetEl instanceof HTMLInputElement) {
+            try { targetEl.select() } catch {}
+          }
+        }, 180)
+      }
+    }, 120)
+    if (pool2LocateTimerRef.current) clearTimeout(pool2LocateTimerRef.current)
+    pool2LocateTimerRef.current = setTimeout(() => {
+      setPool2LocateTsCode('')
+      pool2LocateTimerRef.current = null
+    }, 2200)
+    return () => clearTimeout(timer)
+  }, [pool2LocateTsCode, pool2LocateTarget, pool2InventoryOpen, pool2InventoryRows.length])
+
   const pool1CardRiskTagMap = useMemo(() => {
     if (pool.pool_id !== 1 || !pool1DecisionSummary) {
       return new Map<string, Array<{ text: string; color: string }>>()
@@ -3745,6 +4287,21 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     || conceptSnapshotStatus?.redis?.updated_at
     || 0
   )
+  const boardCatalogTables = boardCatalogStatus?.tables || {}
+  const boardCatalogFreshCount = BOARD_CATALOG_TABLE_KEYS.filter((key) => Boolean(boardCatalogTables[key]?.fresh)).length
+  const boardCatalogTotalCount = BOARD_CATALOG_TABLE_KEYS.length
+  const boardCatalogLatestUpdatedAt = Math.max(
+    0,
+    ...BOARD_CATALOG_TABLE_KEYS.map((key) => Number(boardCatalogTables[key]?.updated_at || 0)),
+  )
+  const boardCatalogConceptBoardCount = Number(boardCatalogTables.concept?.count || 0)
+  const boardCatalogConceptMemberCount = Number(boardCatalogTables.concept_detail?.count || 0)
+  const boardCatalogIndustryBoardCount = Number(boardCatalogTables.em_industry_board?.count || 0)
+  const boardCatalogIndustryMemberCount = Number(boardCatalogTables.em_industry_member?.count || 0)
+  const boardCatalogColor = !boardCatalogStatus
+    ? C.dim
+    : (boardCatalogStatus.ok ? C.green : C.red)
+  const boardCatalogModeLabel = boardCatalogStatus?.overnight_grace ? '隔夜宽限' : '当日口径'
   const industryCoverage = industryMappingCoverage?.coverage || {}
   const industryCoverageSnapshot = industryMappingCoverage?.snapshot || {}
   const industryCoverageTables = industryMappingCoverage?.em_tables || {}
@@ -3860,20 +4417,36 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
           </Link>
         )}
         {pool.pool_id === 2 && (
-          <Link
-            to="/realtime-t0-replay"
-            style={{
-              fontSize: 11,
-              color: C.cyan,
-              textDecoration: 'none',
-              border: `1px solid ${C.cyan}`,
-              borderRadius: 4,
-              padding: '2px 8px',
-              background: C.cyanBg,
-            }}
-          >
-            反T回放页
-          </Link>
+          <>
+            <Link
+              to="/realtime-t0-positive-replay"
+              style={{
+                fontSize: 11,
+                color: C.cyan,
+                textDecoration: 'none',
+                border: `1px solid ${C.cyan}`,
+                borderRadius: 4,
+                padding: '2px 8px',
+                background: C.cyanBg,
+              }}
+            >
+              正T回放页
+            </Link>
+            <Link
+              to="/realtime-t0-replay"
+              style={{
+                fontSize: 11,
+                color: C.cyan,
+                textDecoration: 'none',
+                border: `1px solid ${C.cyan}`,
+                borderRadius: 4,
+                padding: '2px 8px',
+                background: C.cyanBg,
+              }}
+            >
+              反T回放页
+            </Link>
+          </>
         )}
         <button
           onClick={() => setHealthOpen(v => !v)}
@@ -3887,6 +4460,28 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
           <span style={{ width: 6, height: 6, borderRadius: 3, background: healthColor, display: 'inline-block' }} />
           {runtimeHealthLoading ? '健康检查中' : `健康:${healthLevel.toUpperCase()}${healthBadCount > 0 ? `(${healthBadCount})` : ''}`}
         </button>
+        <button
+          onClick={() => setHealthOpen(true)}
+          title={boardCatalogStatus?.checked_at ? `板块底座 · ${new Date(boardCatalogStatus.checked_at).toLocaleTimeString()}` : '板块底座'}
+          style={{
+            fontSize: 11, display: 'flex', alignItems: 'center', gap: 4,
+            color: boardCatalogColor, background: C.bg, border: `1px solid ${boardCatalogColor}`,
+            borderRadius: 4, padding: '2px 6px', cursor: 'pointer',
+          }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: 3, background: boardCatalogColor, display: 'inline-block' }} />
+          {boardCatalogLoading
+            ? '板块底座检查中'
+            : `板块底座:${boardCatalogFreshCount}/${boardCatalogTotalCount}${boardCatalogStatus?.overnight_grace ? ' · 隔夜' : ''}`}
+        </button>
+        {!boardCatalogLoading && boardCatalogLatestUpdatedAt > 0 && (
+          <div style={{ fontSize: 10, color: boardCatalogColor }}>
+            概念 {boardCatalogConceptBoardCount}/{boardCatalogConceptMemberCount}
+            {' · '}行业 {boardCatalogIndustryBoardCount}/{boardCatalogIndustryMemberCount}
+            {' · '}{formatAgeText(boardCatalogLatestUpdatedAt)}
+            {boardCatalogStatus?.overnight_grace ? ' · 盘前宽限' : ''}
+          </div>
+        )}
         {fastSlowHealthDetail && (
           <div style={{ fontSize: 10, color: fsColor }}>
             快慢偏差 {fsMismatch}/{fsMembers} ({(fsRatio * 100).toFixed(1)}%)
@@ -3998,7 +4593,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             const thLeft = thObs.left_side_buy || {}
             const thRight = thObs.right_side_breakout || {}
             const rebuildText = pool1RebuildUi.enabled
-              ? `基准${(pool1RebuildUi.addRatio * 100).toFixed(0)}% · 缺口>=${(pool1RebuildUi.minPositionGap * 100).toFixed(0)}% · 延迟${pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m · 强度>=${pool1RebuildUi.minSignalStrength.toFixed(0)} · 观察${pool1RebuildUi.observeTierAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.observeTierAddRatioBias * 100).toFixed(0)}% · 全清${pool1RebuildUi.fullTierAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.fullTierAddRatioBias * 100).toFixed(0)}% · 软源${pool1RebuildUi.softSourceAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.softSourceAddRatioBias * 100).toFixed(0)}% · 核心${pool1RebuildUi.coreSourceAddRatioBias >= 0 ? '+' : ''}${(pool1RebuildUi.coreSourceAddRatioBias * 100).toFixed(0)}% · 全清延迟+${pool1RebuildUi.fullTierExtraDelayMinutes.toFixed(0)}m · 核心延迟+${pool1RebuildUi.coreSourceExtraDelayMinutes.toFixed(0)}m`
+              ? `基准${(pool1RebuildUi.addRatio * 100).toFixed(0)}% · 延迟${pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m · 强度>=${pool1RebuildUi.minSignalStrength.toFixed(0)}`
               : '未启用'
             const thresholdText = (x: any): string => {
               const cur = (x?.current || {}) as Record<string, any>
@@ -4066,7 +4661,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                   阈值: <span style={{ color: C.yellow }}>左{thresholdText(thLeft)}</span> / <span style={{ color: C.yellow }}>右{thresholdText(thRight)}</span>
                 </span>
                 <span style={{ color: C.dim, fontSize: 10 }}>
-                  回补: <span style={{ color: pool1RebuildUi.enabled ? C.cyan : C.dim }}>{rebuildText}</span>
+                  回补摘要: <span style={{ color: pool1RebuildUi.enabled ? C.cyan : C.dim }}>{rebuildText}</span>
                 </span>
                 {(pool1Observe.trade_date || pool1Observe.updated_at) && (
                   <span style={{ color: freshnessColor, fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -4680,6 +5275,132 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
           <RefreshCw size={12} /> 刷新信号
         </button>
       </div>
+
+      {pool.pool_id === 1 && (
+        (() => {
+          const pct = (v: number, digits = 0) => `${(v * 100).toFixed(digits)}%`
+          const signedPct = (v: number, digits = 0) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(digits)}%`
+          const summaryExit = pool1ExitUi.enabled
+            ? `持仓>=${pool1ExitUi.minHoldDays.toFixed(0)}d · 观察${pct(pool1ExitUi.observeReduceRatio)} · 减仓${pct(pool1ExitUi.partialReduceRatio)} · Beta${pct(pool1ExitUi.betaReduceRatio)}`
+            : '未启用'
+          const summaryAvwap = pool1ExitUi.enabled
+            ? `建仓${pct(pool1ExitUi.entryAvwapReduceRatio)} · 突破${pct(pool1ExitUi.breakoutAvwapReduceRatio)} · 事件${pct(pool1ExitUi.eventAvwapReduceRatio)} · 会话${pct(pool1ExitUi.sessionAvwapReduceRatio)}`
+            : '未启用'
+          const summaryRebuild = pool1RebuildUi.enabled
+            ? `基准${pct(pool1RebuildUi.addRatio)} · 缺口>=${pct(pool1RebuildUi.minPositionGap)} · 延迟${pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m · 强度>=${pool1RebuildUi.minSignalStrength.toFixed(0)}`
+            : '未启用'
+          const tileStyle: React.CSSProperties = {
+            background: 'rgba(0,0,0,0.18)',
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            padding: 10,
+            fontSize: 10,
+            fontFamily: 'monospace',
+            color: C.dim,
+            lineHeight: 1.55,
+          }
+          return (
+            <div style={{
+              marginBottom: 12,
+              background: C.bg,
+              border: `1px solid ${pool1StrategyUiOpen ? C.cyan : C.border}`,
+              borderRadius: 8,
+              overflow: 'hidden',
+            }}>
+              <button
+                onClick={() => setPool1StrategyUiOpen(v => !v)}
+                style={{
+                  width: '100%',
+                  background: 'transparent',
+                  border: 'none',
+                  color: C.text,
+                  cursor: 'pointer',
+                  padding: '10px 12px',
+                  textAlign: 'left',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ color: C.cyan, fontSize: 12, fontWeight: 700 }}>Pool1 策略参数</span>
+                  <span style={{ color: C.dim, fontSize: 10 }}>运行中模板快照</span>
+                  <div style={{ flex: 1 }} />
+                  <span style={{ color: pool1StrategyUiOpen ? C.cyan : C.dim, display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                    {pool1StrategyUiOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    {pool1StrategyUiOpen ? '收起' : '展开'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 10 }}>
+                  <span style={{ color: C.dim, border: `1px solid ${C.border}`, borderRadius: 999, padding: '2px 8px', background: 'rgba(255,255,255,0.03)' }}>
+                    退出: <span style={{ color: pool1ExitUi.enabled ? C.bright : C.dim }}>{summaryExit}</span>
+                  </span>
+                  <span style={{ color: C.dim, border: `1px solid ${C.border}`, borderRadius: 999, padding: '2px 8px', background: 'rgba(255,255,255,0.03)' }}>
+                    AVWAP: <span style={{ color: pool1ExitUi.enabled ? C.yellow : C.dim }}>{summaryAvwap}</span>
+                  </span>
+                  <span style={{ color: C.dim, border: `1px solid ${C.border}`, borderRadius: 999, padding: '2px 8px', background: 'rgba(255,255,255,0.03)' }}>
+                    回补: <span style={{ color: pool1RebuildUi.enabled ? C.cyan : C.dim }}>{summaryRebuild}</span>
+                  </span>
+                </div>
+              </button>
+              {pool1StrategyUiOpen && (
+                <div style={{ padding: '0 12px 12px' }}>
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+                    gap: 8,
+                  }}>
+                    <div style={tileStyle}>
+                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>Timing Clear</div>
+                      <div>enabled: <span style={{ color: pool1ExitUi.enabled ? C.green : C.red }}>{String(pool1ExitUi.enabled)}</span></div>
+                      <div>min_hold_days: <span style={{ color: C.text }}>{pool1ExitUi.minHoldDays.toFixed(0)}d</span></div>
+                      <div>long_hold_days: <span style={{ color: C.text }}>{pool1ExitUi.longHoldDays.toFixed(0)}d</span></div>
+                      <div>long_hold_min_confirm: <span style={{ color: C.text }}>{pool1ExitUi.longHoldMinConfirm}</span></div>
+                      <div>allow_early_risk_exit: <span style={{ color: pool1ExitUi.allowEarlyRiskExit ? C.green : C.red }}>{String(pool1ExitUi.allowEarlyRiskExit)}</span></div>
+                      <div>observe_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.observeReduceRatio)}</span></div>
+                      <div>partial_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.partialReduceRatio)}</span></div>
+                      <div>beta_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.betaReduceRatio)}</span></div>
+                      <div>atr_bucket: <span style={{ color: C.text }}>低波&lt;{pct(pool1ExitUi.atrLowPct, 1)} / 高波&gt;{pct(pool1ExitUi.atrHighPct, 1)}</span></div>
+                      <div>atr_confirm_bias: <span style={{ color: C.text }}>低波+{pool1ExitUi.atrLowExtraConfirm} / 高波-{pool1ExitUi.atrHighRelaxConfirm}</span></div>
+                      <div>bid_ask_weak_ratio: <span style={{ color: C.text }}>{pool1ExitUi.bidAskWeakRatio.toFixed(2)}</span></div>
+                      <div>net_outflow_bps: <span style={{ color: C.text }}>大单{pool1ExitUi.bigNetOutflowBpsTh.toFixed(0)} / 超大{pool1ExitUi.superNetOutflowBpsTh.toFixed(0)}</span></div>
+                    </div>
+                    <div style={tileStyle}>
+                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>AVWAP Exit</div>
+                      <div>entry_cost_break_pct: <span style={{ color: C.text }}>{pool1ExitUi.entryCostBreakPct.toFixed(2)}%</span></div>
+                      <div>entry_avwap_break_pct: <span style={{ color: C.text }}>{pool1ExitUi.entryAvwapBreakPct.toFixed(2)}%</span></div>
+                      <div>entry_day_avwap: <span style={{ color: C.red }}>{pct(pool1ExitUi.entryAvwapReduceRatio)}</span></div>
+                      <div>breakout_day_avwap: <span style={{ color: C.yellow }}>{pct(pool1ExitUi.breakoutAvwapReduceRatio)}</span></div>
+                      <div>event_day_avwap: <span style={{ color: C.yellow }}>{pct(pool1ExitUi.eventAvwapReduceRatio)}</span></div>
+                      <div>session_avwap: <span style={{ color: C.cyan }}>{pct(pool1ExitUi.sessionAvwapReduceRatio)}</span></div>
+                      <div>entry_cost_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.entryCostReduceRatio)}</span></div>
+                      <div>avwap_soft_weak_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.avwapSoftWeakReduceRatio)}</span></div>
+                      <div>intraday_avwap_min_bars: <span style={{ color: C.text }}>{pool1ExitUi.intradayAvwapMinBars}</span></div>
+                      <div>session_avwap_enabled: <span style={{ color: pool1ExitUi.sessionAvwapEnabled ? C.green : C.red }}>{String(pool1ExitUi.sessionAvwapEnabled)}</span></div>
+                      <div>flow_confirm_required: <span style={{ color: pool1ExitUi.timingClearAvwapFlowRequired ? C.green : C.red }}>{String(pool1ExitUi.timingClearAvwapFlowRequired)}</span></div>
+                    </div>
+                    <div style={tileStyle}>
+                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>Rebuild</div>
+                      <div>enabled: <span style={{ color: pool1RebuildUi.enabled ? C.green : C.red }}>{String(pool1RebuildUi.enabled)}</span></div>
+                      <div>require_stage1_pass: <span style={{ color: pool1RebuildUi.requireStage1Pass ? C.green : C.red }}>{String(pool1RebuildUi.requireStage1Pass)}</span></div>
+                      <div>add_ratio: <span style={{ color: C.text }}>{pct(pool1RebuildUi.addRatio)}</span></div>
+                      <div>min_position_gap: <span style={{ color: C.text }}>{pct(pool1RebuildUi.minPositionGap)}</span></div>
+                      <div>min_minutes_after_reduce: <span style={{ color: C.text }}>{pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m</span></div>
+                      <div>min_signal_strength: <span style={{ color: C.text }}>{pool1RebuildUi.minSignalStrength.toFixed(0)}</span></div>
+                      <div>observe_tier_bias: <span style={{ color: pool1RebuildUi.observeTierAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.observeTierAddRatioBias)}</span></div>
+                      <div>full_tier_bias: <span style={{ color: pool1RebuildUi.fullTierAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.fullTierAddRatioBias)}</span></div>
+                      <div>soft_source_bias: <span style={{ color: pool1RebuildUi.softSourceAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.softSourceAddRatioBias)}</span></div>
+                      <div>core_source_bias: <span style={{ color: pool1RebuildUi.coreSourceAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.coreSourceAddRatioBias)}</span></div>
+                      <div>extra_delay: <span style={{ color: C.text }}>full +{pool1RebuildUi.fullTierExtraDelayMinutes.toFixed(0)}m / core +{pool1RebuildUi.coreSourceExtraDelayMinutes.toFixed(0)}m</span></div>
+                      <div>allow_modes: <span style={{ color: C.text }}>左侧{pool1RebuildUi.allowLeftSideBuy ? 'Y' : 'N'} / 右侧{pool1RebuildUi.allowRightSideBreakout ? 'Y' : 'N'}</span></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })()
+      )}
 
       {pool.pool_id === 1 && pool1DecisionOpen && pool1DecisionSummary?.summary && (
         (() => {
@@ -5920,7 +6641,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             </span>
             <div style={{ flex: 1 }} />
             <button
-              onClick={() => { loadRuntimeHealth(); loadConceptSnapshotStatus(); loadIndustryMappingCoverage() }}
+              onClick={() => { loadRuntimeHealth(); loadConceptSnapshotStatus(); loadBoardCatalogStatus(); loadIndustryMappingCoverage() }}
               style={{ fontSize: 10, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, padding: '2px 6px', cursor: 'pointer' }}
             >
               刷新
@@ -5940,6 +6661,22 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
               }}
             >
               {conceptSnapshotRefreshLoading ? '强刷中...' : '强刷概念'}
+            </button>
+            <button
+              onClick={() => refreshBoardCatalog(true)}
+              disabled={boardCatalogRefreshLoading}
+              style={{
+                fontSize: 10,
+                background: C.bg,
+                border: `1px solid ${boardCatalogRefreshLoading ? C.yellow : C.border}`,
+                borderRadius: 3,
+                color: boardCatalogRefreshLoading ? C.yellow : C.cyan,
+                padding: '2px 6px',
+                cursor: boardCatalogRefreshLoading ? 'default' : 'pointer',
+                opacity: boardCatalogRefreshLoading ? 0.85 : 1,
+              }}
+            >
+              {boardCatalogRefreshLoading ? '重刷板块中...' : '重刷板块底座'}
             </button>
           </div>
           <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -6000,6 +6737,99 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
               )}
               {!conceptSnapshotStatus && !conceptSnapshotLoading && (
                 <div style={{ color: C.dim }}>暂无概念生态快照状态</div>
+              )}
+            </div>
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              fontSize: 10,
+              fontFamily: 'monospace',
+              background: 'rgba(0,0,0,0.2)',
+              border: `1px solid ${C.border}`,
+              borderRadius: 4,
+              padding: '6px 8px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 4, background: boardCatalogColor, display: 'inline-block' }} />
+                <span style={{ color: C.bright, minWidth: 180 }}>board_catalog_status</span>
+                <span style={{ color: boardCatalogColor, fontWeight: 700 }}>
+                  {boardCatalogLoading ? 'LOADING' : (boardCatalogStatus?.ok ? 'OK' : 'WARN')}
+                </span>
+                <span style={{ color: C.dim }}>
+                  {`fresh ${boardCatalogFreshCount}/${boardCatalogTotalCount}`}
+                  {boardCatalogLatestUpdatedAt > 0 ? ` · ${formatTimeText(boardCatalogLatestUpdatedAt)} (${formatAgeText(boardCatalogLatestUpdatedAt)})` : ''}
+                </span>
+              </div>
+              {boardCatalogStatus && (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 6 }}>
+                    <div style={{ color: C.dim }}>
+                      schedule: <span style={{ color: C.text }}>{boardCatalogStatus.schedule || '--'}</span>
+                      {' · '}startup_cutoff: <span style={{ color: C.text }}>{String(boardCatalogStatus.startup_cutoff_hhmm ?? '--')}</span>
+                    </div>
+                    <div style={{ color: C.dim }}>
+                      refresher: <span style={{ color: boardCatalogStatus.refresher_started ? C.green : C.yellow }}>
+                        {boardCatalogStatus.refresher_started ? 'started' : 'not_started'}
+                      </span>
+                      {' · '}last_success: <span style={{ color: C.text }}>{boardCatalogStatus.last_success_date || '--'}</span>
+                    </div>
+                    <div style={{ color: C.dim }}>
+                      counts: <span style={{ color: C.text }}>
+                        {`概念 ${boardCatalogConceptBoardCount}/${boardCatalogConceptMemberCount} · 行业 ${boardCatalogIndustryBoardCount}/${boardCatalogIndustryMemberCount}`}
+                      </span>
+                    </div>
+                    <div style={{ color: C.dim }}>
+                      stale: <span style={{ color: boardCatalogStatus.stale ? C.red : C.green }}>
+                        {boardCatalogStatus.stale ? 'yes' : 'no'}
+                      </span>
+                      {' · '}mode: <span style={{ color: boardCatalogStatus.overnight_grace ? C.yellow : C.text }}>
+                        {boardCatalogModeLabel}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 6 }}>
+                    {BOARD_CATALOG_TABLE_KEYS.map((key) => {
+                      const item = boardCatalogTables[key] || {}
+                      const itemColor = item.fresh ? C.green : C.yellow
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 4,
+                            padding: '6px 8px',
+                            background: 'rgba(255,255,255,0.02)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ width: 7, height: 7, borderRadius: 4, background: itemColor, display: 'inline-block' }} />
+                            <span style={{ color: C.bright }}>{BOARD_CATALOG_TABLE_LABELS[key]}</span>
+                            <span style={{ color: itemColor, marginLeft: 'auto' }}>{item.fresh ? 'fresh' : 'stale'}</span>
+                          </div>
+                          <div style={{ color: C.dim }}>
+                            {`rows ${Number(item.count || 0)}`}
+                            {Number(item.updated_at || 0) > 0 ? ` · ${formatTimeText(Number(item.updated_at || 0))}` : ' · --'}
+                          </div>
+                          <div style={{ color: C.dim }}>
+                            {Number(item.updated_at || 0) > 0 ? formatAgeText(Number(item.updated_at || 0)) : '--'}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {boardCatalogStatus.count_error && (
+                    <div style={{ color: C.yellow, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                      count_error: {String(boardCatalogStatus.count_error)}
+                    </div>
+                  )}
+                </>
+              )}
+              {!boardCatalogStatus && !boardCatalogLoading && (
+                <div style={{ color: C.dim }}>暂无板块底座状态</div>
               )}
             </div>
             <div style={{
@@ -6364,6 +7194,230 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
         )}
       </div>
 
+      {/* Pool2 底仓状态面板 */}
+      {pool.pool_id === 2 && (
+        <div style={{ marginBottom: 12, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden' }}>
+          <div onClick={() => setPool2InventoryOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', cursor: 'pointer', userSelect: 'none' }}>
+            <span style={{ fontSize: 11, color: C.cyan, fontWeight: 600 }}>底仓状态管理</span>
+            <span style={{ fontSize: 10, color: C.dim, marginLeft: 4 }}>隔夜底仓 / 可T仓 / 保留仓 / T现金</span>
+            {pool2Inventory?.summary && (
+              <>
+                <span style={{ fontSize: 10, color: C.dim }}>就绪 {pool2Inventory.summary.state_ready_count}/{pool2Inventory.summary.member_count}</span>
+                <span style={{ fontSize: 10, color: C.dim }}>底仓 {pool2Inventory.summary.base_qty_sum}</span>
+                <span style={{ fontSize: 10, color: C.dim }}>可T {pool2Inventory.summary.tradable_qty_sum}</span>
+                <span style={{ fontSize: 10, color: C.dim }}>现金 {pool2Inventory.summary.cash_available_sum.toFixed(0)}</span>
+                {pool2Inventory.summary.live_positive_rebuild && pool2Inventory.summary.live_positive_rebuild.sample_count > 0 && (
+                  <>
+                    <span style={{ fontSize: 10, color: C.dim }}>
+                      回补质门 {pool2Inventory.summary.live_positive_rebuild.quality_pass_count}/{pool2Inventory.summary.live_positive_rebuild.sample_count}
+                    </span>
+                    <span style={{ fontSize: 10, color: C.dim }}>
+                      恢复分 {pool2Inventory.summary.live_positive_rebuild.avg_recovery_score != null ? pool2Inventory.summary.live_positive_rebuild.avg_recovery_score.toFixed(0) : '--'}
+                    </span>
+                    <span style={{ fontSize: 10, color: C.dim }}>
+                      净边际 {pool2Inventory.summary.live_positive_rebuild.avg_net_executable_edge_bps != null ? `${pool2Inventory.summary.live_positive_rebuild.avg_net_executable_edge_bps > 0 ? '+' : ''}${pool2Inventory.summary.live_positive_rebuild.avg_net_executable_edge_bps.toFixed(1)}bps` : '--'}
+                    </span>
+                  </>
+                )}
+                <span style={{ fontSize: 10, color: C.dim }}>流水 {pool2ActionLogCount}</span>
+              </>
+            )}
+            <div style={{ flex: 1 }} />
+            {pool2InventoryOpen && (
+              <>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: C.dim, cursor: 'pointer' }}
+                  onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={pool2InventoryOnlyMissing}
+                    onChange={(e) => setPool2InventoryOnlyMissing(e.target.checked)}
+                  />
+                  仅未建模
+                </label>
+                <button
+                  onClick={(e) => { e.stopPropagation(); loadPool2Inventory() }}
+                  style={{ fontSize: 10, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, padding: '2px 6px', cursor: 'pointer' }}
+                >
+                  刷新
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); exportPool2ActionLogCsv() }}
+                  disabled={pool2ActionLogCount <= 0}
+                  style={{
+                    fontSize: 10,
+                    background: pool2ActionLogCount > 0 ? C.cyanBg : C.bg,
+                    border: `1px solid ${pool2ActionLogCount > 0 ? C.cyan : C.border}`,
+                    borderRadius: 3,
+                    color: pool2ActionLogCount > 0 ? C.cyan : C.dim,
+                    padding: '2px 6px',
+                    cursor: pool2ActionLogCount > 0 ? 'pointer' : 'default',
+                    opacity: pool2ActionLogCount > 0 ? 1 : 0.65,
+                  }}
+                  title={pool2ActionLogCount > 0 ? '导出今日 Pool2 T 动作流水' : '暂无可导出的 T 动作流水'}
+                >
+                  导出CSV
+                </button>
+              </>
+            )}
+            <span style={{ color: C.dim, fontSize: 10 }}>{pool2InventoryOpen ? '▼' : '▶'}</span>
+          </div>
+          {pool2InventoryOpen && (
+            <div style={{ padding: '0 14px 12px', borderTop: `1px solid ${C.border}` }}>
+              {pool2InventoryLoading && !pool2Inventory ? (
+                <div style={{ color: C.dim, fontSize: 11, padding: '8px 0' }}>加载中...</div>
+              ) : !pool2Inventory || (pool2Inventory.data || []).length === 0 ? (
+                <div style={{ color: C.dim, fontSize: 11, padding: '8px 0' }}>Pool2 暂无底仓状态数据</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 10 }}>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 10 }}>
+                    <span style={{ color: C.dim }}>存储: <span style={{ color: C.text }}>{pool2Inventory.storage?.source || '--'}</span></span>
+                    <span style={{ color: C.dim }}>Redis: <span style={{ color: (pool2Inventory.storage?.redis_enabled && pool2Inventory.storage?.redis_ready) ? C.green : C.dim }}>
+                      {pool2Inventory.storage?.redis_enabled ? (pool2Inventory.storage?.redis_ready ? '已就绪' : '未就绪') : '未启用'}
+                    </span></span>
+                    <span style={{ color: C.dim }}>文件兜底: <span style={{ color: pool2Inventory.storage?.file_fallback ? C.text : C.dim }}>{pool2Inventory.storage?.file_fallback ? '开启' : '关闭'}</span></span>
+                    <span style={{ color: C.dim }}>检查时间: <span style={{ color: C.text }}>{pool2Inventory.checked_at ? new Date(pool2Inventory.checked_at).toLocaleTimeString() : '--:--:--'}</span></span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+                    {pool2InventoryRows.map((row) => {
+                      const liveTick = tickMap[row.ts_code]
+                      const livePositiveRebuild = row.live_positive_rebuild || null
+                      const livePrice = Number(liveTick?.price ?? row.price ?? NaN)
+                      const livePct = Number(liveTick?.pct_chg ?? row.pct_chg ?? NaN)
+                      const draft = pool2InventoryDrafts[row.ts_code] || {}
+                      const saving = !!pool2InventorySaving[row.ts_code]
+                      const highlighted = pool2LocateTsCode === row.ts_code
+                      const intValue = (field: keyof Pool2InventoryDraft, fallback: number) => draft[field] ?? String(fallback ?? 0)
+                      const floatValue = (field: keyof Pool2InventoryDraft, fallback: number) => draft[field] ?? String(fallback ?? 0)
+                      const pctColor = Number.isFinite(livePct) ? (livePct > 0 ? C.red : livePct < 0 ? C.green : C.dim) : C.dim
+                      return (
+                        <div
+                          key={row.ts_code}
+                          ref={el => { pool2InventoryRowRefs.current[row.ts_code] = el }}
+                          style={{
+                            background: highlighted ? 'rgba(0,200,200,0.10)' : 'rgba(0,0,0,0.22)',
+                            border: `1px solid ${highlighted ? C.cyan : (row.state_ready ? C.border : C.yellow)}`,
+                            borderRadius: 6,
+                            padding: 10,
+                            boxShadow: highlighted ? '0 0 0 2px rgba(0,200,200,0.18)' : 'none',
+                            transition: 'background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <span style={{ color: C.cyan, fontFamily: 'monospace', fontSize: 12 }}>{row.ts_code}</span>
+                            <span style={{ color: C.bright, fontWeight: 600 }}>{row.name}</span>
+                            <span style={{ marginLeft: 'auto', fontSize: 10, color: row.state_ready ? C.green : C.yellow }}>
+                              {row.state_ready ? '已建模' : '待建模'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 10, marginBottom: 8 }}>
+                            <span style={{ color: C.dim }}>现价: <span style={{ color: C.text }}>{Number.isFinite(livePrice) ? livePrice.toFixed(3) : '--'}</span></span>
+                            <span style={{ color: C.dim }}>涨跌幅: <span style={{ color: pctColor }}>{Number.isFinite(livePct) ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(2)}%` : '--'}</span></span>
+                            <span style={{ color: C.dim }}>行业: <span style={{ color: C.text }}>{row.industry || '--'}</span></span>
+                            <span style={{ color: C.dim }}>批次: <span style={{ color: C.text }}>{row.trade_date || '--'}</span></span>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                            {[
+                              ['隔夜底仓', 'overnight_base_qty', intValue('overnight_base_qty', row.overnight_base_qty)],
+                              ['可T底仓', 'tradable_t_qty', intValue('tradable_t_qty', row.tradable_t_qty)],
+                              ['保留仓', 'reserve_qty', intValue('reserve_qty', row.reserve_qty)],
+                              ['T可用现金', 'cash_available_for_t', floatValue('cash_available_for_t', row.cash_available_for_t)],
+                              ['底仓锚成本', 'inventory_anchor_cost', floatValue('inventory_anchor_cost', row.inventory_anchor_cost)],
+                            ].map(([label, field, value]) => (
+                              <label key={String(field)} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10, color: C.dim }}>
+                                <span>{label}</span>
+                                <input
+                                  ref={el => { pool2InventoryFieldRefs.current[`${row.ts_code}:${String(field)}`] = el }}
+                                  type="number"
+                                  step={field === 'cash_available_for_t' || field === 'inventory_anchor_cost' ? '0.01' : '100'}
+                                  value={String(value)}
+                                  onChange={(e) => updatePool2InventoryDraft(row.ts_code, field as keyof Pool2InventoryDraft, e.target.value)}
+                                  style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, color: C.text, padding: '6px 8px', fontSize: 11 }}
+                                />
+                              </label>
+                            ))}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10, color: C.dim }}>
+                              <span>今日状态</span>
+                              <div
+                                ref={el => { pool2InventoryFieldRefs.current[`${row.ts_code}:today_status`] = el }}
+                                tabIndex={-1}
+                                style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, color: C.text, padding: '6px 8px', fontSize: 11, lineHeight: 1.5, outline: 'none' }}
+                              >
+                                <div>T次数 {row.today_t_count}/{row.max_t_count_per_day || '--'}</div>
+                                <div>正T {row.today_positive_t_qty} · 反T {row.today_reverse_t_qty}</div>
+                                <div>剩余可T {row.remaining_tradable_t_qty ?? row.tradable_t_qty}</div>
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 10, color: C.dim, marginTop: 8 }}>
+                            <span>上次动作: <span style={{ color: C.text }}>{row.last_action_mode || '--'}</span></span>
+                            <span>动作量: <span style={{ color: C.text }}>{row.last_action_qty || 0}</span></span>
+                            <span>最近信号: <span style={{ color: C.text }}>{row.last_signal_type || '--'}</span></span>
+                            <span>更新时间: <span style={{ color: C.text }}>{row.updated_at_iso ? new Date(row.updated_at_iso).toLocaleTimeString() : '--:--:--'}</span></span>
+                          </div>
+                          {livePositiveRebuild && (
+                            <div style={{ marginTop: 8, background: 'rgba(0,0,0,0.18)', border: `1px solid ${livePositiveRebuild.quality_pass ? C.green : C.yellow}`, borderRadius: 4, padding: '6px 8px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                                <span style={{ color: C.cyan, fontSize: 10, fontWeight: 600 }}>正T回补质量门</span>
+                                <span style={{ color: livePositiveRebuild.quality_pass ? C.green : C.yellow, fontSize: 10 }}>
+                                  {livePositiveRebuild.quality_pass ? '可执行' : '仅观察'}
+                                </span>
+                                <span style={{ color: C.dim, fontSize: 10 }}>
+                                  恢复分 {livePositiveRebuild.recover_after_rebuild_score ?? '--'}{livePositiveRebuild.recover_after_rebuild_min_score != null ? ` / ${livePositiveRebuild.recover_after_rebuild_min_score}` : ''}
+                                </span>
+                                <span style={{ color: C.dim, fontSize: 10 }}>
+                                  净边际 {livePositiveRebuild.net_executable_edge_bps != null ? `${livePositiveRebuild.net_executable_edge_bps > 0 ? '+' : ''}${livePositiveRebuild.net_executable_edge_bps.toFixed(1)}bps` : '--'}
+                                </span>
+                                <span style={{ color: C.dim, fontSize: 10 }}>
+                                  反T空间 {livePositiveRebuild.reverse_room_ratio_after != null ? `${(livePositiveRebuild.reverse_room_ratio_after * 100).toFixed(0)}%` : '--'}
+                                </span>
+                              </div>
+                              <div style={{ color: C.dim, fontSize: 10, lineHeight: 1.5 }}>
+                                观察原因: <span style={{ color: (livePositiveRebuild.observe_reasons || []).length > 0 ? C.yellow : C.text }}>
+                                  {(livePositiveRebuild.observe_reasons || []).length > 0 ? (livePositiveRebuild.observe_reasons || []).slice(0, 3).join(' / ') : '--'}
+                                </span>
+                                {' · '}
+                                恢复确认: <span style={{ color: C.text }}>
+                                  {(livePositiveRebuild.recovery_confirms || []).length > 0 ? (livePositiveRebuild.recovery_confirms || []).slice(0, 3).join(' / ') : '--'}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                            <button
+                              onClick={() => savePool2InventoryRow(row, false)}
+                              disabled={saving}
+                              style={{ fontSize: 11, background: C.cyanBg, border: `1px solid ${C.cyan}`, borderRadius: 4, color: C.cyan, padding: '6px 10px', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1 }}
+                            >
+                              {saving ? '保存中...' : '保存'}
+                            </button>
+                            <button
+                              ref={el => { pool2InventoryFieldRefs.current[`${row.ts_code}:reset_today_button`] = el }}
+                              onClick={() => savePool2InventoryRow(row, true)}
+                              disabled={saving}
+                              style={{ fontSize: 11, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, color: C.text, padding: '6px 10px', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1 }}
+                            >
+                              重置今日
+                            </button>
+                            <button
+                              onClick={() => resetPool2InventoryDraft(row.ts_code)}
+                              disabled={saving}
+                              style={{ fontSize: 11, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, color: C.dim, padding: '6px 10px', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1 }}
+                            >
+                              还原输入
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* T+0 质量监控面板（仅池2） */}
       {pool.pool_id === 2 && (
         <div style={{ marginBottom: 12, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden' }}>
@@ -6408,6 +7462,35 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                       color={quality.signal_churn?.churn_ratio != null ? (quality.signal_churn.churn_ratio <= 0.15 ? C.green : quality.signal_churn.churn_ratio <= 0.30 ? C.yellow : C.red) : C.dim}
                     />
                   </div>
+                  {quality.positive_rebuild_quality && quality.positive_rebuild_quality.sample_count > 0 && (
+                    <div style={{ background: 'rgba(0,0,0,0.24)', border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                        <span style={{ fontSize: 10, color: C.cyan, fontWeight: 600 }}>正T回补质量门</span>
+                        <span style={{ fontSize: 10, color: C.dim }}>样本 {quality.positive_rebuild_quality.sample_count}</span>
+                        <span style={{ fontSize: 10, color: (quality.positive_rebuild_quality.quality_pass_rate ?? 0) >= 0.5 ? C.green : C.yellow }}>
+                          可执行率 {quality.positive_rebuild_quality.quality_pass_rate != null ? `${(quality.positive_rebuild_quality.quality_pass_rate * 100).toFixed(1)}%` : '--'}
+                        </span>
+                        <span style={{ fontSize: 10, color: C.dim }}>
+                          恢复分 {quality.positive_rebuild_quality.avg_recovery_score != null ? quality.positive_rebuild_quality.avg_recovery_score.toFixed(1) : '--'}
+                        </span>
+                        <span style={{ fontSize: 10, color: (quality.positive_rebuild_quality.avg_net_executable_edge_bps ?? 0) > 0 ? C.green : C.yellow }}>
+                          净边际 {quality.positive_rebuild_quality.avg_net_executable_edge_bps != null ? `${quality.positive_rebuild_quality.avg_net_executable_edge_bps > 0 ? '+' : ''}${quality.positive_rebuild_quality.avg_net_executable_edge_bps.toFixed(1)}bps` : '--'}
+                        </span>
+                        <span style={{ fontSize: 10, color: C.dim }}>
+                          临时库存 {quality.positive_rebuild_quality.avg_temp_inventory_ratio != null ? `${(quality.positive_rebuild_quality.avg_temp_inventory_ratio * 100).toFixed(0)}%` : '--'}
+                        </span>
+                        <span style={{ fontSize: 10, color: C.dim }}>
+                          反T空间 {quality.positive_rebuild_quality.avg_reverse_room_ratio_after != null ? `${(quality.positive_rebuild_quality.avg_reverse_room_ratio_after * 100).toFixed(0)}%` : '--'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10, color: C.dim, lineHeight: 1.5 }}>
+                        <span>观察Top: <span style={{ color: C.yellow }}>{topReasonText(quality.positive_rebuild_quality.top_observe_reasons)}</span></span>
+                        <span>确认Top: <span style={{ color: C.text }}>{topReasonText(quality.positive_rebuild_quality.top_recovery_confirms)}</span></span>
+                        <span>走弱风险Top: <span style={{ color: C.yellow }}>{topReasonText(quality.positive_rebuild_quality.top_continuation_risks)}</span></span>
+                        <span>库存风险Top: <span style={{ color: C.yellow }}>{topReasonText(quality.positive_rebuild_quality.top_inventory_warnings)}</span></span>
+                      </div>
+                    </div>
+                  )}
                   {quality.by_horizon && Object.keys(quality.by_horizon).length > 0 && (
                     <div>
                       <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>按评估窗口</div>
@@ -6585,6 +7668,8 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
               <StockCard member={m} signalRow={signalMap.get(m.ts_code)}
                 tick={tickMap[m.ts_code]} txns={txnsMap[m.ts_code] || []} tickHistory={tickHistoryMap[m.ts_code] || []}
                 compact={compact} onRemove={() => removeMember(m.ts_code)} onUpdateNote={(note) => updateNote(m.ts_code, note)} poolId={pool.pool_id}
+                pool2InventoryRow={pool2InventoryMap.get(m.ts_code)}
+                onOpenPool2Inventory={openPool2InventoryRow}
                 highlighted={locateTsCode === m.ts_code || (industryCoverageIndustryFilter !== 'all' && industryCoverageFilteredCodes.has(m.ts_code))}
                 conceptSnapshotStatus={conceptSnapshotStatus}
                 pool1RiskTags={Array.from(pool1CardRiskTagMap.get(m.ts_code) || [])}
@@ -6651,9 +7736,9 @@ function AddStockBox({ onAdd }: { onAdd: (s: SearchResult) => void }) {
 }
 
 /* ===== 股票监控卡片 ===== */
-function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHistory, compact, onRemove, onUpdateNote, poolId, highlighted, conceptSnapshotStatus, pool1RiskTags = [], activePool1RiskHotword = 'all', onSelectPool1RiskHotword }: {
+function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHistory, compact, onRemove, onUpdateNote, poolId, pool2InventoryRow, onOpenPool2Inventory, highlighted, conceptSnapshotStatus, pool1RiskTags = [], activePool1RiskHotword = 'all', onSelectPool1RiskHotword }: {
   member: Member; signalRow?: SignalRow; tick?: TickData; txns: Txn[]; tickHistory?: TickDataPoint[]
-  compact: boolean; onRemove: () => void; onUpdateNote: (note: string) => void; poolId: number; highlighted?: boolean
+  compact: boolean; onRemove: () => void; onUpdateNote: (note: string) => void; poolId: number; pool2InventoryRow?: Pool2InventoryRow; onOpenPool2Inventory?: (ts_code: string, target?: Pool2InventoryFocusTarget) => void; highlighted?: boolean
   conceptSnapshotStatus?: ConceptSnapshotStatusResp | null
   pool1RiskTags?: Array<{ text: string; color: string }>; activePool1RiskHotword?: string
   onSelectPool1RiskHotword?: (tag: string) => void
@@ -6790,6 +7875,38 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
   const hiddenConceptTagCount = Math.max(0, conceptTags.length - visibleConceptTags.length)
   const maxBidVol = Math.max(1, ...(tick?.bids || []).map(([, v]) => v))
   const maxAskVol = Math.max(1, ...(tick?.asks || []).map(([, v]) => v))
+  const pool2StateReady = Boolean(pool2InventoryRow?.state_ready)
+  const pool2OvernightQty = Number(pool2InventoryRow?.overnight_base_qty ?? NaN)
+  const pool2TradableQty = Number(pool2InventoryRow?.remaining_tradable_t_qty ?? pool2InventoryRow?.tradable_t_qty ?? NaN)
+  const pool2ReserveQty = Number(pool2InventoryRow?.reserve_qty ?? NaN)
+  const pool2TodayCount = Number(pool2InventoryRow?.today_t_count ?? NaN)
+  const pool2MaxTCount = Number(pool2InventoryRow?.max_t_count_per_day ?? NaN)
+  const pool2TodayPosQty = Number(pool2InventoryRow?.today_positive_t_qty ?? NaN)
+  const pool2TodayRevQty = Number(pool2InventoryRow?.today_reverse_t_qty ?? NaN)
+  const pool2CashAvailable = Number(pool2InventoryRow?.cash_available_for_t ?? NaN)
+  const pool2AnchorCost = Number(pool2InventoryRow?.inventory_anchor_cost ?? NaN)
+  const pool2LastActionMode = String(pool2InventoryRow?.last_action_mode || '')
+  const pool2LastActionQty = Number(pool2InventoryRow?.last_action_qty ?? NaN)
+  const pool2LastSignalType = String(pool2InventoryRow?.last_signal_type || '')
+  const pool2LastActionLabel = pool2LastActionMode === 'buy_then_sell_old'
+    ? '正T路径'
+    : (pool2LastActionMode === 'sell_old_then_buy_back' ? '反T路径' : '')
+  const pool2ActionLog = Array.isArray(pool2InventoryRow?.today_action_log)
+    ? [...pool2InventoryRow.today_action_log]
+        .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
+        .slice(0, 6)
+    : []
+  const pool2ActionModeLabel = (mode?: string, signalType?: string) => {
+    const m = String(mode || '')
+    const t = String(signalType || '')
+    if (m === 'buy_then_sell_old' || t === 'positive_t') return '正T'
+    if (m === 'sell_old_then_buy_back' || t === 'reverse_t') return '反T'
+    return '--'
+  }
+  const pool2ActionModeColor = (mode?: string, signalType?: string) => {
+    const label = pool2ActionModeLabel(mode, signalType)
+    return label === '正T' ? C.red : (label === '反T' ? C.green : C.dim)
+  }
 
   return (
     <div style={{
@@ -6894,6 +8011,93 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
           <div style={{ color: C.dim, fontSize: 9, fontFamily: 'monospace', marginTop: 2 }}>
             {`源:${tickSource} · 更新:${formatTimeText(tickUpdatedAt)} (${formatAgeText(tickUpdatedAt)})`}
           </div>
+          {poolId === 2 && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => onOpenPool2Inventory?.(member.ts_code)}
+                  style={{
+                    padding: '1px 6px',
+                    borderRadius: 999,
+                    border: `1px solid ${pool2StateReady ? C.cyan : C.yellow}`,
+                    color: pool2StateReady ? C.cyan : C.yellow,
+                    background: pool2StateReady ? `${C.cyan}10` : `${C.yellow}14`,
+                    fontSize: 9,
+                    lineHeight: 1.4,
+                    fontWeight: 700,
+                    cursor: onOpenPool2Inventory ? 'pointer' : 'default',
+                    fontFamily: 'inherit',
+                  }}
+                  title={pool2StateReady ? '点击跳转到上方 Pool2 底仓编辑行。' : '点击跳转到上方 Pool2 底仓编辑行，先补建模。'}
+                >
+                  {pool2StateReady ? '底仓已建模' : '底仓待建模'}
+                </button>
+                {Number.isFinite(pool2OvernightQty) && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPool2Inventory?.(member.ts_code, 'overnight_base_qty')}
+                    style={{ padding: '1px 6px', borderRadius: 999, border: `1px solid ${C.border}`, color: C.text, background: 'rgba(255,255,255,0.03)', fontSize: 9, lineHeight: 1.4, cursor: onOpenPool2Inventory ? 'pointer' : 'default', fontFamily: 'inherit' }}
+                    title="点击跳转到隔夜底仓输入框"
+                  >
+                    底仓 {pool2OvernightQty}
+                  </button>
+                )}
+                {Number.isFinite(pool2TradableQty) && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPool2Inventory?.(member.ts_code, 'tradable_t_qty')}
+                    style={{ padding: '1px 6px', borderRadius: 999, border: `1px solid ${C.border}`, color: pool2TradableQty > 0 ? C.green : C.dim, background: 'rgba(255,255,255,0.03)', fontSize: 9, lineHeight: 1.4, cursor: onOpenPool2Inventory ? 'pointer' : 'default', fontFamily: 'inherit' }}
+                    title="点击跳转到可T底仓输入框"
+                  >
+                    可T {pool2TradableQty}
+                  </button>
+                )}
+                {Number.isFinite(pool2ReserveQty) && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPool2Inventory?.(member.ts_code, 'reserve_qty')}
+                    style={{ padding: '1px 6px', borderRadius: 999, border: `1px solid ${C.border}`, color: C.dim, background: 'rgba(255,255,255,0.03)', fontSize: 9, lineHeight: 1.4, cursor: onOpenPool2Inventory ? 'pointer' : 'default', fontFamily: 'inherit' }}
+                    title="点击跳转到保留仓输入框"
+                  >
+                    保留 {pool2ReserveQty}
+                  </button>
+                )}
+                {(Number.isFinite(pool2TodayCount) || Number.isFinite(pool2MaxTCount)) && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPool2Inventory?.(member.ts_code, 'reset_today_button')}
+                    style={{ padding: '1px 6px', borderRadius: 999, border: `1px solid ${C.border}`, color: C.text, background: 'rgba(255,255,255,0.03)', fontSize: 9, lineHeight: 1.4, cursor: onOpenPool2Inventory ? 'pointer' : 'default', fontFamily: 'inherit' }}
+                    title="点击跳转到今日状态 / 重置今日按钮"
+                  >
+                    今日T {Number.isFinite(pool2TodayCount) ? pool2TodayCount : '--'}{Number.isFinite(pool2MaxTCount) ? `/${pool2MaxTCount}` : ''}
+                  </button>
+                )}
+              </div>
+              <div style={{ color: C.dim, fontSize: 9, fontFamily: 'monospace', marginTop: 2, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                正T:{Number.isFinite(pool2TodayPosQty) ? pool2TodayPosQty : '--'}
+                {' · '}
+                反T:{Number.isFinite(pool2TodayRevQty) ? pool2TodayRevQty : '--'}
+                {' · '}
+                现金:<button
+                  type="button"
+                  onClick={() => onOpenPool2Inventory?.(member.ts_code, 'cash_available_for_t')}
+                  style={{ background: 'none', border: 'none', padding: 0, color: C.text, cursor: onOpenPool2Inventory ? 'pointer' : 'default', fontFamily: 'inherit', fontSize: 'inherit' }}
+                  title="点击跳转到 T 可用现金输入框"
+                >{Number.isFinite(pool2CashAvailable) ? pool2CashAvailable.toFixed(0) : '--'}</button>
+                {' · '}
+                锚成本:<button
+                  type="button"
+                  onClick={() => onOpenPool2Inventory?.(member.ts_code, 'inventory_anchor_cost')}
+                  style={{ background: 'none', border: 'none', padding: 0, color: C.text, cursor: onOpenPool2Inventory ? 'pointer' : 'default', fontFamily: 'inherit', fontSize: 'inherit' }}
+                  title="点击跳转到底仓锚成本输入框"
+                >{Number.isFinite(pool2AnchorCost) ? pool2AnchorCost.toFixed(3) : '--'}</button>
+                {pool2LastActionLabel ? ` · ${pool2LastActionLabel}` : ''}
+                {Number.isFinite(pool2LastActionQty) && pool2LastActionQty > 0 ? `:${pool2LastActionQty}` : ''}
+                {pool2LastSignalType ? ` · 最近信号:${pool2LastSignalType}` : ''}
+              </div>
+            </>
+          )}
           {poolId === 1 && (
             <>
               <div style={{ color: C.dim, fontSize: 9, fontFamily: 'monospace', marginTop: 1 }}>
@@ -7028,6 +8232,47 @@ function StockCard({ member, signalRow, tick, txns, tickHistory: initialTickHist
 
       {tick?.is_mock && <div style={{ padding: '3px 6px', background: 'rgba(234,179,8,0.08)', color: C.yellow, fontSize: 9, textAlign: 'center', borderRadius: 3 }}>mootdx 未安装，以下为模拟数据</div>}
 
+      {showDetail && poolId === 2 && (
+        <div>
+          <SubTitle>今日T动作流水</SubTitle>
+          <div style={{ background: 'rgba(0,0,0,0.20)', border: `1px solid ${C.border}`, borderRadius: 4, padding: 6 }}>
+            {pool2ActionLog.length === 0 ? (
+              <div style={{ color: C.dim, fontSize: 10, textAlign: 'center', padding: 6 }}>暂无已应用动作</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '54px 42px 1fr 56px 62px', gap: '4px 6px', alignItems: 'center', fontSize: 10, fontFamily: 'monospace' }}>
+                <span style={{ color: C.dim }}>时间</span>
+                <span style={{ color: C.dim }}>路径</span>
+                <span style={{ color: C.dim }}>价格</span>
+                <span style={{ color: C.dim, textAlign: 'right' }}>数量</span>
+                <span style={{ color: C.dim, textAlign: 'right' }}>剩余可T</span>
+                {pool2ActionLog.map((it, idx) => {
+                  const at = Number(it.at || 0)
+                  const timeText = it.at_iso
+                    ? new Date(it.at_iso).toLocaleTimeString()
+                    : (at > 0 ? new Date(at * 1000).toLocaleTimeString() : '--:--:--')
+                  const label = pool2ActionModeLabel(it.action_mode, it.signal_type)
+                  const color = pool2ActionModeColor(it.action_mode, it.signal_type)
+                  const priceVal = Number(it.price ?? NaN)
+                  const qtyVal = Number(it.qty ?? NaN)
+                  const remainVal = Number(it.remaining_tradable_t_qty ?? NaN)
+                  return (
+                    <React.Fragment key={`${it.at || 0}-${it.signal_seq || idx}`}>
+                      <span style={{ color: C.text }}>{timeText.slice(-8)}</span>
+                      <span style={{ color, fontWeight: 700 }}>{label}</span>
+                      <span style={{ color: Number.isFinite(priceVal) ? priceColor(priceVal) : C.dim }}>
+                        {Number.isFinite(priceVal) ? priceVal.toFixed(3) : '--'}
+                      </span>
+                      <span style={{ color: C.text, textAlign: 'right' }}>{Number.isFinite(qtyVal) ? qtyVal : '--'}</span>
+                      <span style={{ color: C.dim, textAlign: 'right' }}>{Number.isFinite(remainVal) ? remainVal : '--'}</span>
+                    </React.Fragment>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <MiniIntradayChart
         tickData={tickHistory}
         preClose={preClose || signalRow?.price || 0}
@@ -7138,6 +8383,14 @@ function QStat({ label, value, color }: { label: string; value: string; color?: 
       <span style={{ fontSize: 13, fontWeight: 700, fontFamily: 'monospace', color: color || C.bright }}>{value}</span>
     </div>
   )
+}
+function topReasonText(items?: PositiveRebuildReasonCount[] | null, limit = 2): string {
+  if (!Array.isArray(items) || items.length <= 0) return '--'
+  return items
+    .filter(it => it && typeof it.reason === 'string' && it.reason)
+    .slice(0, limit)
+    .map(it => `${it.reason}(${Number(it.count || 0)})`)
+    .join(' / ')
 }
 function SubTitle({ children }: { children: React.ReactNode }) {
   return <div style={{ color: C.dim, fontSize: 9, letterSpacing: 1, marginBottom: 4, textTransform: 'uppercase' as const }}>{children}</div>
@@ -7257,13 +8510,22 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
   const vetoColor = veto ? guardVetoColor(veto) : C.dim
   const trendGuardRaw = details.trend_guard
   const trendGuard = trendGuardRaw && typeof trendGuardRaw === 'object' ? trendGuardRaw as Record<string, any> : null
+  const themeGuardRaw = details.theme_leadership_guard
+  const themeGuard = themeGuardRaw && typeof themeGuardRaw === 'object' ? themeGuardRaw as Record<string, any> : null
+  const doNotTEnvRaw = details.do_not_t_env
+  const doNotTEnv = doNotTEnvRaw && typeof doNotTEnvRaw === 'object' ? doNotTEnvRaw as Record<string, any> : null
   const trendGuardActive = Boolean(trendGuard?.active ?? trendGuard?.guard)
   const trendGuardOverride = Boolean(details.trend_guard_override)
   const surgeAbsorbGuard = Boolean(trendGuard?.surge_absorb_guard)
+  const themeGuardActive = Boolean(themeGuard?.active)
+  const themeGuardObserveOnly = Boolean(themeGuard?.observe_only)
+  const doNotTEnvReasons = Array.isArray(doNotTEnv?.reasons) ? doNotTEnv.reasons as any[] : []
   const trendGuardParts: string[] = []
   if (vetoLabel) trendGuardParts.push(`保护:${vetoLabel}`)
   else if (surgeAbsorbGuard) trendGuardParts.push('保护:强延续监控')
   else if (trendGuardActive) trendGuardParts.push('保护:主升浪监控')
+  if (themeGuardActive) trendGuardParts.push(themeGuardObserveOnly ? '主线保护:仅观察' : '主线保护:已确认分歧')
+  if (doNotTEnvReasons.length > 0) trendGuardParts.push(`T环境:${String(doNotTEnvReasons[0])}`)
   if (trendGuardOverride) trendGuardParts.push('已突破保护')
   if (typeof trendGuard?.required_bearish_confirms === 'number') trendGuardParts.push(`需偏空确认:${trendGuard.required_bearish_confirms}`)
   if (Array.isArray(trendGuard?.bearish_confirms) && trendGuard.bearish_confirms.length > 0) {
@@ -7446,7 +8708,7 @@ function signalTypeLabel(type: string): string {
     left_side_buy: '左侧买入',
     right_side_breakout: '右侧突破',
     timing_clear: '择时清仓',
-    positive_t: '正T买入',
+    positive_t: '正T回补',
     reverse_t: '反T卖出',
   }
   return m[type] || type || '--'
@@ -7613,11 +8875,26 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
   const trendGuard = details.trend_guard && typeof details.trend_guard === 'object'
     ? details.trend_guard as Record<string, any>
     : null
+  const themeLeadershipGuard = details.theme_leadership_guard && typeof details.theme_leadership_guard === 'object'
+    ? details.theme_leadership_guard as Record<string, any>
+    : null
+  const doNotTEnv = details.do_not_t_env && typeof details.do_not_t_env === 'object'
+    ? details.do_not_t_env as Record<string, any>
+    : null
   const pool1Decision = details.pool1_decision && typeof details.pool1_decision === 'object'
     ? details.pool1_decision as Record<string, any>
     : null
   const pool1Position = details.pool1_position && typeof details.pool1_position === 'object'
     ? details.pool1_position as Record<string, any>
+    : null
+  const t0Inventory = details.t0_inventory && typeof details.t0_inventory === 'object'
+    ? details.t0_inventory as Record<string, any>
+    : null
+  const positiveRebuildQuality = details.positive_rebuild_quality && typeof details.positive_rebuild_quality === 'object'
+    ? details.positive_rebuild_quality as Record<string, any>
+    : null
+  const t0Action = details.t0_action && typeof details.t0_action === 'object'
+    ? details.t0_action as Record<string, any>
     : null
   const rebuildMode = Boolean(details.rebuild_mode)
   const rebuildAddRatio = Number(details.rebuild_add_ratio ?? NaN)
@@ -7648,6 +8925,11 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
   const guardReasons = Array.isArray(trendGuard?.guard_reasons) ? trendGuard.guard_reasons as any[] : []
   const structureReasons = Array.isArray(trendGuard?.structure_reasons) ? trendGuard.structure_reasons as any[] : []
   const negativeFlags = Array.isArray(trendGuard?.negative_flags) ? trendGuard.negative_flags as any[] : []
+  const themeGuardReasons = Array.isArray(themeLeadershipGuard?.guard_reasons) ? themeLeadershipGuard.guard_reasons as any[] : []
+  const themeMissingReasons = Array.isArray(themeLeadershipGuard?.missing_reasons) ? themeLeadershipGuard.missing_reasons as any[] : []
+  const themeDistributionEvidence = Array.isArray(themeLeadershipGuard?.distribution_evidence) ? themeLeadershipGuard.distribution_evidence as any[] : []
+  const doNotTEnvReasons = Array.isArray(doNotTEnv?.reasons) ? doNotTEnv.reasons as any[] : []
+  const doNotTEnvWhitelist = Array.isArray(doNotTEnv?.whitelist_reasons) ? doNotTEnv.whitelist_reasons as any[] : []
   const sessionLabel = sessionPolicyLabel(
     typeof threshold?.session_policy === 'string' ? threshold.session_policy : '',
     typeof threshold?.market_phase_detail === 'string' ? threshold.market_phase_detail : '',
@@ -7703,6 +8985,41 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
     : []
   const clearConfirmItems = timingClearDetails && Array.isArray(timingClearDetails.confirm_items)
     ? timingClearDetails.confirm_items as any[]
+    : []
+  const t0SuggestedQty = t0Inventory ? Number(t0Inventory.suggested_action_qty ?? NaN) : NaN
+  const t0AppliedQty = t0Inventory ? Number(t0Inventory.applied_action_qty ?? NaN) : NaN
+  const t0OvernightQty = t0Inventory ? Number(t0Inventory.overnight_base_qty ?? NaN) : NaN
+  const t0TradableQty = t0Inventory ? Number(t0Inventory.tradable_t_qty ?? NaN) : NaN
+  const t0ReserveQty = t0Inventory ? Number(t0Inventory.reserve_qty ?? NaN) : NaN
+  const t0TodayCount = t0Inventory ? Number(t0Inventory.today_t_count ?? NaN) : NaN
+  const t0TodayPosQty = t0Inventory ? Number(t0Inventory.today_positive_t_qty ?? NaN) : NaN
+  const t0TodayRevQty = t0Inventory ? Number(t0Inventory.today_reverse_t_qty ?? NaN) : NaN
+  const t0CashAvailable = t0Inventory ? Number(t0Inventory.cash_available_for_t ?? NaN) : NaN
+  const t0AnchorCost = t0Inventory ? Number(t0Inventory.inventory_anchor_cost ?? NaN) : NaN
+  const t0ActionMode = t0Action ? String(t0Action.mode || t0Inventory?.action_path || '--') : (t0Inventory ? String(t0Inventory.action_path || '--') : '--')
+  const t0ActionRole = t0Action ? String(t0Action.role || t0Inventory?.action_role || '--') : (t0Inventory ? String(t0Inventory.action_role || '--') : '--')
+  const t0ObserveReason = t0Inventory ? String(t0Inventory.observe_reason || '--') : '--'
+  const positiveRecoveryScore = positiveRebuildQuality ? Number(positiveRebuildQuality.recover_after_rebuild_score ?? NaN) : NaN
+  const positiveRecoveryMin = positiveRebuildQuality ? Number(positiveRebuildQuality.recover_after_rebuild_min_score ?? NaN) : NaN
+  const positiveExpectedEdge = positiveRebuildQuality ? Number(positiveRebuildQuality.expected_edge_bps ?? NaN) : NaN
+  const positiveNetEdge = positiveRebuildQuality ? Number(positiveRebuildQuality.net_executable_edge_bps ?? NaN) : NaN
+  const positiveMinNetEdge = positiveRebuildQuality ? Number(positiveRebuildQuality.min_net_executable_edge_bps ?? NaN) : NaN
+  const positiveFeeBps = positiveRebuildQuality ? Number(positiveRebuildQuality.fee_bps ?? NaN) : NaN
+  const positiveSlippageBps = positiveRebuildQuality ? Number(positiveRebuildQuality.slippage_bps ?? NaN) : NaN
+  const positiveImpactBps = positiveRebuildQuality ? Number(positiveRebuildQuality.impact_bps ?? NaN) : NaN
+  const positiveReverseRoomAfter = positiveRebuildQuality ? Number(positiveRebuildQuality.reverse_room_ratio_after ?? NaN) : NaN
+  const positiveTempInventoryRatio = positiveRebuildQuality ? Number(positiveRebuildQuality.temp_inventory_ratio ?? NaN) : NaN
+  const positiveObserveReasons = positiveRebuildQuality && Array.isArray(positiveRebuildQuality.observe_reasons)
+    ? positiveRebuildQuality.observe_reasons as any[]
+    : []
+  const positiveRecoveryConfirms = positiveRebuildQuality && Array.isArray(positiveRebuildQuality.recovery_confirms)
+    ? positiveRebuildQuality.recovery_confirms as any[]
+    : []
+  const positiveContinuationRisks = positiveRebuildQuality && Array.isArray(positiveRebuildQuality.continuation_risks)
+    ? positiveRebuildQuality.continuation_risks as any[]
+    : []
+  const positiveInventoryWarnings = positiveRebuildQuality && Array.isArray(positiveRebuildQuality.inventory_warnings)
+    ? positiveRebuildQuality.inventory_warnings as any[]
     : []
   const clearFamilyLabelMap: Record<string, string> = {
     defense: '防守退出',
@@ -7896,6 +9213,37 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
               <div style={{ color: C.dim }}>仓位后: <span style={{ color: C.text }}>{pool1Position.position_ratio_after != null ? `${(Number(pool1Position.position_ratio_after) * 100).toFixed(0)}%` : '--'}</span></div>
             </>
           )}
+          {t0Inventory && (
+            <>
+              <div style={{ color: C.dim }}>T动作路径: <span style={{ color: C.text }}>{t0ActionMode}</span></div>
+              <div style={{ color: C.dim }}>T动作目标: <span style={{ color: C.text }}>{t0ActionRole}</span></div>
+              <div style={{ color: C.dim }}>建议股数: <span style={{ color: C.text }}>{Number.isFinite(t0SuggestedQty) ? `${t0SuggestedQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>已执行股数: <span style={{ color: C.text }}>{Number.isFinite(t0AppliedQty) ? `${t0AppliedQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>隔夜底仓: <span style={{ color: C.text }}>{Number.isFinite(t0OvernightQty) ? `${t0OvernightQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>可T底仓: <span style={{ color: C.text }}>{Number.isFinite(t0TradableQty) ? `${t0TradableQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>保留仓: <span style={{ color: C.text }}>{Number.isFinite(t0ReserveQty) ? `${t0ReserveQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>今日T次数: <span style={{ color: C.text }}>{Number.isFinite(t0TodayCount) ? `${t0TodayCount}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>今日正T量: <span style={{ color: C.text }}>{Number.isFinite(t0TodayPosQty) ? `${t0TodayPosQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>今日反T量: <span style={{ color: C.text }}>{Number.isFinite(t0TodayRevQty) ? `${t0TodayRevQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>T可用现金: <span style={{ color: C.text }}>{Number.isFinite(t0CashAvailable) ? t0CashAvailable.toFixed(2) : '--'}</span></div>
+              <div style={{ color: C.dim }}>底仓锚成本: <span style={{ color: C.text }}>{Number.isFinite(t0AnchorCost) ? t0AnchorCost.toFixed(3) : '--'}</span></div>
+              <div style={{ color: C.dim }}>底仓约束: <span style={{ color: observeOnly ? C.yellow : C.text }}>{t0ObserveReason}</span></div>
+            </>
+          )}
+          {positiveRebuildQuality && (
+            <>
+              <div style={{ color: C.dim }}>回补恢复分: <span style={{ color: Number.isFinite(positiveRecoveryScore) && Number.isFinite(positiveRecoveryMin) && positiveRecoveryScore < positiveRecoveryMin ? C.yellow : C.text }}>{Number.isFinite(positiveRecoveryScore) ? `${positiveRecoveryScore}` : '--'}{Number.isFinite(positiveRecoveryMin) ? ` / ${positiveRecoveryMin}` : ''}</span></div>
+              <div style={{ color: C.dim }}>预期边际: <span style={{ color: C.text }}>{Number.isFinite(positiveExpectedEdge) ? `${positiveExpectedEdge.toFixed(1)}bps` : '--'}</span></div>
+              <div style={{ color: C.dim }}>净可执行边际: <span style={{ color: Number.isFinite(positiveNetEdge) && Number.isFinite(positiveMinNetEdge) && positiveNetEdge < positiveMinNetEdge ? C.yellow : C.text }}>{Number.isFinite(positiveNetEdge) ? `${positiveNetEdge.toFixed(1)}bps` : '--'}{Number.isFinite(positiveMinNetEdge) ? ` / ${positiveMinNetEdge.toFixed(1)}bps` : ''}</span></div>
+              <div style={{ color: C.dim }}>成本拆分: <span style={{ color: C.text }}>{[positiveFeeBps, positiveSlippageBps, positiveImpactBps].every(Number.isFinite) ? `${positiveFeeBps.toFixed(1)} + ${positiveSlippageBps.toFixed(1)} + ${positiveImpactBps.toFixed(1)}bps` : '--'}</span></div>
+              <div style={{ color: C.dim }}>临时库存: <span style={{ color: C.text }}>{Number.isFinite(positiveTempInventoryRatio) ? `${(positiveTempInventoryRatio * 100).toFixed(0)}%` : '--'}</span></div>
+              <div style={{ color: C.dim }}>回补后反T空间: <span style={{ color: C.text }}>{Number.isFinite(positiveReverseRoomAfter) ? `${(positiveReverseRoomAfter * 100).toFixed(0)}%` : '--'}</span></div>
+              <div style={{ color: C.dim }}>质量门原因: <span style={{ color: positiveObserveReasons.length > 0 ? C.yellow : C.text }}>{positiveObserveReasons.length > 0 ? positiveObserveReasons.join(', ') : '--'}</span></div>
+              <div style={{ color: C.dim }}>恢复确认: <span style={{ color: C.text }}>{positiveRecoveryConfirms.length > 0 ? positiveRecoveryConfirms.join(', ') : '--'}</span></div>
+              <div style={{ color: C.dim }}>走弱风险: <span style={{ color: positiveContinuationRisks.length > 0 ? C.yellow : C.text }}>{positiveContinuationRisks.length > 0 ? positiveContinuationRisks.join(', ') : '--'}</span></div>
+              <div style={{ color: C.dim }}>库存风险: <span style={{ color: positiveInventoryWarnings.length > 0 ? C.yellow : C.text }}>{positiveInventoryWarnings.length > 0 ? positiveInventoryWarnings.join(', ') : '--'}</span></div>
+            </>
+          )}
           {rebuildMode && (
             <>
               <div style={{ color: C.dim }}>回补比例: <span style={{ color: C.text }}>{Number.isFinite(rebuildAddRatio) ? `${(rebuildAddRatio * 100).toFixed(0)}%` : '--'}</span></div>
@@ -7908,7 +9256,7 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
           )}
         </div>
 
-        {(threshold || antiChurn || marketStructure || trendGuard || vetoLabel || leftStreakGuard || timingClearDetails) && (
+        {(threshold || antiChurn || marketStructure || trendGuard || themeLeadershipGuard || doNotTEnv || vetoLabel || leftStreakGuard || timingClearDetails) && (
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
@@ -8052,6 +9400,46 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
                 <div>guard_reasons: <span style={{ color: C.text }}>{guardReasons.length > 0 ? guardReasons.join(', ') : '--'}</span></div>
                 <div>structure_reasons: <span style={{ color: C.text }}>{structureReasons.length > 0 ? structureReasons.join(', ') : '--'}</span></div>
                 <div>negative_flags: <span style={{ color: C.text }}>{negativeFlags.length > 0 ? negativeFlags.join(', ') : '--'}</span></div>
+              </div>
+            )}
+            {(themeLeadershipGuard || doNotTEnv) && (
+              <div style={{
+                background: 'rgba(0,0,0,0.22)',
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                padding: 8,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                color: C.dim,
+                lineHeight: 1.5,
+              }}>
+                <div style={{ color: C.cyan, fontSize: 11, marginBottom: 4 }}>Pool2 T环境门</div>
+                {themeLeadershipGuard && (
+                  <>
+                    <div>theme_active: <span style={{ color: themeLeadershipGuard.active ? C.red : C.text }}>{String(Boolean(themeLeadershipGuard.active))}</span></div>
+                    <div>theme_observe_only: <span style={{ color: themeLeadershipGuard.observe_only ? C.yellow : C.text }}>{String(Boolean(themeLeadershipGuard.observe_only))}</span></div>
+                    <div>theme_reason: <span style={{ color: C.text }}>{String(themeLeadershipGuard.reason || '--')}</span></div>
+                    <div>theme_score: <span style={{ color: C.text }}>{String(themeLeadershipGuard.concept_score ?? '--')} / {String(themeLeadershipGuard.concept_hard_score ?? '--')}</span></div>
+                    <div>theme_guard_score: <span style={{ color: C.text }}>{String(themeLeadershipGuard.guard_score ?? '--')}</span></div>
+                    <div>distribution: <span style={{ color: themeDistributionEvidence.length > 0 ? C.yellow : C.text }}>{String(themeLeadershipGuard.distribution_confirm_count ?? 0)} / {String(themeLeadershipGuard.distribution_required ?? '--')}</span></div>
+                    <div>guard_reasons: <span style={{ color: C.text }}>{themeGuardReasons.length > 0 ? themeGuardReasons.join(', ') : '--'}</span></div>
+                    <div>missing_reasons: <span style={{ color: themeMissingReasons.length > 0 ? C.yellow : C.text }}>{themeMissingReasons.length > 0 ? themeMissingReasons.join(', ') : '--'}</span></div>
+                    <div>distribution_evidence: <span style={{ color: themeDistributionEvidence.length > 0 ? C.yellow : C.text }}>{themeDistributionEvidence.length > 0 ? themeDistributionEvidence.join(', ') : '--'}</span></div>
+                  </>
+                )}
+                {doNotTEnv && (
+                  <>
+                    <div style={{ marginTop: themeLeadershipGuard ? 4 : 0, color: C.bright }}>do_not_t_env</div>
+                    <div>blocked: <span style={{ color: doNotTEnv.blocked ? C.yellow : C.text }}>{String(Boolean(doNotTEnv.blocked))}</span></div>
+                    <div>reason: <span style={{ color: doNotTEnv.blocked ? C.yellow : C.text }}>{String(doNotTEnv.reason || '--')}</span></div>
+                    <div>reasons: <span style={{ color: doNotTEnvReasons.length > 0 ? C.yellow : C.text }}>{doNotTEnvReasons.length > 0 ? doNotTEnvReasons.join(', ') : '--'}</span></div>
+                    <div>whitelist: <span style={{ color: doNotTEnvWhitelist.length > 0 ? C.green : C.text }}>{doNotTEnvWhitelist.length > 0 ? doNotTEnvWhitelist.join(', ') : '--'}</span></div>
+                    <div>session_policy: <span style={{ color: C.text }}>{String(doNotTEnv.session_policy || '--')}</span></div>
+                    <div>low_liquidity: <span style={{ color: doNotTEnv.low_liquidity ? C.yellow : C.text }}>{String(Boolean(doNotTEnv.low_liquidity))}</span></div>
+                    <div>theme_accelerating: <span style={{ color: doNotTEnv.theme_accelerating ? C.red : C.text }}>{String(Boolean(doNotTEnv.theme_accelerating))}</span></div>
+                    <div>breadth_climax: <span style={{ color: doNotTEnv.breadth_climax ? C.red : C.text }}>{String(Boolean(doNotTEnv.breadth_climax))}</span></div>
+                  </>
+                )}
               </div>
             )}
             {threshold && (

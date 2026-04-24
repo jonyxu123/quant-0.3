@@ -6,10 +6,297 @@ from .persistence_service import *  # noqa: F401,F403
 
 _concept_snapshot_refresher_started = False
 _industry_snapshot_refresher_started = False
+_board_catalog_refresher_started = False
 _CONCEPT_SNAPSHOT_REFRESH_SEC = float(os.getenv("CONCEPT_SNAPSHOT_REFRESH_SEC", "60") or 60.0)
 _CONCEPT_SNAPSHOT_OFF_SESSION_SEC = float(os.getenv("CONCEPT_SNAPSHOT_OFF_SESSION_SEC", "300") or 300.0)
 _INDUSTRY_SNAPSHOT_REFRESH_SEC = float(os.getenv("INDUSTRY_SNAPSHOT_REFRESH_SEC", "60") or 60.0)
 _INDUSTRY_SNAPSHOT_OFF_SESSION_SEC = float(os.getenv("INDUSTRY_SNAPSHOT_OFF_SESSION_SEC", "300") or 300.0)
+_BOARD_CATALOG_SYNC_ENABLED = str(os.getenv("BOARD_CATALOG_SYNC_ENABLED", "1") or "1").lower() in ("1", "true", "yes", "on")
+_BOARD_CATALOG_SYNC_HOUR = int(os.getenv("BOARD_CATALOG_SYNC_HOUR", "8") or 8)
+_BOARD_CATALOG_SYNC_MINUTE = int(os.getenv("BOARD_CATALOG_SYNC_MINUTE", "45") or 45)
+_BOARD_CATALOG_SYNC_STARTUP_BEFORE_HHMM = int(os.getenv("BOARD_CATALOG_SYNC_STARTUP_BEFORE_HHMM", "925") or 925)
+_board_catalog_sync_lock = threading.Lock()
+_board_catalog_last_success_date = ""
+
+
+def _is_weekday(now_dt: datetime.datetime) -> bool:
+    return int(now_dt.weekday()) < 5
+
+
+def _get_board_catalog_table_latest_ts(table_name: str, conn=None) -> Optional[datetime.datetime]:
+    owns_conn = conn is None
+    if owns_conn:
+        try:
+            from backend.data.duckdb_manager import open_duckdb_conn
+            from config import DB_PATH
+
+            conn = open_duckdb_conn(DB_PATH, retries=5, base_sleep_sec=0.08)
+        except Exception:
+            return None
+    try:
+        schema_rows = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+        if not schema_rows:
+            return None
+        columns = {str(row[1]) for row in schema_rows}
+        ts_col = ""
+        for candidate in ("collected_at", "collected_at_iso", "synced_at"):
+            if candidate in columns:
+                ts_col = candidate
+                break
+        if not ts_col:
+            return None
+        row = conn.execute(f'SELECT MAX("{ts_col}") FROM "{table_name}"').fetchone()
+        val = row[0] if row else None
+        if val is None:
+            return None
+        if isinstance(val, datetime.datetime):
+            return val
+        if isinstance(val, datetime.date):
+            return datetime.datetime.combine(val, datetime.time.min)
+        try:
+            return datetime.datetime.fromisoformat(str(val))
+        except Exception:
+            return None
+    except Exception:
+        return None
+    finally:
+        if owns_conn and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_board_catalog_table_count(table_name: str, conn=None) -> int:
+    if conn is None:
+        try:
+            from backend.data.duckdb_manager import open_duckdb_conn
+            from config import DB_PATH
+
+            conn = open_duckdb_conn(DB_PATH, retries=5, base_sleep_sec=0.08)
+        except Exception:
+            return 0
+        owns_conn = True
+    else:
+        owns_conn = False
+    try:
+        row = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
+        return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
+    finally:
+        if owns_conn and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_board_catalog_freshness_snapshot(conn=None) -> dict[str, Optional[datetime.datetime]]:
+    owns_conn = conn is None
+    if owns_conn:
+        try:
+            from backend.data.duckdb_manager import open_duckdb_conn
+            from config import DB_PATH
+
+            conn = open_duckdb_conn(DB_PATH, retries=5, base_sleep_sec=0.08)
+        except Exception:
+            conn = None
+    snapshot = {
+        "concept": _get_board_catalog_table_latest_ts("concept", conn=conn) if conn is not None else None,
+        "concept_detail": _get_board_catalog_table_latest_ts("concept_detail", conn=conn) if conn is not None else None,
+        "em_industry_board": _get_board_catalog_table_latest_ts("em_industry_board", conn=conn) if conn is not None else None,
+        "em_industry_member": _get_board_catalog_table_latest_ts("em_industry_member", conn=conn) if conn is not None else None,
+    }
+    if owns_conn and conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return snapshot
+
+
+def _board_catalog_is_stale(now_dt: Optional[datetime.datetime] = None) -> tuple[bool, dict[str, Optional[datetime.datetime]]]:
+    now_dt = now_dt or datetime.datetime.now()
+    snapshot = _get_board_catalog_freshness_snapshot()
+    today = now_dt.date()
+    stale = False
+    for ts in snapshot.values():
+        if ts is None or ts.date() < today:
+            stale = True
+            break
+    return stale, snapshot
+
+
+def _reload_runtime_board_mappings() -> None:
+    from . import pool_service
+
+    refreshed = pool_service._refresh_daily_factors_cache(pool_id=None)
+    logger.info(f"[Layer2] board catalog sync applied to runtime cache: {refreshed}")
+
+
+def _run_board_catalog_sync_once(reason: str = "", force: bool = False) -> bool:
+    global _board_catalog_last_success_date
+    with _board_catalog_sync_lock:
+        now_dt = datetime.datetime.now()
+        if not _is_weekday(now_dt):
+            return False
+        today_text = now_dt.strftime("%Y-%m-%d")
+        stale_before, snapshot_before = _board_catalog_is_stale(now_dt)
+        if not force and not stale_before:
+            _board_catalog_last_success_date = today_text
+            return True
+        if not force and _board_catalog_last_success_date == today_text:
+            return True
+        logger.info(f"[Layer2] board catalog sync started reason={reason or 'scheduled'}")
+        try:
+            from backend.data.full_sync import FullDataSync
+
+            sync = FullDataSync(max_workers=1)
+            try:
+                sync.sync_historical_concept()
+                sync.sync_historical_concept_detail()
+                sync.sync_em_industry_board()
+                sync.sync_em_industry_member()
+            finally:
+                try:
+                    sync.close()
+                except Exception:
+                    pass
+            stale, snapshot = _board_catalog_is_stale(datetime.datetime.now())
+            freshness_text = ", ".join(
+                f"{name}={(ts.isoformat(timespec='seconds') if isinstance(ts, datetime.datetime) else 'missing')}"
+                for name, ts in snapshot.items()
+            )
+            if stale:
+                logger.warning(f"[Layer2] board catalog sync finished but tables still stale: {freshness_text}")
+                return False
+            _reload_runtime_board_mappings()
+            _board_catalog_last_success_date = today_text
+            logger.info(f"[Layer2] board catalog sync finished: {freshness_text}")
+            return True
+        except Exception as e:
+            logger.warning(f"[Layer2] board catalog sync failed: {e}")
+            return False
+
+
+def _get_board_catalog_status() -> dict:
+    checked_at = datetime.datetime.now()
+    counts = {
+        "concept": 0,
+        "concept_detail": 0,
+        "em_industry_board": 0,
+        "em_industry_member": 0,
+    }
+    try:
+        from backend.data.duckdb_manager import open_duckdb_conn
+        from config import DB_PATH
+
+        conn = open_duckdb_conn(DB_PATH, retries=5, base_sleep_sec=0.08)
+    except Exception as e:
+        conn = None
+        count_error = str(e)
+    else:
+        count_error = ""
+
+    if conn is not None:
+        try:
+            for table_name in counts.keys():
+                counts[table_name] = _get_board_catalog_table_count(table_name, conn=conn)
+            snapshot = _get_board_catalog_freshness_snapshot(conn=conn)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    else:
+        snapshot = _get_board_catalog_freshness_snapshot(conn=None)
+
+    schedule_hhmm = int(_BOARD_CATALOG_SYNC_HOUR) * 100 + int(_BOARD_CATALOG_SYNC_MINUTE)
+    current_hhmm = checked_at.hour * 100 + checked_at.minute
+    overnight_grace = current_hhmm < schedule_hhmm
+
+    def _status_fresh(ts: Optional[datetime.datetime]) -> bool:
+        if not isinstance(ts, datetime.datetime):
+            return False
+        if ts.date() >= checked_at.date():
+            return True
+        if overnight_grace:
+            prev_day = checked_at.date() - datetime.timedelta(days=1)
+            return ts.date() >= prev_day
+        return False
+
+    stale = False
+    for ts in snapshot.values():
+        if not _status_fresh(ts):
+            stale = True
+            break
+
+    freshness = {}
+    for table_name, ts in snapshot.items():
+        freshness[table_name] = {
+            "updated_at": int(ts.timestamp()) if isinstance(ts, datetime.datetime) else None,
+            "updated_at_iso": ts.isoformat(timespec="seconds") if isinstance(ts, datetime.datetime) else None,
+            "count": int(counts.get(table_name, 0) or 0),
+            "fresh": bool(_status_fresh(ts)),
+        }
+
+    return {
+        "ok": not stale,
+        "checked_at": checked_at.isoformat(timespec="seconds"),
+        "enabled": bool(_BOARD_CATALOG_SYNC_ENABLED),
+        "refresher_started": bool(_board_catalog_refresher_started),
+        "schedule": f"{_BOARD_CATALOG_SYNC_HOUR:02d}:{_BOARD_CATALOG_SYNC_MINUTE:02d}",
+        "startup_cutoff_hhmm": int(_BOARD_CATALOG_SYNC_STARTUP_BEFORE_HHMM),
+        "overnight_grace": overnight_grace,
+        "last_success_date": _board_catalog_last_success_date or None,
+        "stale": bool(stale),
+        "count_error": count_error or None,
+        "tables": freshness,
+    }
+
+
+def _start_board_catalog_refresher() -> None:
+    global _board_catalog_refresher_started
+    if _board_catalog_refresher_started or not _BOARD_CATALOG_SYNC_ENABLED:
+        return
+    _board_catalog_refresher_started = True
+
+    def _loop() -> None:
+        schedule_text = f"{_BOARD_CATALOG_SYNC_HOUR:02d}:{_BOARD_CATALOG_SYNC_MINUTE:02d}"
+        logger.info(f"[Layer2] board catalog refresher started schedule={schedule_text}")
+        while True:
+            now_dt = datetime.datetime.now()
+            hhmm = now_dt.hour * 100 + now_dt.minute
+            try:
+                stale, snapshot = _board_catalog_is_stale(now_dt)
+                if stale and _is_weekday(now_dt) and hhmm < _BOARD_CATALOG_SYNC_STARTUP_BEFORE_HHMM:
+                    freshness_text = ", ".join(
+                        f"{name}={(ts.isoformat(timespec='seconds') if isinstance(ts, datetime.datetime) else 'missing')}"
+                        for name, ts in snapshot.items()
+                    )
+                    logger.info(f"[Layer2] board catalog stale before open, trigger immediate sync: {freshness_text}")
+                    _run_board_catalog_sync_once(reason="startup_stale")
+            except Exception as e:
+                logger.warning(f"[Layer2] board catalog startup check failed: {e}")
+
+            next_run = now_dt.replace(
+                hour=int(_BOARD_CATALOG_SYNC_HOUR),
+                minute=int(_BOARD_CATALOG_SYNC_MINUTE),
+                second=0,
+                microsecond=0,
+            )
+            if next_run <= now_dt:
+                next_run += datetime.timedelta(days=1)
+            sleep_sec = max(30.0, (next_run - now_dt).total_seconds())
+            time.sleep(sleep_sec)
+            try:
+                _run_board_catalog_sync_once(reason="scheduled")
+            except Exception as e:
+                logger.warning(f"[Layer2] board catalog scheduled sync failed: {e}")
+                time.sleep(60.0)
+
+    threading.Thread(target=_loop, daemon=True, name="board-catalog-refresher").start()
 
 def _load_latest_vol20_map(ts_codes: list[str]) -> dict[str, float]:
     if not ts_codes:
@@ -501,7 +788,7 @@ def _start_concept_snapshot_refresher(interval_sec: float = _CONCEPT_SNAPSHOT_RE
                 logger.warning(f"[Layer2] concept snapshot refresher error: {e}")
 
             try:
-                market_open = bool(_is_market_open().get("is_open", False))
+                market_open = bool(_is_board_snapshot_fetch_session())
             except Exception:
                 market_open = False
             sleep_sec = sec if market_open else max(sec, float(_CONCEPT_SNAPSHOT_OFF_SESSION_SEC))
@@ -620,7 +907,7 @@ def _start_industry_snapshot_refresher(interval_sec: float = _INDUSTRY_SNAPSHOT_
                 logger.warning(f"[Layer2] industry snapshot refresher error: {e}")
 
             try:
-                market_open = bool(_is_market_open().get("is_open", False))
+                market_open = bool(_is_board_snapshot_fetch_session())
             except Exception:
                 market_open = False
             sleep_sec = sec if market_open else max(sec, float(_INDUSTRY_SNAPSHOT_OFF_SESSION_SEC))

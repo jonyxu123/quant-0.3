@@ -93,6 +93,32 @@ _T0_MIN_NET_EDGE_BPS = float(_ANTI_CHURN_CFG.get('min_net_edge_bps', 6.0) or 6.0
 _T0_MIN_EXPECTED_EDGE_BPS = float(_ANTI_CHURN_CFG.get('min_expected_edge_bps', 25.0) or 25.0)
 _T0_REVERSE_BIDASK_BLOCK_TH = float(_ANTI_CHURN_CFG.get('reverse_bidask_block_th', 1.22) or 1.22)
 _T0_REVERSE_VWAP_PREMIUM_BPS = float(_ANTI_CHURN_CFG.get('reverse_vwap_premium_bps', 18.0) or 18.0)
+_POS_REBUILD_CFG = _T0_CFG.get('positive_rebuild_quality', {}) if isinstance(_T0_CFG, dict) else {}
+_POS_REBUILD_QUALITY_ENABLED = bool(_POS_REBUILD_CFG.get('enabled', True))
+_POS_REBUILD_MIN_RECOVERY_SCORE = int(_POS_REBUILD_CFG.get('min_recovery_score', 58) or 58)
+_POS_REBUILD_MIN_NET_EDGE_BPS = float(_POS_REBUILD_CFG.get('min_net_edge_bps', 8.0) or 8.0)
+_POS_REBUILD_FEE_BPS = float(_POS_REBUILD_CFG.get('fee_bps', _T0_ROUNDTRIP_FEE_BPS) or _T0_ROUNDTRIP_FEE_BPS)
+_POS_REBUILD_SLIPPAGE_BPS = float(_POS_REBUILD_CFG.get('slippage_bps', 4.0) or 4.0)
+_POS_REBUILD_IMPACT_BPS = float(_POS_REBUILD_CFG.get('impact_bps', 3.0) or 3.0)
+_POS_REBUILD_MIN_REVERSE_ROOM_RATIO_AFTER = max(
+    0.0,
+    min(1.0, float(_POS_REBUILD_CFG.get('min_reverse_room_ratio_after', 0.35) or 0.35)),
+)
+_POS_REBUILD_MAX_TEMP_INVENTORY_RATIO = max(
+    0.0,
+    min(1.0, float(_POS_REBUILD_CFG.get('max_temp_inventory_ratio', 0.35) or 0.35)),
+)
+_POS_REBUILD_ANCHOR_COST_RAISE_BPS_MAX = float(_POS_REBUILD_CFG.get('anchor_cost_raise_bps_max', 6.0) or 6.0)
+_POS_REBUILD_FLOW_WEAK_BPS = float(_POS_REBUILD_CFG.get('flow_weak_bps', -60.0) or -60.0)
+_POS_REBUILD_BIDASK_WEAK_RATIO = float(_POS_REBUILD_CFG.get('bid_ask_weak_ratio', 0.92) or 0.92)
+_T0_INVENTORY_CFG = _T0_CFG.get('inventory_state', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_INVENTORY_ENABLED = bool(_T0_INVENTORY_CFG.get('enabled', True))
+_T0_INVENTORY_REQUIRE_STATE_FOR_EXECUTE = bool(_T0_INVENTORY_CFG.get('require_state_for_execute', True))
+_T0_INVENTORY_OBSERVE_ON_STATE_MISSING = bool(_T0_INVENTORY_CFG.get('observe_on_state_missing', True))
+_T0_INVENTORY_LOT_SIZE = max(1, int(_T0_INVENTORY_CFG.get('lot_size', 100) or 100))
+_T0_INVENTORY_POSITIVE_ACTION_RATIO = max(0.0, min(1.0, float(_T0_INVENTORY_CFG.get('positive_action_ratio', 0.25) or 0.25)))
+_T0_INVENTORY_REVERSE_ACTION_RATIO = max(0.0, min(1.0, float(_T0_INVENTORY_CFG.get('reverse_action_ratio', 0.25) or 0.25)))
+_T0_INVENTORY_MAX_T_COUNT_PER_DAY = max(1, int(_T0_INVENTORY_CFG.get('max_t_count_per_day', 4) or 4))
 _T0_VOL_PACE_CFG = _T0_CFG.get('volume_pace', {}) if isinstance(_T0_CFG, dict) else {}
 _T0_VOL_PACE_ENABLED = bool(_T0_VOL_PACE_CFG.get('enabled', True))
 _T0_VOL_PACE_MIN_PROGRESS = float(_T0_VOL_PACE_CFG.get('min_progress', 0.12) or 0.12)
@@ -131,6 +157,44 @@ _T0_TREND_GUARD_SURGE_SUPER_INFLOW_BPS_MIN = float(
 _T0_TREND_GUARD_SURGE_MIN_BEARISH_HARD = int(
     _T0_TREND_GUARD_CFG.get('surge_absorb_min_bearish_confirms', 4) or 4
 )
+_T0_THEME_GUARD_CFG = _T0_CFG.get('theme_leadership_guard', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_THEME_GUARD_ENABLED = bool(_T0_THEME_GUARD_CFG.get('enabled', True))
+_T0_THEME_GUARD_MIN_THEME_SCORE = float(_T0_THEME_GUARD_CFG.get('min_theme_score', 30.0) or 30.0)
+_T0_THEME_GUARD_MIN_LEADER_PCT = float(_T0_THEME_GUARD_CFG.get('min_leader_pct', 2.0) or 2.0)
+_T0_THEME_GUARD_MIN_BREADTH_RATIO = float(_T0_THEME_GUARD_CFG.get('min_breadth_ratio', 0.12) or 0.12)
+_T0_THEME_GUARD_MIN_CORE_COMPONENT = float(_T0_THEME_GUARD_CFG.get('min_core_component', 4.0) or 4.0)
+_T0_THEME_GUARD_MIN_INDUSTRY_SCORE = float(_T0_THEME_GUARD_CFG.get('min_industry_score', 5.0) or 5.0)
+_T0_THEME_GUARD_MIN_SCORE = int(_T0_THEME_GUARD_CFG.get('min_guard_score', 4) or 4)
+_T0_THEME_GUARD_SECONDARY_SUPPORT_MIN = int(_T0_THEME_GUARD_CFG.get('secondary_support_min_count', 1) or 1)
+_T0_THEME_GUARD_MIN_DISTRIBUTION = int(_T0_THEME_GUARD_CFG.get('min_distribution_confirms', 2) or 2)
+_T0_THEME_GUARD_SUPER_OUT_BPS = float(_T0_THEME_GUARD_CFG.get('distribution_super_outflow_bps', -80.0) or -80.0)
+_T0_THEME_GUARD_BIDASK_WEAK = float(_T0_THEME_GUARD_CFG.get('distribution_bidask_weak', 0.92) or 0.92)
+_T0_THEME_GUARD_AVWAP_BREAK_BPS = float(_T0_THEME_GUARD_CFG.get('avwap_break_bps', 25.0) or 25.0)
+_T0_DO_NOT_T_ENV_CFG = _T0_CFG.get('do_not_t_env', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_DO_NOT_T_ENV_ENABLED = bool(_T0_DO_NOT_T_ENV_CFG.get('enabled', True))
+_T0_DO_NOT_T_BLOCK_POLICIES_RAW = _T0_DO_NOT_T_ENV_CFG.get('block_session_policies') or []
+if isinstance(_T0_DO_NOT_T_BLOCK_POLICIES_RAW, str):
+    _T0_DO_NOT_T_BLOCK_POLICIES_RAW = _T0_DO_NOT_T_BLOCK_POLICIES_RAW.split(',')
+_T0_DO_NOT_T_BLOCK_POLICIES = {
+    str(x).strip()
+    for x in (_T0_DO_NOT_T_BLOCK_POLICIES_RAW or [])
+    if str(x).strip()
+}
+if not _T0_DO_NOT_T_BLOCK_POLICIES:
+    _T0_DO_NOT_T_BLOCK_POLICIES = {'auction_pause', 'open_strict', 'lunch_pause', 'close_reduce'}
+_T0_DO_NOT_T_BLOCK_LIMIT_MAGNET = bool(_T0_DO_NOT_T_ENV_CFG.get('block_limit_magnet', True))
+_T0_DO_NOT_T_BLOCK_BOARD_SEAL_ENV = bool(_T0_DO_NOT_T_ENV_CFG.get('block_board_seal_env', True))
+_T0_DO_NOT_T_BLOCK_RISK_WARNING = bool(_T0_DO_NOT_T_ENV_CFG.get('block_risk_warning', True))
+_T0_DO_NOT_T_BLOCK_IPO_EARLY = bool(_T0_DO_NOT_T_ENV_CFG.get('block_ipo_early', True))
+_T0_DO_NOT_T_BLOCK_DROUGHT_SPREAD = bool(_T0_DO_NOT_T_ENV_CFG.get('block_volume_drought_spread', True))
+_T0_DO_NOT_T_BLOCK_THEME_ACCEL = bool(_T0_DO_NOT_T_ENV_CFG.get('block_theme_acceleration', True))
+_T0_DO_NOT_T_BLOCK_BREADTH_CLIMAX = bool(_T0_DO_NOT_T_ENV_CFG.get('block_breadth_climax', True))
+_T0_DO_NOT_T_REQUIRE_WHITELIST = bool(_T0_DO_NOT_T_ENV_CFG.get('require_whitelist_for_execute', True))
+_T0_DO_NOT_T_THEME_ACCEL_SCORE = float(_T0_DO_NOT_T_ENV_CFG.get('theme_accel_score', 45.0) or 45.0)
+_T0_DO_NOT_T_CLIMAX_BREADTH = float(_T0_DO_NOT_T_ENV_CFG.get('theme_climax_breadth', 0.45) or 0.45)
+_T0_DO_NOT_T_CLIMAX_LEADER_PCT = float(_T0_DO_NOT_T_ENV_CFG.get('theme_climax_leader_pct', 7.0) or 7.0)
+_T0_DO_NOT_T_LOW_LIQ_BIDASK = float(_T0_DO_NOT_T_ENV_CFG.get('low_liquidity_bidask', 0.75) or 0.75)
+_T0_DO_NOT_T_WHITELIST_BIDASK = float(_T0_DO_NOT_T_ENV_CFG.get('whitelist_bidask_support', 1.05) or 1.05)
 
 # T+0 滞回状态：{ts_code: {'positive_t': last_trigger_price, 'reverse_t': last_trigger_price}}
 _hysteresis_state: dict[str, dict[str, float]] = {}
@@ -363,6 +427,8 @@ def _threshold_meta(thresholds: Optional[dict]) -> dict:
         'concept_boards': thresholds.get('concept_boards'),
         'core_concept_board': thresholds.get('core_concept_board'),
         'concept_ecology': thresholds.get('concept_ecology'),
+        'industry': thresholds.get('industry'),
+        'industry_ecology': thresholds.get('industry_ecology'),
         'risk_warning': thresholds.get('risk_warning'),
         'volume_drought': thresholds.get('volume_drought'),
         'board_seal_env': thresholds.get('board_seal_env'),
@@ -372,6 +438,7 @@ def _threshold_meta(thresholds: Optional[dict]) -> dict:
         'profile_override': thresholds.get('profile_override'),
         'session_override': thresholds.get('session_override'),
         'limit_filter': thresholds.get('limit_filter'),
+        'limit_magnet': thresholds.get('limit_magnet'),
         'observer_only': bool(thresholds.get('observer_only', False)),
         'observer_reason': thresholds.get('observer_reason'),
         'blocked': bool(thresholds.get('blocked', False)),
@@ -1436,6 +1503,382 @@ def _compute_pool1_concept_hard_score(ecology: dict, state: str) -> tuple[float,
     return round(float(structured_score), 2), {k: round(float(v), 2) for k, v in normalized.items()}
 
 
+def _ecology_state_score(ecology: Optional[dict]) -> tuple[str, float, float, dict]:
+    item = dict(ecology or {})
+    state = str(item.get('state') or 'unknown').strip().lower() or 'unknown'
+    hard_score, components = _compute_pool1_concept_hard_score(item, state) if item else (0.0, {})
+    score = _safe_float(item.get('score'), hard_score)
+    if abs(score) < 0.001 and abs(hard_score) >= 0.001:
+        score = hard_score
+    return state, round(float(score), 2), round(float(hard_score), 2), dict(components or {})
+
+
+def _summarize_theme_multi(concept_ecology_multi: Optional[list[dict]]) -> dict:
+    items: list[dict] = []
+    support_count = 0
+    retreat_count = 0
+    weak_count = 0
+    support_names: list[str] = []
+    retreat_names: list[str] = []
+    for raw in concept_ecology_multi or []:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        state, score, hard_score, _components = _ecology_state_score(item)
+        name = str(item.get('concept_name') or item.get('core_concept_board') or item.get('board_name') or '').strip()
+        strong_like = state in {'expand', 'strong'} or max(score, hard_score) >= _T0_THEME_GUARD_MIN_THEME_SCORE
+        retreat_like = state == 'retreat' or min(score, hard_score) <= _P1_CONCEPT_ECOLOGY_RETREAT_SCORE_MAX
+        weak_like = state == 'weak' or max(score, hard_score) <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX
+        if strong_like:
+            support_count += 1
+            if name:
+                support_names.append(name)
+        if retreat_like:
+            retreat_count += 1
+            if name:
+                retreat_names.append(name)
+        if weak_like:
+            weak_count += 1
+        items.append({
+            'name': name,
+            'state': state,
+            'score': score,
+            'hard_score': hard_score,
+        })
+    return {
+        'items': items,
+        'count': len(items),
+        'support_count': support_count,
+        'retreat_count': retreat_count,
+        'weak_count': weak_count,
+        'support_names': support_names[:5],
+        'retreat_names': retreat_names[:5],
+    }
+
+
+def _compute_t0_theme_leadership_guard(
+    *,
+    tick_price: float,
+    vwap: Optional[float],
+    concept_ecology: Optional[dict],
+    concept_ecology_multi: Optional[list[dict]],
+    industry_ecology: Optional[dict],
+    bid_ask_ratio: Optional[float],
+    v_power_divergence: bool,
+    ask_wall_building: bool,
+    real_buy_fading: bool,
+    bid_wall_break: bool,
+    super_order_bias: Optional[float],
+    super_net_flow_bps: Optional[float],
+) -> dict:
+    info = {
+        'enabled': bool(_T0_THEME_GUARD_ENABLED),
+        'active': False,
+        'observe_only': False,
+        'reason': '',
+        'guard_score': 0,
+        'guard_reasons': [],
+        'missing_reasons': [],
+        'distribution_confirm_count': 0,
+        'distribution_required': int(_T0_THEME_GUARD_MIN_DISTRIBUTION),
+        'distribution_evidence': [],
+        'concept_state': 'unknown',
+        'concept_score': 0.0,
+        'concept_hard_score': 0.0,
+        'industry_state': 'unknown',
+        'industry_score': 0.0,
+        'secondary_support_count': 0,
+        'retreat_like_count': 0,
+    }
+    if not _T0_THEME_GUARD_ENABLED:
+        info['reason'] = 'disabled'
+        return info
+    if not isinstance(concept_ecology, dict) or not concept_ecology:
+        info['reason'] = 'concept_snapshot_missing'
+        return info
+
+    concept_state, concept_score, concept_hard_score, components = _ecology_state_score(concept_ecology)
+    industry_state, industry_score, _industry_hard, _industry_components = _ecology_state_score(industry_ecology)
+    multi = _summarize_theme_multi(concept_ecology_multi)
+    leader_pct = _safe_float(concept_ecology.get('leader_pct'), 0.0)
+    breadth_ratio = _safe_float(concept_ecology.get('breadth_ratio'), 0.0)
+    core_component = _safe_float(components.get('core_degree'), 0.0)
+
+    info.update({
+        'concept_state': concept_state,
+        'concept_score': concept_score,
+        'concept_hard_score': concept_hard_score,
+        'leader_pct': round(leader_pct, 2),
+        'breadth_ratio': round(breadth_ratio, 4),
+        'core_component': round(core_component, 2),
+        'industry_state': industry_state,
+        'industry_score': industry_score,
+        'secondary_support_count': int(multi.get('support_count', 0)),
+        'retreat_like_count': int(multi.get('retreat_count', 0)),
+        'supporting_concepts': multi.get('support_names', []),
+        'retreat_concepts': multi.get('retreat_names', []),
+    })
+
+    reasons: list[str] = []
+    missing: list[str] = []
+    guard_score = 0
+
+    theme_hot = concept_state in {'expand', 'strong'} or max(concept_score, concept_hard_score) >= _T0_THEME_GUARD_MIN_THEME_SCORE
+    if theme_hot:
+        guard_score += 1
+        reasons.append('theme_hot')
+    else:
+        missing.append('theme_not_hot')
+
+    leader_ok = leader_pct >= _T0_THEME_GUARD_MIN_LEADER_PCT or _safe_float(components.get('leader_status'), 0.0) > 0
+    if leader_ok:
+        guard_score += 1
+        reasons.append('leader_intact')
+    else:
+        missing.append('leader_not_confirmed')
+
+    breadth_ok = breadth_ratio >= _T0_THEME_GUARD_MIN_BREADTH_RATIO or _safe_float(components.get('strong_breadth'), 0.0) > 0
+    if breadth_ok:
+        guard_score += 1
+        reasons.append('breadth_expanding')
+    else:
+        missing.append('breadth_not_expanding')
+
+    secondary_support_ok = bool(
+        int(multi.get('support_count', 0)) >= max(1, _T0_THEME_GUARD_SECONDARY_SUPPORT_MIN)
+        or (int(multi.get('count', 0)) <= 1 and theme_hot)
+    )
+    if secondary_support_ok:
+        guard_score += 1
+        reasons.append('same_theme_support')
+    else:
+        missing.append('same_theme_support_missing')
+
+    core_ok = core_component >= _T0_THEME_GUARD_MIN_CORE_COMPONENT
+    if core_ok:
+        guard_score += 1
+        reasons.append('core_position')
+    else:
+        missing.append('core_position_unknown')
+
+    industry_ok = bool(
+        not industry_ecology
+        or industry_state in {'expand', 'strong', 'neutral', 'unknown'}
+        or industry_score >= _T0_THEME_GUARD_MIN_INDUSTRY_SCORE
+    )
+    if industry_ok:
+        guard_score += 1
+        reasons.append('industry_not_broken')
+    else:
+        missing.append('industry_broken')
+
+    evidence: list[str] = []
+    if bid_wall_break:
+        evidence.append('bid_wall_break')
+    if real_buy_fading:
+        evidence.append('real_buy_fading')
+    if v_power_divergence:
+        evidence.append('v_power_divergence')
+    if ask_wall_building:
+        evidence.append('ask_wall_building')
+    if super_order_bias is not None and super_order_bias <= -_SUPER_ORDER_BIAS_SELL_TH:
+        evidence.append('super_order_bias_negative')
+    if super_net_flow_bps is not None and super_net_flow_bps <= _T0_THEME_GUARD_SUPER_OUT_BPS:
+        evidence.append('super_net_outflow')
+    if bid_ask_ratio is not None and bid_ask_ratio <= _T0_THEME_GUARD_BIDASK_WEAK:
+        evidence.append('bid_ask_weak')
+    if tick_price > 0 and vwap and vwap > 0:
+        try:
+            if tick_price < float(vwap) * (1 - _T0_THEME_GUARD_AVWAP_BREAK_BPS / 10000.0):
+                evidence.append('session_avwap_lost')
+        except Exception:
+            pass
+    if concept_state in {'retreat', 'weak'} or min(concept_score, concept_hard_score) <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX:
+        evidence.append('concept_weak_or_retreat')
+    if industry_ecology and (
+        industry_state in {'retreat', 'weak'}
+        or industry_score <= _P1_CONCEPT_ECOLOGY_WEAK_SCORE_MAX
+    ):
+        evidence.append('industry_weak_or_retreat')
+    if int(multi.get('retreat_count', 0)) >= 2:
+        evidence.append('same_theme_retreat')
+
+    active = bool(guard_score >= _T0_THEME_GUARD_MIN_SCORE and theme_hot and (leader_ok or breadth_ok))
+    distribution_count = len(dict.fromkeys(evidence))
+    info['guard_score'] = int(guard_score)
+    info['guard_reasons'] = reasons
+    info['missing_reasons'] = missing
+    info['distribution_evidence'] = list(dict.fromkeys(evidence))
+    info['distribution_confirm_count'] = int(distribution_count)
+    info['active'] = active
+    if active and distribution_count < _T0_THEME_GUARD_MIN_DISTRIBUTION:
+        info['observe_only'] = True
+        info['reason'] = 'theme_leadership_distribution_missing'
+    elif active:
+        info['reason'] = 'distribution_confirmed'
+    else:
+        info['reason'] = 'guard_off'
+    return info
+
+
+def _compute_t0_do_not_t_env(
+    *,
+    signal_type: str,
+    th_meta: Optional[dict],
+    concept_ecology: Optional[dict],
+    concept_ecology_multi: Optional[list[dict]],
+    industry_ecology: Optional[dict],
+    theme_guard: Optional[dict],
+    volume_pace_ratio: Optional[float],
+    volume_pace_state: Optional[str],
+    bid_ask_ratio: Optional[float],
+    spread_abnormal: bool = False,
+    liquidity_drain: bool = False,
+    wash_trade: bool = False,
+    ask_wall_absorb: bool = False,
+) -> dict:
+    meta = dict(th_meta or {})
+    info = {
+        'enabled': bool(_T0_DO_NOT_T_ENV_ENABLED),
+        'blocked': False,
+        'observe_only': False,
+        'reason': '',
+        'reasons': [],
+        'whitelist_reasons': [],
+        'whitelist_required': bool(_T0_DO_NOT_T_REQUIRE_WHITELIST),
+        'signal_type': str(signal_type or ''),
+    }
+    if not _T0_DO_NOT_T_ENV_ENABLED:
+        info['reason'] = 'disabled'
+        return info
+
+    concept_info = concept_ecology if isinstance(concept_ecology, dict) and concept_ecology else meta.get('concept_ecology')
+    if not isinstance(concept_info, dict):
+        concept_info = {}
+    industry_info = industry_ecology if isinstance(industry_ecology, dict) and industry_ecology else meta.get('industry_ecology')
+    if not isinstance(industry_info, dict):
+        industry_info = {}
+    concept_state, concept_score, concept_hard_score, _components = _ecology_state_score(concept_info)
+    industry_state, industry_score, _industry_hard, _industry_components = _ecology_state_score(industry_info)
+    multi = _summarize_theme_multi(concept_ecology_multi)
+    leader_pct = _safe_float(concept_info.get('leader_pct'), 0.0)
+    breadth_ratio = _safe_float(concept_info.get('breadth_ratio'), 0.0)
+    pace_state = _resolve_volume_pace_state(
+        volume_pace_ratio,
+        volume_pace_state,
+        shrink_th=_T0_VOL_PACE_SHRINK_TH,
+        expand_th=_T0_VOL_PACE_EXPAND_TH,
+        surge_th=_T0_VOL_PACE_SURGE_TH,
+    )
+
+    reasons: list[str] = []
+    whitelist: list[str] = []
+    policy = str(meta.get('session_policy') or '').strip() or 'none'
+    market_phase = str(meta.get('market_phase') or '').strip() or 'unknown'
+    if policy in _T0_DO_NOT_T_BLOCK_POLICIES:
+        reasons.append(f'session_policy:{policy}')
+
+    limit_filter = meta.get('limit_filter') if isinstance(meta.get('limit_filter'), dict) else {}
+    limit_magnet = bool(meta.get('limit_magnet') or limit_filter.get('limit_magnet'))
+    if _T0_DO_NOT_T_BLOCK_LIMIT_MAGNET and limit_magnet:
+        reasons.append('limit_magnet')
+
+    micro_env = meta.get('micro_environment') if isinstance(meta.get('micro_environment'), dict) else {}
+    board_seal_env = bool(meta.get('board_seal_env') or micro_env.get('board_seal_env'))
+    if _T0_DO_NOT_T_BLOCK_BOARD_SEAL_ENV and board_seal_env:
+        reasons.append('board_seal_env')
+
+    instrument_profile = meta.get('instrument_profile') if isinstance(meta.get('instrument_profile'), dict) else {}
+    risk_warning = bool(meta.get('risk_warning') or instrument_profile.get('risk_warning'))
+    if _T0_DO_NOT_T_BLOCK_RISK_WARNING and risk_warning:
+        reasons.append('risk_warning')
+
+    listing_stage = str(meta.get('listing_stage') or instrument_profile.get('listing_stage') or '').strip()
+    if _T0_DO_NOT_T_BLOCK_IPO_EARLY and listing_stage in {'ipo_early', 'ipo_young'}:
+        reasons.append(f'listing_stage:{listing_stage}')
+
+    volume_drought = bool(meta.get('volume_drought') or micro_env.get('volume_drought'))
+    low_liquidity = bool(
+        liquidity_drain
+        or spread_abnormal
+        or (bid_ask_ratio is not None and bid_ask_ratio <= _T0_DO_NOT_T_LOW_LIQ_BIDASK)
+        or pace_state == 'shrink'
+    )
+    if _T0_DO_NOT_T_BLOCK_DROUGHT_SPREAD and volume_drought and low_liquidity:
+        reasons.append('volume_drought_low_liquidity')
+
+    theme_active = bool((theme_guard or {}).get('active')) or bool(
+        concept_state in {'expand', 'strong'}
+        and max(concept_score, concept_hard_score) >= _T0_THEME_GUARD_MIN_THEME_SCORE
+    )
+    distribution_count = int((theme_guard or {}).get('distribution_confirm_count', 0) or 0)
+    distribution_required = int((theme_guard or {}).get('distribution_required', _T0_THEME_GUARD_MIN_DISTRIBUTION) or _T0_THEME_GUARD_MIN_DISTRIBUTION)
+    theme_accelerating = bool(
+        theme_active
+        and max(concept_score, concept_hard_score) >= _T0_DO_NOT_T_THEME_ACCEL_SCORE
+        and (pace_state == 'surge' or leader_pct >= _T0_DO_NOT_T_CLIMAX_LEADER_PCT)
+        and distribution_count < distribution_required
+    )
+    if _T0_DO_NOT_T_BLOCK_THEME_ACCEL and theme_accelerating:
+        reasons.append('theme_core_acceleration')
+
+    breadth_climax = bool(
+        max(concept_score, concept_hard_score) >= _T0_DO_NOT_T_THEME_ACCEL_SCORE
+        and breadth_ratio >= _T0_DO_NOT_T_CLIMAX_BREADTH
+        and leader_pct >= _T0_DO_NOT_T_CLIMAX_LEADER_PCT
+        and distribution_count < distribution_required
+    )
+    if _T0_DO_NOT_T_BLOCK_BREADTH_CLIMAX and breadth_climax:
+        reasons.append('theme_breadth_climax')
+
+    if signal_type == 'positive_t':
+        if (wash_trade or ask_wall_absorb) and (bid_ask_ratio is not None and bid_ask_ratio >= _T0_DO_NOT_T_WHITELIST_BIDASK):
+            whitelist.append('trend_wash_repair')
+        if (
+            market_phase in {'afternoon', 'close'}
+            and pace_state in {'shrink', 'normal'}
+            and bid_ask_ratio is not None
+            and bid_ask_ratio >= _T0_DO_NOT_T_WHITELIST_BIDASK
+        ):
+            whitelist.append('afternoon_pullback_repair')
+        if policy == 'none' and pace_state in {'normal', 'expand'} and not theme_active and not low_liquidity:
+            whitelist.append('range_high_liquidity')
+    elif signal_type == 'reverse_t':
+        if distribution_count >= distribution_required:
+            whitelist.append('distribution_take_profit')
+        if not theme_active and pace_state in {'normal', 'expand', 'surge'} and not low_liquidity:
+            whitelist.append('non_theme_overheat')
+
+    if not reasons and _T0_DO_NOT_T_REQUIRE_WHITELIST and not whitelist:
+        reasons.append('env_whitelist_missing')
+
+    info.update({
+        'blocked': bool(reasons),
+        'observe_only': bool(reasons),
+        'reason': reasons[0] if reasons else 'allow',
+        'reasons': reasons,
+        'whitelist_reasons': whitelist,
+        'session_policy': policy,
+        'market_phase': market_phase,
+        'volume_pace_state': pace_state,
+        'limit_magnet': bool(limit_magnet),
+        'board_seal_env': bool(board_seal_env),
+        'risk_warning': bool(risk_warning),
+        'listing_stage': listing_stage,
+        'volume_drought': bool(volume_drought),
+        'low_liquidity': bool(low_liquidity),
+        'concept_state': concept_state,
+        'concept_score': concept_score,
+        'industry_state': industry_state,
+        'industry_score': industry_score,
+        'secondary_support_count': int(multi.get('support_count', 0)),
+        'theme_active': bool(theme_active),
+        'theme_accelerating': bool(theme_accelerating),
+        'breadth_climax': bool(breadth_climax),
+    })
+    return info
+
+
 def _compute_pool1_concept_ecology_gate(
     *,
     core_concept_board: Optional[str],
@@ -2303,6 +2746,300 @@ def _check_t0_anti_churn(
     return True, detail
 
 
+def _compute_t0_inventory_gate(
+    sig_type: str,
+    tick_price: float,
+    position_state: Optional[dict] = None,
+) -> dict:
+    info = {
+        'enabled': bool(_T0_INVENTORY_ENABLED),
+        'state_ready': False,
+        'observe_only': False,
+        'observe_reason': '',
+        'blocked_reason': '',
+        'action_family': 'base_rebalance',
+        'action_path': 'buy_then_sell_old' if sig_type == 'positive_t' else 'sell_old_then_buy_back',
+        'action_role': 'lower_intraday_cost' if sig_type == 'positive_t' else 'lock_profit_rebuy',
+        'expected_inventory_unchanged': True,
+        'overnight_base_qty': 0,
+        'tradable_t_qty': 0,
+        'reserve_qty': 0,
+        'today_t_count': 0,
+        'today_positive_t_qty': 0,
+        'today_reverse_t_qty': 0,
+        'cash_available_for_t': 0.0,
+        'inventory_anchor_cost': 0.0,
+        'lot_size': int(_T0_INVENTORY_LOT_SIZE),
+        'max_t_count_per_day': int(_T0_INVENTORY_MAX_T_COUNT_PER_DAY),
+        'inventory_room_qty': 0,
+        'cash_room_qty': 0,
+        'max_action_qty': 0,
+        'suggested_action_qty': 0,
+        'state_trade_date': '',
+        'signal_type': str(sig_type or ''),
+    }
+    if not _T0_INVENTORY_ENABLED:
+        info['state_ready'] = True
+        info['blocked_reason'] = 'disabled'
+        return info
+
+    state = dict(position_state or {}) if isinstance(position_state, dict) else {}
+    if not state:
+        info['blocked_reason'] = 'inventory_state_missing'
+        if _T0_INVENTORY_OBSERVE_ON_STATE_MISSING or _T0_INVENTORY_REQUIRE_STATE_FOR_EXECUTE:
+            info['observe_only'] = True
+            info['observe_reason'] = 't0_inventory_missing'
+        return info
+
+    overnight_base_qty = max(0, int(float(state.get('overnight_base_qty', 0) or 0)))
+    tradable_t_qty = max(0, int(float(state.get('tradable_t_qty', 0) or 0)))
+    reserve_qty = max(0, int(float(state.get('reserve_qty', 0) or 0)))
+    today_t_count = max(0, int(state.get('today_t_count', 0) or 0))
+    today_positive_t_qty = max(0, int(float(state.get('today_positive_t_qty', 0) or 0)))
+    today_reverse_t_qty = max(0, int(float(state.get('today_reverse_t_qty', 0) or 0)))
+    cash_available_for_t = max(0.0, float(state.get('cash_available_for_t', 0.0) or 0.0))
+    inventory_anchor_cost = max(0.0, float(state.get('inventory_anchor_cost', 0.0) or 0.0))
+    info.update(
+        {
+            'state_ready': bool(overnight_base_qty > 0 or cash_available_for_t > 0),
+            'overnight_base_qty': overnight_base_qty,
+            'tradable_t_qty': tradable_t_qty,
+            'reserve_qty': reserve_qty,
+            'today_t_count': today_t_count,
+            'today_positive_t_qty': today_positive_t_qty,
+            'today_reverse_t_qty': today_reverse_t_qty,
+            'cash_available_for_t': round(cash_available_for_t, 4),
+            'inventory_anchor_cost': round(inventory_anchor_cost, 4),
+            'state_trade_date': str(state.get('trade_date') or ''),
+        }
+    )
+
+    if today_t_count >= _T0_INVENTORY_MAX_T_COUNT_PER_DAY:
+        info['blocked_reason'] = 't_count_exhausted'
+        info['observe_only'] = True
+        info['observe_reason'] = 't_count_exhausted'
+        return info
+
+    inventory_room_qty = max(0, tradable_t_qty)
+    cash_room_qty = 0
+    if sig_type == 'positive_t' and tick_price > 0:
+        cash_room_qty = max(0, int(cash_available_for_t // float(tick_price)))
+    elif sig_type == 'reverse_t':
+        cash_room_qty = inventory_room_qty
+    max_action_qty = inventory_room_qty if sig_type == 'reverse_t' else min(inventory_room_qty, cash_room_qty)
+    lot_size = max(1, int(_T0_INVENTORY_LOT_SIZE))
+    if max_action_qty > 0:
+        max_action_qty = max_action_qty // lot_size * lot_size
+    action_ratio = _T0_INVENTORY_POSITIVE_ACTION_RATIO if sig_type == 'positive_t' else _T0_INVENTORY_REVERSE_ACTION_RATIO
+    suggested_qty = 0
+    if max_action_qty > 0:
+        suggested_qty = int(max_action_qty * action_ratio)
+        suggested_qty = max(lot_size, suggested_qty // lot_size * lot_size)
+        suggested_qty = min(max_action_qty, suggested_qty)
+    info['inventory_room_qty'] = int(inventory_room_qty)
+    info['cash_room_qty'] = int(cash_room_qty)
+    info['max_action_qty'] = int(max_action_qty)
+    info['suggested_action_qty'] = int(suggested_qty)
+
+    if inventory_room_qty <= 0:
+        info['blocked_reason'] = 'no_tradable_t_inventory'
+        info['observe_only'] = True
+        info['observe_reason'] = 'no_tradable_t_inventory'
+    elif sig_type == 'positive_t' and cash_room_qty <= 0:
+        info['blocked_reason'] = 'no_cash_available_for_positive_t'
+        info['observe_only'] = True
+        info['observe_reason'] = 'no_cash_available_for_positive_t'
+    elif max_action_qty <= 0:
+        info['blocked_reason'] = 'action_qty_below_lot'
+        info['observe_only'] = True
+        info['observe_reason'] = 'action_qty_below_lot'
+
+    return info
+
+
+def _compute_positive_t_rebuild_quality(
+    *,
+    tick_price: float,
+    vwap: Optional[float],
+    bias_vwap: Optional[float],
+    gub5_trend: Optional[str],
+    gub5_transition: Optional[str],
+    bid_ask_ratio: Optional[float],
+    lure_short: bool,
+    wash_trade: bool,
+    ask_wall_absorb: bool,
+    super_order_bias: Optional[float],
+    super_net_flow_bps: Optional[float],
+    volume_pace_ratio: Optional[float],
+    volume_pace_state: Optional[str],
+    anti_detail: Optional[dict],
+    inventory_gate: Optional[dict],
+) -> dict:
+    detail = {
+        'enabled': bool(_POS_REBUILD_QUALITY_ENABLED),
+        'observe_only': False,
+        'observe_reasons': [],
+        'recover_after_rebuild_score': 0,
+        'recover_after_rebuild_min_score': int(_POS_REBUILD_MIN_RECOVERY_SCORE),
+        'expected_edge_bps': None,
+        'fee_bps': round(float(_POS_REBUILD_FEE_BPS), 2),
+        'slippage_bps': round(float(_POS_REBUILD_SLIPPAGE_BPS), 2),
+        'impact_bps': round(float(_POS_REBUILD_IMPACT_BPS), 2),
+        'net_executable_edge_bps': None,
+        'min_net_executable_edge_bps': round(float(_POS_REBUILD_MIN_NET_EDGE_BPS), 2),
+        'recovery_confirms': [],
+        'continuation_risks': [],
+        'inventory_warnings': [],
+        'inventory_ok': True,
+    }
+    if not _POS_REBUILD_QUALITY_ENABLED:
+        detail['recover_after_rebuild_score'] = 100
+        return detail
+
+    confirms: list[str] = []
+    risks: list[str] = []
+    score = 45
+
+    edge_bps = None
+    if isinstance(anti_detail, dict) and anti_detail.get('expected_edge_bps') is not None:
+        try:
+            edge_bps = float(anti_detail.get('expected_edge_bps'))
+        except Exception:
+            edge_bps = None
+    if edge_bps is None:
+        edge_bps = _estimate_reversion_edge_bps('positive_t', tick_price, vwap=vwap, bias_vwap=bias_vwap)
+    detail['expected_edge_bps'] = round(edge_bps, 2) if edge_bps is not None else None
+
+    if vwap and vwap > 0 and tick_price > 0:
+        reclaim_bps = (float(vwap) - float(tick_price)) / float(tick_price) * 10000.0
+        detail['intraday_avwap_reclaim_bps'] = round(reclaim_bps, 2)
+        if reclaim_bps >= max(10.0, _POS_REBUILD_MIN_NET_EDGE_BPS):
+            score += 8
+            confirms.append('avwap_reclaim_space')
+        elif reclaim_bps <= 0:
+            score -= 8
+            risks.append('already_above_or_near_avwap')
+
+    if gub5_transition in _GUB5_TRANSITIONS:
+        score += 12
+        confirms.append('gub5_turning')
+    elif str(gub5_trend or '').lower() == 'down':
+        score -= 8
+        risks.append('gub5_still_down')
+
+    if bid_ask_ratio is not None:
+        br = float(bid_ask_ratio)
+        if br > _BID_ASK_TH:
+            score += 12
+            confirms.append('bid_support')
+        elif br < _POS_REBUILD_BIDASK_WEAK_RATIO:
+            score -= 12
+            risks.append('bid_support_weak')
+
+    if ask_wall_absorb:
+        score += 10
+        confirms.append('ask_wall_absorb')
+    if lure_short:
+        score += 8
+        confirms.append('washout_or_lure_short')
+    if wash_trade:
+        score -= 10
+        risks.append('wash_trade_noise')
+
+    if super_order_bias is not None:
+        sob = float(super_order_bias)
+        if sob >= _SUPER_ORDER_BIAS_BUY_TH:
+            score += 8
+            confirms.append('super_order_bias')
+        elif sob <= -_SUPER_ORDER_BIAS_BUY_TH:
+            score -= 8
+            risks.append('super_order_sell_bias')
+
+    if super_net_flow_bps is not None:
+        snf = float(super_net_flow_bps)
+        if snf >= _SUPER_NET_INFLOW_BUY_BPS:
+            score += 10
+            confirms.append('super_net_inflow')
+        elif snf <= _POS_REBUILD_FLOW_WEAK_BPS:
+            score -= 15
+            risks.append('super_net_outflow')
+
+    pace = str(volume_pace_state or '').strip().lower()
+    if pace == 'shrink':
+        score -= 8
+        risks.append('volume_pace_shrink')
+    elif pace == 'expand':
+        score += 4
+        confirms.append('volume_pace_expand')
+    elif pace == 'surge':
+        score += 5
+        confirms.append('volume_pace_surge')
+    try:
+        pace_ratio = float(volume_pace_ratio) if volume_pace_ratio is not None else None
+    except Exception:
+        pace_ratio = None
+    if pace_ratio is not None:
+        detail['volume_pace_ratio'] = round(pace_ratio, 4)
+
+    score = max(0, min(100, int(round(score))))
+    detail['recover_after_rebuild_score'] = score
+    detail['recovery_confirms'] = confirms
+    detail['continuation_risks'] = risks
+    if score < _POS_REBUILD_MIN_RECOVERY_SCORE:
+        detail['observe_only'] = True
+        detail['observe_reasons'].append('recovery_quality_low')
+
+    action_qty = 0
+    base_qty = 0
+    tradable_qty = 0
+    remaining_after = 0
+    anchor_cost = 0.0
+    if isinstance(inventory_gate, dict):
+        action_qty = max(0, int(inventory_gate.get('suggested_action_qty', 0) or 0))
+        base_qty = max(0, int(inventory_gate.get('overnight_base_qty', 0) or 0))
+        tradable_qty = max(0, int(inventory_gate.get('tradable_t_qty', 0) or 0))
+        anchor_cost = max(0.0, float(inventory_gate.get('inventory_anchor_cost', 0.0) or 0.0))
+    remaining_after = max(0, tradable_qty - action_qty)
+    action_ratio = (action_qty / base_qty) if base_qty > 0 else 0.0
+    reverse_room_ratio_after = (remaining_after / base_qty) if base_qty > 0 else 0.0
+    dynamic_impact_bps = float(_POS_REBUILD_IMPACT_BPS) * (1.0 + action_ratio)
+    detail['impact_bps'] = round(dynamic_impact_bps, 2)
+    total_cost_bps = float(_POS_REBUILD_FEE_BPS) + float(_POS_REBUILD_SLIPPAGE_BPS) + dynamic_impact_bps
+    net_edge = (edge_bps - total_cost_bps) if edge_bps is not None else None
+    detail['net_executable_edge_bps'] = round(net_edge, 2) if net_edge is not None else None
+    if net_edge is not None and net_edge < _POS_REBUILD_MIN_NET_EDGE_BPS:
+        detail['observe_only'] = True
+        detail['observe_reasons'].append('net_executable_edge_low')
+
+    warnings: list[str] = []
+    detail['action_qty'] = int(action_qty)
+    detail['temp_inventory_ratio'] = round(action_ratio, 4)
+    detail['reverse_room_ratio_after'] = round(reverse_room_ratio_after, 4)
+    detail['min_reverse_room_ratio_after'] = round(float(_POS_REBUILD_MIN_REVERSE_ROOM_RATIO_AFTER), 4)
+    detail['max_temp_inventory_ratio'] = round(float(_POS_REBUILD_MAX_TEMP_INVENTORY_RATIO), 4)
+    if base_qty > 0 and action_qty > 0:
+        if action_ratio > _POS_REBUILD_MAX_TEMP_INVENTORY_RATIO:
+            warnings.append('temp_inventory_too_heavy')
+        if reverse_room_ratio_after < _POS_REBUILD_MIN_REVERSE_ROOM_RATIO_AFTER:
+            warnings.append('reverse_t_room_low_after_rebuild')
+        if anchor_cost > 0 and tick_price > anchor_cost:
+            anchor_raise_bps = (tick_price - anchor_cost) / anchor_cost * 10000.0 * action_ratio
+            detail['anchor_cost_raise_bps_est'] = round(anchor_raise_bps, 2)
+            if anchor_raise_bps > _POS_REBUILD_ANCHOR_COST_RAISE_BPS_MAX:
+                warnings.append('anchor_cost_raise_too_high')
+    elif base_qty <= 0:
+        warnings.append('base_qty_missing')
+
+    if warnings:
+        detail['inventory_ok'] = False
+        detail['inventory_warnings'] = warnings
+        detail['observe_only'] = True
+        detail['observe_reasons'].append('inventory_quality_degraded')
+
+    detail['quality_pass'] = not bool(detail['observe_only'])
+    return detail
+
+
 # ============================================================
 # 11.7.1  T+0 门控与最终分数
 # ============================================================
@@ -2760,7 +3497,7 @@ def detect_right_side_breakout(
     boll_upper: float,
     boll_mid: float,
     boll_lower: float,
-    volume_ratio: Optional[float] = None,  # 瑜扮亯妫╁繗蹇旂槷
+    volume_ratio: Optional[float] = None,  # 成交量放大确认
     ma5: Optional[float] = None,
     ma10: Optional[float] = None,
     rsi6: Optional[float] = None,
@@ -3725,6 +4462,7 @@ def detect_positive_t(
     lure_short: bool = False,
     wash_trade: bool = False,
     spread_abnormal: bool = False,
+    liquidity_drain: bool = False,
     boll_break: Optional[bool] = None,
     ask_wall_absorb: bool = False,
     ask_wall_absorb_ratio: Optional[float] = None,
@@ -3736,8 +4474,12 @@ def detect_positive_t(
     volume_pace_state: Optional[str] = None,
     ts_code: Optional[str] = None,
     thresholds: Optional[dict] = None,
+    position_state: Optional[dict] = None,
+    industry_ecology: Optional[dict] = None,
+    concept_ecology: Optional[dict] = None,
+    concept_ecology_multi: Optional[list[dict]] = None,
 ) -> dict:
-    """T+0 正T（低吸高抛）信号。"""
+    """T+0 正T回补信号。"""
     result = _empty('positive_t')
     now_ts = int(time.time())
     if tick_price <= 0:
@@ -3858,14 +4600,74 @@ def detect_positive_t(
             },
         }
 
+    inventory_gate = _compute_t0_inventory_gate(
+        'positive_t',
+        tick_price,
+        position_state=position_state,
+    )
+    rebuild_quality = _compute_positive_t_rebuild_quality(
+        tick_price=tick_price,
+        vwap=vwap,
+        bias_vwap=bias_vwap,
+        gub5_trend=gub5_trend,
+        gub5_transition=gub5_transition,
+        bid_ask_ratio=bid_ask_ratio,
+        lure_short=lure_short,
+        wash_trade=wash_trade,
+        ask_wall_absorb=ask_wall_absorb,
+        super_order_bias=super_order_bias,
+        super_net_flow_bps=super_net_flow_bps,
+        volume_pace_ratio=volume_pace_ratio,
+        volume_pace_state=vol_pace_state,
+        anti_detail=anti_detail,
+        inventory_gate=inventory_gate,
+    )
+    env_gate = _compute_t0_do_not_t_env(
+        signal_type='positive_t',
+        th_meta=th_meta,
+        concept_ecology=concept_ecology,
+        concept_ecology_multi=concept_ecology_multi,
+        industry_ecology=industry_ecology,
+        theme_guard=None,
+        volume_pace_ratio=volume_pace_ratio,
+        volume_pace_state=vol_pace_state,
+        bid_ask_ratio=bid_ask_ratio,
+        spread_abnormal=spread_abnormal,
+        liquidity_drain=liquidity_drain,
+        wash_trade=wash_trade,
+        ask_wall_absorb=ask_wall_absorb,
+    )
+
     if ts_code:
         update_hysteresis(ts_code, 'positive_t', tick_price)
 
-    observe_only = (final_score < _SCORE_EXECUTABLE) or bool(th_meta.get('observer_only'))
+    observe_only = (
+        (final_score < _SCORE_EXECUTABLE)
+        or bool(th_meta.get('observer_only'))
+        or bool(inventory_gate.get('observe_only'))
+        or bool(rebuild_quality.get('observe_only'))
+        or bool(env_gate.get('observe_only'))
+    )
     if ts_code and not observe_only:
         _update_t0_last_signal_state(ts_code, 'positive_t', tick_price, now_ts)
     msg_parts = ' + '.join(trigger_items) + ' | 确认:' + ' + '.join(confirm_items)
     msg_suffix = '·仅观察' if observe_only else '·可执行'
+    inventory_suffix = ''
+    suggested_action_qty = int(inventory_gate.get('suggested_action_qty', 0) or 0)
+    if suggested_action_qty > 0:
+        inventory_suffix = f'·建议正T {suggested_action_qty}股'
+    elif inventory_gate.get('observe_reason'):
+        inventory_suffix = f"·底仓约束:{inventory_gate.get('observe_reason')}"
+    quality_suffix = ''
+    net_edge = rebuild_quality.get('net_executable_edge_bps')
+    if net_edge is not None:
+        quality_suffix += f'·净边际{float(net_edge):.1f}bps'
+    quality_reasons = rebuild_quality.get('observe_reasons') if isinstance(rebuild_quality.get('observe_reasons'), list) else []
+    if quality_reasons:
+        quality_suffix += f"·质量门:{'|'.join(str(x) for x in quality_reasons[:2])}"
+    env_reasons = env_gate.get('reasons') if isinstance(env_gate.get('reasons'), list) else []
+    if env_reasons:
+        quality_suffix += f"·环境门:{'|'.join(str(x) for x in env_reasons[:2])}"
 
     return {
         'has_signal': True,
@@ -3873,7 +4675,7 @@ def detect_positive_t(
         'direction': 'buy',
         'price': round(tick_price, 3),
         'strength': final_score,
-        'message': f"正T买入{tick_price:.2f}{msg_parts}{msg_suffix}",
+        'message': f"正T回补{tick_price:.2f}{msg_parts}{msg_suffix}{inventory_suffix}{quality_suffix}",
         'triggered_at': now_ts,
         'details': {
             'tick_price': tick_price,
@@ -3903,6 +4705,12 @@ def detect_positive_t(
             'score_observe_th': _SCORE_OBSERVE,
             'score_status': 'observe' if observe_only else 'executable',
             'threshold': th_meta,
+            't0_inventory': inventory_gate,
+            'positive_rebuild_quality': rebuild_quality,
+            'do_not_t_env': env_gate,
+            'industry_ecology': dict(industry_ecology or {}),
+            'concept_ecology': dict(concept_ecology or {}),
+            'concept_ecology_multi': list(concept_ecology_multi or []),
         },
     }
 
@@ -3934,8 +4742,12 @@ def detect_reverse_t(
     volume_pace_state: Optional[str] = None,
     main_rally_guard: bool = False,
     main_rally_info: Optional[dict] = None,
+    industry_ecology: Optional[dict] = None,
+    concept_ecology: Optional[dict] = None,
+    concept_ecology_multi: Optional[list[dict]] = None,
     ts_code: Optional[str] = None,
     thresholds: Optional[dict] = None,
+    position_state: Optional[dict] = None,
 ) -> dict:
     """T+0 反T（高抛低吸）信号。"""
     result = _empty('reverse_t')
@@ -4124,6 +4936,20 @@ def detect_reverse_t(
                 'trend_guard': trend_guard_detail,
             },
         }
+    theme_guard = _compute_t0_theme_leadership_guard(
+        tick_price=tick_price,
+        vwap=vwap,
+        concept_ecology=concept_ecology,
+        concept_ecology_multi=concept_ecology_multi,
+        industry_ecology=industry_ecology,
+        bid_ask_ratio=bid_ask_ratio,
+        v_power_divergence=v_power_divergence,
+        ask_wall_building=ask_wall_building,
+        real_buy_fading=real_buy_fading,
+        bid_wall_break=bid_wall_break,
+        super_order_bias=super_order_bias,
+        super_net_flow_bps=super_net_flow_bps,
+    )
 
     raw_score, risk_gate, gate_reason = _compute_t0_gates(
         'reverse_t',
@@ -4168,14 +4994,53 @@ def detect_reverse_t(
             },
         }
 
+    inventory_gate = _compute_t0_inventory_gate(
+        'reverse_t',
+        tick_price,
+        position_state=position_state,
+    )
+    env_gate = _compute_t0_do_not_t_env(
+        signal_type='reverse_t',
+        th_meta=th_meta,
+        concept_ecology=concept_ecology,
+        concept_ecology_multi=concept_ecology_multi,
+        industry_ecology=industry_ecology,
+        theme_guard=theme_guard,
+        volume_pace_ratio=volume_pace_ratio,
+        volume_pace_state=vol_pace_state,
+        bid_ask_ratio=bid_ask_ratio,
+        spread_abnormal=False,
+        liquidity_drain=liquidity_drain,
+        wash_trade=wash_trade_severe,
+        ask_wall_absorb=ask_wall_absorb,
+    )
+
     if ts_code:
         update_hysteresis(ts_code, 'reverse_t', tick_price)
 
-    observe_only = (final_score < _SCORE_EXECUTABLE) or bool(th_meta.get('observer_only'))
+    observe_only = (
+        (final_score < _SCORE_EXECUTABLE)
+        or bool(th_meta.get('observer_only'))
+        or bool(inventory_gate.get('observe_only'))
+        or bool(theme_guard.get('observe_only'))
+        or bool(env_gate.get('observe_only'))
+    )
     if ts_code and not observe_only:
         _update_t0_last_signal_state(ts_code, 'reverse_t', tick_price, now_ts)
     msg_parts = ' + '.join(trigger_items) + ' | 确认:' + ' + '.join(confirm_items)
     msg_suffix = '·仅观察' if observe_only else '·可执行'
+    inventory_suffix = ''
+    suggested_action_qty = int(inventory_gate.get('suggested_action_qty', 0) or 0)
+    if suggested_action_qty > 0:
+        inventory_suffix = f'·建议反T {suggested_action_qty}股'
+    elif inventory_gate.get('observe_reason'):
+        inventory_suffix = f"·底仓约束:{inventory_gate.get('observe_reason')}"
+    guard_suffix = ''
+    if theme_guard.get('observe_only'):
+        guard_suffix += '·主线保护:仅观察'
+    env_reasons = env_gate.get('reasons') if isinstance(env_gate.get('reasons'), list) else []
+    if env_reasons:
+        guard_suffix += f"·环境门:{'|'.join(str(x) for x in env_reasons[:2])}"
 
     return {
         'has_signal': True,
@@ -4183,7 +5048,7 @@ def detect_reverse_t(
         'direction': 'sell',
         'price': round(tick_price, 3),
         'strength': final_score,
-        'message': f"反T卖出{tick_price:.2f}{msg_parts}{msg_suffix}",
+        'message': f"反T卖出{tick_price:.2f}{msg_parts}{msg_suffix}{inventory_suffix}{guard_suffix}",
         'triggered_at': now_ts,
         'details': {
             'tick_price': tick_price,
@@ -4218,12 +5083,22 @@ def detect_reverse_t(
             'main_rally_guard': bool(main_rally_guard),
             'trend_guard': trend_guard_detail,
             'trend_guard_override': bool(main_rally_guard and len(bearish_confirms) >= required_bearish_confirms),
+            'theme_leadership_guard': theme_guard,
+            'theme_guard_override': bool(
+                theme_guard.get('active')
+                and int(theme_guard.get('distribution_confirm_count', 0) or 0) >= int(theme_guard.get('distribution_required', 0) or 0)
+            ),
+            'do_not_t_env': env_gate,
             'anti_churn': anti_detail,
             'observe_only': observe_only,
             'score_exec_th': _SCORE_EXECUTABLE,
             'score_observe_th': _SCORE_OBSERVE,
             'score_status': 'observe' if observe_only else 'executable',
             'threshold': th_meta,
+            't0_inventory': inventory_gate,
+            'industry_ecology': dict(industry_ecology or {}),
+            'concept_ecology': dict(concept_ecology or {}),
+            'concept_ecology_multi': list(concept_ecology_multi or []),
         },
     }
 
@@ -4502,6 +5377,7 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
             )
             t0_pos_th = _resolve_threshold('positive_t', t0_ctx)
             t0_rev_th = _resolve_threshold('reverse_t', t0_ctx)
+            pool2_inventory_state = m.get('pool2_t0_inventory_state')
             s1 = detect_positive_t(
                 tick_price=feat['tick_price'],
                 boll_lower=feat['boll_lower'],
@@ -4512,6 +5388,7 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                 lure_short=feat['lure_short'],
                 wash_trade=feat['wash_trade'],
                 spread_abnormal=feat['spread_abnormal'],
+                liquidity_drain=feat.get('liquidity_drain', False),
                 boll_break=feat['boll_break'],
                 ask_wall_absorb=feat['ask_wall_absorb'],
                 ask_wall_absorb_ratio=feat.get('ask_wall_absorb_ratio'),
@@ -4523,6 +5400,10 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                 volume_pace_state=feat.get('volume_pace_state'),
                 ts_code=ts_code,
                 thresholds=t0_pos_th,
+                position_state=pool2_inventory_state,
+                industry_ecology=m.get('industry_ecology'),
+                concept_ecology=m.get('concept_ecology'),
+                concept_ecology_multi=m.get('concept_ecology_multi'),
             )
             if s1['has_signal']:
                 s1 = _attach_channel(s1, pool_id=2)
@@ -4554,8 +5435,12 @@ def evaluate_pool(pool_id: int, members_data: list[dict]) -> list[dict]:
                 volume_pace_state=feat.get('volume_pace_state'),
                 main_rally_guard=bool(feat.get('main_rally_guard', False)),
                 main_rally_info=feat.get('main_rally_info'),
+                industry_ecology=m.get('industry_ecology'),
+                concept_ecology=m.get('concept_ecology'),
+                concept_ecology_multi=m.get('concept_ecology_multi'),
                 ts_code=ts_code,
                 thresholds=t0_rev_th,
+                position_state=pool2_inventory_state,
             )
             if s2['has_signal']:
                 s2 = _attach_channel(s2, pool_id=2)
@@ -4579,7 +5464,7 @@ SIGNAL_DIRECTION = {
     'left_side_buy': 'buy',           # 左侧买入
     'right_side_breakout': 'buy',     # 右侧突破
     'timing_clear': 'sell',           # 择时清仓
-    'positive_t': 'buy',              # 正T 买入
+    'positive_t': 'buy',              # 正T 回补
     'reverse_t': 'sell',              # 反T 卖出
 }
 

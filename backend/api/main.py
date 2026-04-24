@@ -103,6 +103,7 @@ async def _lifespan(app: FastAPI):
 
     # 4.5 启动东方财富概念生态快照刷新线程（供快路径信号直接复用运行态缓存）
     try:
+        runtime_jobs._start_board_catalog_refresher()
         runtime_jobs._start_concept_snapshot_refresher()
         runtime_jobs._start_industry_snapshot_refresher()
     except Exception as e:

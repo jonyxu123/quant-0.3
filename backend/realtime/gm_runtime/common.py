@@ -122,7 +122,7 @@ def _is_signal_processing_allowed(ts_epoch: Optional[int] = None) -> bool:
 
 
 def _mock_tick(ts_code: str) -> dict:
-    """鐢熸垚 mock tick 鏁版嵁"""
+    """生成 mock tick 数据。"""
     base = 10 + random.uniform(-2, 2)
     return {
         'ts_code': ts_code, 'name': 'MOCK', 'price': round(base, 2),
@@ -846,6 +846,29 @@ _pool1_position_redis_cli = None
 _pool1_position_redis_warn_at = 0.0
 _pool1_position_redis_next_retry_at = 0.0
 _pool1_position_last_source = 'memory'
+_T0_INV_CFG = _T0_CFG.get('inventory_state', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_INV_ENABLED = bool(_T0_INV_CFG.get('enabled', True))
+_T0_INV_REQUIRE_STATE_FOR_EXECUTE = bool(_T0_INV_CFG.get('require_state_for_execute', True))
+_T0_INV_OBSERVE_ON_STATE_MISSING = bool(_T0_INV_CFG.get('observe_on_state_missing', True))
+_T0_INV_LOT_SIZE = max(1, int(_T0_INV_CFG.get('lot_size', 100) or 100))
+_T0_INV_POSITIVE_ACTION_RATIO = max(0.0, min(1.0, float(_T0_INV_CFG.get('positive_action_ratio', 0.25) or 0.25)))
+_T0_INV_REVERSE_ACTION_RATIO = max(0.0, min(1.0, float(_T0_INV_CFG.get('reverse_action_ratio', 0.25) or 0.25)))
+_T0_INV_MAX_T_COUNT_PER_DAY = max(1, int(_T0_INV_CFG.get('max_t_count_per_day', 4) or 4))
+_T0_INV_FILE = os.path.join(_PROJECT_ROOT, str(_T0_INV_CFG.get('file', '.pool2_t0_inventory_state.json')))
+_T0_INV_FILE_MAX_ITEMS = int(_T0_INV_CFG.get('max_items', 5000) or 5000)
+_T0_INV_FILE_FALLBACK = bool(_T0_INV_CFG.get('file_fallback', True))
+_T0_INV_REDIS_CFG = _T0_INV_CFG.get('redis', {}) if isinstance(_T0_INV_CFG, dict) else {}
+_T0_INV_REDIS_ENABLED = bool(_T0_INV_REDIS_CFG.get('enabled', False))
+_T0_INV_REDIS_URL = str(_T0_INV_REDIS_CFG.get('url', 'redis://127.0.0.1:6379/0'))
+_T0_INV_REDIS_KEY_PREFIX = str(_T0_INV_REDIS_CFG.get('key_prefix', 'quant:pool2:t0_inventory'))
+_T0_INV_REDIS_TTL_DAYS = int(_T0_INV_REDIS_CFG.get('ttl_days', 14) or 14)
+_pool2_t0_inventory_state: dict[str, dict] = {}
+_pool2_t0_inventory_state_loaded = False
+_pool2_t0_inventory_state_lock = threading.Lock()
+_pool2_t0_inventory_redis_cli = None
+_pool2_t0_inventory_redis_warn_at = 0.0
+_pool2_t0_inventory_redis_next_retry_at = 0.0
+_pool2_t0_inventory_last_source = 'memory'
 _POOL1_BUY_SIGNAL_TYPES = ('left_side_buy', 'right_side_breakout')
 _POOL1_SELL_SIGNAL_TYPES = ('timing_clear',)
 

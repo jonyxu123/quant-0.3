@@ -1,5 +1,4 @@
 """日常增量数据同步"""
-import warnings
 
 from scripts.akshare_proxy_patch_free import install_patch
 install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
@@ -12,7 +11,6 @@ install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com
     "emweb.securities.eastmoney.com",
     ],)
 import tushare as ts
-import akshare as ak
 import pandas as pd
 import time
 import queue
@@ -20,23 +18,8 @@ import threading
 from datetime import datetime, timedelta
 from loguru import logger
 from config import DB_PATH, TUSHARE_TOKEN
+from backend.realtime.eastmoney_board_service import get_eastmoney_board_service
 from backend.data.duckdb_manager import open_duckdb_conn
-
-try:
-    from pandas.errors import SettingWithCopyWarning as _SettingWithCopyWarning
-except Exception:
-    _SettingWithCopyWarning = Warning
-
-
-def _call_akshare_quiet(func, *args, **kwargs):
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="A value is trying to be set on a copy of a slice from a DataFrame.*",
-            category=_SettingWithCopyWarning,
-            module=r"akshare\.stock\.stock_board_.*_em",
-        )
-        return func(*args, **kwargs)
 
 
 def _normalize_code6_local(raw: object) -> str:
@@ -671,90 +654,72 @@ class IncrementalSync:
     # ------------------------------------------------------------------ #
 
     def sync_em_industry_board(self):
-        """同步东方财富行业板块列表（AKShare / 东方财富行业板块）"""
+        """同步东方财富行业板块目录到 em_industry_board。"""
         logger.info("开始同步东方财富行业板块列表...")
         try:
-            df = _call_akshare_quiet(ak.stock_board_industry_name_em)
+            service = get_eastmoney_board_service()
+            board_df = service.fetch_boards("industry")
+            df = service.to_board_table(board_df, "industry")
             if df is None or df.empty:
                 logger.warning("东方财富行业板块列表为空")
                 return False
-            df = df.copy()
-            code_col = next((c for c in ["板块代码", "行业代码", "代码"] if c in df.columns), None)
-            name_col = next((c for c in ["板块名称", "行业名称", "名称", "行业"] if c in df.columns), None)
-            if not name_col:
-                raise RuntimeError(f"行业板块列表缺少名称列: {list(df.columns)}")
-            df["industry_name"] = df[name_col].astype(str).str.strip()
-            df["industry_code"] = df[code_col].map(_normalize_em_board_code_local) if code_col else ""
-            df["source"] = "akshare_eastmoney_industry_board"
-            df["synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._submit_write({"kind": "replace_table", "table": "em_industry_board", "df": df}, wait=True)
-            logger.info(f"东方财富行业板块列表已同步: {len(df)} 条")
+            logger.info(f"东方财富行业板块列表同步完成: {len(df)} 条")
             return True
         except Exception as e:
             logger.error(f"同步东方财富行业板块列表失败: {e}")
             return False
-
     def sync_em_industry_member(self):
-        """同步东方财富行业板块成分股（AKShare / 东方财富行业板块成分股）"""
+        """同步东方财富行业板块成分股到 em_industry_member。"""
         logger.info("开始同步东方财富行业板块成分股...")
         try:
-            board_df = pd.read_sql('SELECT industry_name, industry_code FROM em_industry_board', self.conn)
+            board_df = pd.read_sql("SELECT * FROM em_industry_board", self.conn)
             if board_df.empty:
-                logger.info("东方财富行业板块列表为空，先尝试刷新板块列表...")
+                logger.info("行业板块目录为空，先刷新板块目录...")
                 if not self.sync_em_industry_board():
                     return False
-                board_df = pd.read_sql('SELECT industry_name, industry_code FROM em_industry_board', self.conn)
+                board_df = pd.read_sql("SELECT * FROM em_industry_board", self.conn)
             if board_df.empty:
-                logger.warning("东方财富行业板块列表仍为空，跳过成分股同步")
+                logger.warning("行业板块目录仍为空，跳过成分股同步")
                 return False
         except Exception as e:
-            logger.error(f"读取东方财富行业板块列表失败: {e}")
+            logger.error(f"读取行业板块目录失败: {e}")
             return False
 
+        name_col = next((c for c in ["industry_name", "板块名称", "board_name"] if c in board_df.columns), None)
+        code_col = next((c for c in ["industry_code", "板块代码", "board_code"] if c in board_df.columns), None)
+        if not name_col or not code_col:
+            logger.error(f"行业板块目录缺少必要字段: {list(board_df.columns)}")
+            return False
+
+        service = get_eastmoney_board_service()
         all_data = []
         total = len(board_df)
         for idx, row in board_df.iterrows():
-            industry_name = str(row.get('industry_name') or '').strip()
-            industry_code = _normalize_em_board_code_local(row.get('industry_code'))
-            if not industry_name:
+            industry_name = str(row.get(name_col) or "").strip()
+            industry_code = service.normalize_board_code(row.get(code_col))
+            if not industry_name or not industry_code:
                 continue
-            symbol = industry_code or industry_name
             try:
-                df = _call_akshare_quiet(ak.stock_board_industry_cons_em, symbol=symbol)
-                if df is None or df.empty:
-                    continue
-                df = df.copy()
-                code_col = next((c for c in ["代码", "股票代码", "个股代码", "symbol", "code"] if c in df.columns), None)
-                name_col = next((c for c in ["名称", "股票名称", "name"] if c in df.columns), None)
-                df['industry_name'] = industry_name
-                df['industry_code'] = industry_code
-                if code_col:
-                    df['symbol'] = df[code_col].map(_normalize_code6_local)
-                    df['ts_code'] = df['symbol'].map(_guess_ts_code_from_code6_local)
-                else:
-                    df['symbol'] = ''
-                    df['ts_code'] = ''
-                df['stock_name'] = df[name_col].astype(str).str.strip() if name_col else ''
-                df['source'] = 'akshare_eastmoney_industry_member'
-                df['synced_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                all_data.append(df)
+                df = service.fetch_board_members(
+                    board_code=industry_code,
+                    board_name=industry_name,
+                    board_type="industry",
+                )
+                if df is not None and not df.empty:
+                    all_data.append(service.to_member_table(df, "industry"))
+                logger.info(f"  [{idx + 1}/{total}] {industry_name}: {0 if df is None else len(df)} 条")
             except Exception as e:
-                logger.warning(f"同步行业成分股失败 {industry_name}: {e}")
-            time.sleep(0.25)
-            if (idx + 1) % 25 == 0 or (idx + 1) == total:
-                logger.info(f"东方财富行业成分股进度: {idx + 1}/{total}")
+                logger.error(f"同步行业板块 {industry_name} 成分股失败: {e}")
 
         if not all_data:
-            logger.warning("东方财富行业板块成分股未获取到数据")
+            logger.warning("东方财富行业板块成分股为空")
             return False
 
         df_all = pd.concat(all_data, ignore_index=True)
-        if 'ts_code' in df_all.columns and 'industry_code' in df_all.columns:
-            df_all = df_all.drop_duplicates(subset=['ts_code', 'industry_code'], keep='last')
         self._submit_write({"kind": "replace_table", "table": "em_industry_member", "df": df_all}, wait=True)
-        logger.info(f"东方财富行业板块成分股已同步: {len(df_all)} 条")
+        logger.info(f"东方财富行业板块成分股同步完成: {len(df_all)} 条")
         return True
-
     def run_daily_sync(self):
         """执行增量同步：每日类 + 季度类 + 不定期类"""
         logger.info("=" * 60)

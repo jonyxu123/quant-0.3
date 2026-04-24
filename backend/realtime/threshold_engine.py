@@ -675,6 +675,7 @@ def build_signal_context(
     concept_boards = [str(x or "").strip() for x in concept_boards if str(x or "").strip()]
     core_concept_board = str(market.get("core_concept_board") or "").strip()
     concept_ecology = market.get("concept_ecology") if isinstance(market.get("concept_ecology"), dict) else {}
+    industry_ecology = market.get("industry_ecology") if isinstance(market.get("industry_ecology"), dict) else {}
     micro_environment = _detect_micro_environment(
         price=price,
         bid_ask_ratio=bid_ask_ratio,
@@ -726,6 +727,7 @@ def build_signal_context(
         "concept_boards": concept_boards,
         "core_concept_board": core_concept_board,
         "concept_ecology": dict(concept_ecology),
+        "industry_ecology": dict(industry_ecology),
         "volume_drought": bool(micro_environment.get("volume_drought")),
         "board_seal_env": bool(micro_environment.get("board_seal_env")),
         "seal_side": micro_environment.get("seal_side"),
@@ -861,6 +863,7 @@ def get_thresholds(signal_type: str, ctx: dict, profile: Optional[dict] = None) 
         "concept_boards": list(ctx.get("concept_boards") or []),
         "core_concept_board": str(ctx.get("core_concept_board") or ""),
         "concept_ecology": ctx.get("concept_ecology") if isinstance(ctx.get("concept_ecology"), dict) else {},
+        "industry_ecology": ctx.get("industry_ecology") if isinstance(ctx.get("industry_ecology"), dict) else {},
         "risk_warning": bool(ctx.get("risk_warning")),
         "volume_drought": bool(ctx.get("volume_drought")),
         "board_seal_env": bool(ctx.get("board_seal_env")),

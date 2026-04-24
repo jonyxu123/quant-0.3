@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Optional, Dict, Tuple
 
 from .strategy_combos import STRATEGY_COMBOS
+from backend.realtime.eastmoney_board_service import get_eastmoney_board_service
 
 
 class MarketRegime:
@@ -135,6 +136,7 @@ class MarketRegime:
             return 0
 
     @staticmethod
+    @staticmethod
     def get_sector_return_dispersion() -> float:
         """
         计算行业收益离散度（用于检测轮动强度）
@@ -143,19 +145,13 @@ class MarketRegime:
             float: 行业收益率标准差
         """
         try:
-            import akshare as ak
-            df = ak.stock_board_industry_name_em()
+            df = get_eastmoney_board_service().fetch_boards("industry")
             if df is None or df.empty:
                 return 0
-            returns = df['涨跌幅'].astype(float)
-            return returns.std()
+            returns = pd.to_numeric(df["pct_chg"], errors="coerce").dropna()
+            return float(returns.std()) if not returns.empty else 0
         except Exception:
             return 0
-
-    # ============================================================
-    # 市场状态计算
-    # ============================================================
-
     def _compute_market_state(self) -> dict:
         """
         计算当前市场状态指标

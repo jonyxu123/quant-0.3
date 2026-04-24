@@ -1,5 +1,4 @@
 """首次全量数据同步 - 优化版（多线程并发、速率限制、分页处理、断点续传）"""
-import warnings
 
 from scripts.akshare_proxy_patch_free import install_patch
 install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com/getapi2?linePoolIndex=0,1&packid=2&time=1&qty=1&port=2&format=txt&dt=4&ct=1&dtc=1&usertype=17&uid=42083&accessName=sword721&accessPassword=CE2BFE18E746F92ECDB5479063290EAE&skey=autoaddwhiteip",
@@ -22,24 +21,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 from config import DB_PATH, TUSHARE_TOKEN
-
-import akshare as ak
-
-try:
-    from pandas.errors import SettingWithCopyWarning as _SettingWithCopyWarning
-except Exception:
-    _SettingWithCopyWarning = Warning
-
-
-def _call_akshare_quiet(func, *args, **kwargs):
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="A value is trying to be set on a copy of a slice from a DataFrame.*",
-            category=_SettingWithCopyWarning,
-            module=r"akshare\.stock\.stock_board_.*_em",
-        )
-        return func(*args, **kwargs)
+from backend.realtime.eastmoney_board_service import get_eastmoney_board_service
 
 
 def _normalize_code6_local(raw: object) -> str:
@@ -232,6 +214,24 @@ class FullDataSync:
         """将 DataFrame 写入队列（线程安全），if_exists: 'append' 或 'replace'"""
         self._write_queue.put((df, table_name, if_exists))
         self._write_queue.join()  # 等待写入完成再返回
+
+    def close(self):
+        """关闭写入线程和 DuckDB 连接。"""
+        try:
+            self._write_queue.put(None)
+            self._write_thread.join(timeout=5)
+        except Exception:
+            pass
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _get_rate_limiter(self, interface_name):
         """获取对应接口的速率限制器"""
@@ -891,56 +891,70 @@ class FullDataSync:
             logger.error(f"同步停复牌信息失败: {e}")
     
     def sync_historical_concept(self):
-        """同步概念板块列表（AKShare: stock_board_concept_name_em）"""
-        logger.info("开始同步概念板块列表...")
+        """同步东方财富概念板块目录到 concept 表。"""
+        logger.info("开始同步东方财富概念板块列表...")
         try:
-            df = _call_akshare_quiet(ak.stock_board_concept_name_em)
-            if not df.empty:
-                self._write_df(df, 'concept', if_exists='replace')
-                logger.info(f"概念板块列表同步完成: {len(df)}条")
+            service = get_eastmoney_board_service()
+            board_df = service.fetch_boards("concept")
+            concept_df = service.to_board_table(board_df, "concept")
+            if concept_df is None or concept_df.empty:
+                logger.warning("东方财富概念板块列表为空")
+                return
+            self._write_df(concept_df, "concept", if_exists="replace")
+            logger.info(f"东方财富概念板块列表同步完成: {len(concept_df)} 条")
         except Exception as e:
-            logger.error(f"同步概念板块列表失败: {e}")
-
+            logger.error(f"同步东方财富概念板块列表失败: {e}")
     def sync_historical_concept_detail(self):
-        """同步概念板块成分股（AKShare: stock_board_concept_cons_em）"""
-        logger.info("开始同步概念板块成分股...")
+        """同步东方财富概念板块成分股到 concept_detail。"""
+        logger.info("开始同步东方财富概念板块成分股...")
         try:
-            concept_df = pd.read_sql('SELECT "板块名称" FROM concept', self.conn)
+            concept_df = pd.read_sql("SELECT * FROM concept", self.conn)
             if concept_df.empty:
-                logger.warning("概念板块列表为空，请先运行 sync_historical_concept")
+                logger.info("概念板块目录为空，先刷新板块目录...")
+                self.sync_historical_concept()
+                concept_df = pd.read_sql("SELECT * FROM concept", self.conn)
+            if concept_df.empty:
+                logger.warning("概念板块目录仍为空，跳过成分股同步")
                 return
-            names = concept_df['板块名称'].tolist()
-        except Exception:
-            logger.info("概念板块列表未缓存，先拉取...")
-            self.sync_historical_concept()
-            try:
-                concept_df = pd.read_sql('SELECT "板块名称" FROM concept', self.conn)
-                names = concept_df['板块名称'].tolist()
-            except Exception as e:
-                logger.error(f"获取概念板块列表失败: {e}")
-                return
+        except Exception as e:
+            logger.error(f"读取概念板块目录失败: {e}")
+            return
 
+        name_col = next((c for c in ["concept_name", "板块名称", "board_name"] if c in concept_df.columns), None)
+        code_col = next((c for c in ["concept_code", "板块代码", "board_code"] if c in concept_df.columns), None)
+        if not name_col or not code_col:
+            logger.error(f"概念板块目录缺少必要字段: {list(concept_df.columns)}")
+            return
+
+        service = get_eastmoney_board_service()
         all_data = []
-        progress = ProgressTracker(len(names), "概念成分股同步")
-        for name in names:
+        progress = ProgressTracker(len(concept_df), "概念板块成分股同步")
+        for _, row in concept_df.iterrows():
+            concept_name = str(row.get(name_col) or "").strip()
+            concept_code = service.normalize_board_code(row.get(code_col))
+            if not concept_name or not concept_code:
+                progress.update(False, concept_name or "empty_concept")
+                continue
             try:
-                df = _call_akshare_quiet(ak.stock_board_concept_cons_em, symbol=name)
-                if not df.empty:
-                    df = df.copy()
-                    df['concept_name'] = name
-                    all_data.append(df)
-                progress.update(True, f"{name}({len(df)}条)")
+                df = service.fetch_board_members(
+                    board_code=concept_code,
+                    board_name=concept_name,
+                    board_type="concept",
+                )
+                if df is not None and not df.empty:
+                    all_data.append(service.to_member_table(df, "concept"))
+                    progress.update(True, f"{concept_name}({len(df)})")
+                else:
+                    progress.update(True, concept_name)
             except Exception as e:
-                progress.update(False, name)
-                logger.error(f"概念 {name} 成分股失败: {e}")
-            time.sleep(0.3)
+                progress.update(False, concept_name)
+                logger.error(f"同步概念板块 {concept_name} 成分股失败: {e}")
 
         if all_data:
             df_all = pd.concat(all_data, ignore_index=True)
-            self._write_df(df_all, 'concept_detail', if_exists='replace')
-            logger.info(f"概念板块成分股同步完成: {len(df_all)}条")
+            self._write_df(df_all, "concept_detail", if_exists="replace")
+            logger.info(f"东方财富概念板块成分股同步完成: {len(df_all)} 条")
         progress.print_summary()
-
     def sync_historical_top_list(self, start_date='20160101', end_date=None, max_workers=4):
         """同步历史龙虎榜每日明细（top_list，多线程）"""
         today = datetime.now().strftime('%Y%m%d')
@@ -1096,86 +1110,70 @@ class FullDataSync:
     # ==================== 申万行业数据同步 ====================
 
     def sync_em_industry_board(self):
-        """Sync Eastmoney industry board list from AKShare."""
-        logger.info("Start syncing Eastmoney industry boards...")
+        """同步东方财富行业板块目录到 em_industry_board。"""
+        logger.info("开始同步东方财富行业板块列表...")
         try:
-            df = _call_akshare_quiet(ak.stock_board_industry_name_em)
+            service = get_eastmoney_board_service()
+            board_df = service.fetch_boards("industry")
+            df = service.to_board_table(board_df, "industry")
             if df is None or df.empty:
-                logger.warning("Eastmoney industry board list is empty")
+                logger.warning("东方财富行业板块列表为空")
                 return
-            df = df.copy()
-            code_col = next((c for c in ["板块代码", "行业代码", "代码"] if c in df.columns), None)
-            name_col = next((c for c in ["板块名称", "行业名称", "名称", "行业"] if c in df.columns), None)
-            if not name_col:
-                raise RuntimeError(f"Industry board list missing name column: {list(df.columns)}")
-            df["industry_name"] = df[name_col].astype(str).str.strip()
-            df["industry_code"] = df[code_col].map(_normalize_em_board_code_local) if code_col else ""
-            df["source"] = "akshare_eastmoney_industry_board"
-            df["synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._write_df(df, 'em_industry_board', if_exists='replace')
-            logger.info(f"Eastmoney industry boards synced: {len(df)}")
+            self._write_df(df, "em_industry_board", if_exists="replace")
+            logger.info(f"东方财富行业板块列表同步完成: {len(df)} 条")
         except Exception as e:
-            logger.error(f"Sync Eastmoney industry boards failed: {e}")
-
+            logger.error(f"同步东方财富行业板块列表失败: {e}")
     def sync_em_industry_member(self):
-        """Sync Eastmoney industry board constituents from AKShare."""
-        logger.info("Start syncing Eastmoney industry members...")
+        """同步东方财富行业板块成分股到 em_industry_member。"""
+        logger.info("开始同步东方财富行业板块成分股...")
         try:
-            board_df = pd.read_sql('SELECT industry_name, industry_code FROM em_industry_board', self.conn)
+            board_df = pd.read_sql("SELECT * FROM em_industry_board", self.conn)
             if board_df.empty:
-                logger.info("Eastmoney industry board list is empty, refreshing boards first...")
+                logger.info("行业板块目录为空，先刷新板块目录...")
                 self.sync_em_industry_board()
-                board_df = pd.read_sql('SELECT industry_name, industry_code FROM em_industry_board', self.conn)
+                board_df = pd.read_sql("SELECT * FROM em_industry_board", self.conn)
             if board_df.empty:
-                logger.warning("Eastmoney industry board list still empty, skip member sync")
+                logger.warning("行业板块目录仍为空，跳过成分股同步")
                 return
         except Exception as e:
-            logger.error(f"Read Eastmoney industry boards failed: {e}")
+            logger.error(f"读取行业板块目录失败: {e}")
             return
 
+        name_col = next((c for c in ["industry_name", "板块名称", "board_name"] if c in board_df.columns), None)
+        code_col = next((c for c in ["industry_code", "板块代码", "board_code"] if c in board_df.columns), None)
+        if not name_col or not code_col:
+            logger.error(f"行业板块目录缺少必要字段: {list(board_df.columns)}")
+            return
+
+        service = get_eastmoney_board_service()
         all_data = []
-        progress = ProgressTracker(len(board_df), "Eastmoney industry member sync")
+        progress = ProgressTracker(len(board_df), "行业板块成分股同步")
         for _, row in board_df.iterrows():
-            industry_name = str(row.get('industry_name') or '').strip()
-            industry_code = _normalize_em_board_code_local(row.get('industry_code'))
-            if not industry_name:
-                progress.update(False, 'empty_name')
+            industry_name = str(row.get(name_col) or "").strip()
+            industry_code = service.normalize_board_code(row.get(code_col))
+            if not industry_name or not industry_code:
+                progress.update(False, industry_name or "empty_industry")
                 continue
-            symbol = industry_code or industry_name
             try:
-                df = _call_akshare_quiet(ak.stock_board_industry_cons_em, symbol=symbol)
+                df = service.fetch_board_members(
+                    board_code=industry_code,
+                    board_name=industry_name,
+                    board_type="industry",
+                )
                 if df is not None and not df.empty:
-                    df = df.copy()
-                    code_col = next((c for c in ["代码", "股票代码", "个股代码", "symbol", "code"] if c in df.columns), None)
-                    name_col = next((c for c in ["名称", "股票名称", "name"] if c in df.columns), None)
-                    df['industry_name'] = industry_name
-                    df['industry_code'] = industry_code
-                    if code_col:
-                        df['symbol'] = df[code_col].map(_normalize_code6_local)
-                        df['ts_code'] = df['symbol'].map(_guess_ts_code_from_code6_local)
-                    else:
-                        df['symbol'] = ''
-                        df['ts_code'] = ''
-                    df['stock_name'] = df[name_col].astype(str).str.strip() if name_col else ''
-                    df['source'] = 'akshare_eastmoney_industry_member'
-                    df['synced_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    all_data.append(df)
+                    all_data.append(service.to_member_table(df, "industry"))
                     progress.update(True, f"{industry_name}({len(df)})")
                 else:
                     progress.update(True, industry_name)
             except Exception as e:
                 progress.update(False, industry_name)
-                logger.error(f"Sync Eastmoney industry members failed for {industry_name}: {e}")
-            time.sleep(0.25)
+                logger.error(f"同步行业板块 {industry_name} 成分股失败: {e}")
 
         if all_data:
             df_all = pd.concat(all_data, ignore_index=True)
-            if 'ts_code' in df_all.columns and 'industry_code' in df_all.columns:
-                df_all = df_all.drop_duplicates(subset=['ts_code', 'industry_code'], keep='last')
-            self._write_df(df_all, 'em_industry_member', if_exists='replace')
-            logger.info(f"Eastmoney industry members synced: {len(df_all)}")
+            self._write_df(df_all, "em_industry_member", if_exists="replace")
+            logger.info(f"东方财富行业板块成分股同步完成: {len(df_all)} 条")
         progress.print_summary()
-
     def sync_shenwan_industry(self):
         """同步申万行业分类 (index_classify)
 

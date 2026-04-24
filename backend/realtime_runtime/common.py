@@ -300,6 +300,8 @@ def _compact_history_snapshot(signal_obj: Optional[dict]) -> Optional[str]:
     concept_ecology = details.get("concept_ecology") if isinstance(details.get("concept_ecology"), dict) else {}
     left_state_machine = details.get("left_state_machine") if isinstance(details.get("left_state_machine"), dict) else {}
     left_reclaim = details.get("left_reclaim") if isinstance(details.get("left_reclaim"), dict) else {}
+    t0_inventory = details.get("t0_inventory") if isinstance(details.get("t0_inventory"), dict) else {}
+    positive_rebuild_quality = details.get("positive_rebuild_quality") if isinstance(details.get("positive_rebuild_quality"), dict) else {}
     compact = {
         "type": str(signal_obj.get("type") or ""),
         "direction": str(signal_obj.get("direction") or ""),
@@ -373,6 +375,43 @@ def _compact_history_snapshot(signal_obj: Optional[dict]) -> Optional[str]:
                 "high_position_catchdown": bool((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("high_position_catchdown", False)),
                 "distribution_structure": bool((((left_state_machine.get("stage_c") or {}) if isinstance(left_state_machine.get("stage_c"), dict) else {})).get("distribution_structure", False)),
             },
+        },
+        "t0_inventory": {
+            "observe_only": bool(t0_inventory.get("observe_only", False)),
+            "observe_reason": t0_inventory.get("observe_reason"),
+            "blocked_reason": t0_inventory.get("blocked_reason"),
+            "action_path": t0_inventory.get("action_path"),
+            "action_role": t0_inventory.get("action_role"),
+            "overnight_base_qty": t0_inventory.get("overnight_base_qty"),
+            "tradable_t_qty": t0_inventory.get("tradable_t_qty"),
+            "reserve_qty": t0_inventory.get("reserve_qty"),
+            "suggested_action_qty": t0_inventory.get("suggested_action_qty"),
+            "applied_action_qty": t0_inventory.get("applied_action_qty"),
+            "cash_available_for_t": t0_inventory.get("cash_available_for_t"),
+            "inventory_anchor_cost": t0_inventory.get("inventory_anchor_cost"),
+            "state_ready": bool(t0_inventory.get("state_ready", False)),
+            "executed": bool(t0_inventory.get("executed", False)),
+        },
+        "positive_rebuild_quality": {
+            "enabled": bool(positive_rebuild_quality.get("enabled", False)),
+            "observe_only": bool(positive_rebuild_quality.get("observe_only", False)),
+            "quality_pass": bool(positive_rebuild_quality.get("quality_pass", False)),
+            "observe_reasons": list(positive_rebuild_quality.get("observe_reasons") or []) if isinstance(positive_rebuild_quality.get("observe_reasons"), list) else [],
+            "recover_after_rebuild_score": positive_rebuild_quality.get("recover_after_rebuild_score"),
+            "recover_after_rebuild_min_score": positive_rebuild_quality.get("recover_after_rebuild_min_score"),
+            "expected_edge_bps": positive_rebuild_quality.get("expected_edge_bps"),
+            "fee_bps": positive_rebuild_quality.get("fee_bps"),
+            "slippage_bps": positive_rebuild_quality.get("slippage_bps"),
+            "impact_bps": positive_rebuild_quality.get("impact_bps"),
+            "net_executable_edge_bps": positive_rebuild_quality.get("net_executable_edge_bps"),
+            "min_net_executable_edge_bps": positive_rebuild_quality.get("min_net_executable_edge_bps"),
+            "recovery_confirms": list(positive_rebuild_quality.get("recovery_confirms") or []) if isinstance(positive_rebuild_quality.get("recovery_confirms"), list) else [],
+            "continuation_risks": list(positive_rebuild_quality.get("continuation_risks") or []) if isinstance(positive_rebuild_quality.get("continuation_risks"), list) else [],
+            "inventory_warnings": list(positive_rebuild_quality.get("inventory_warnings") or []) if isinstance(positive_rebuild_quality.get("inventory_warnings"), list) else [],
+            "inventory_ok": bool(positive_rebuild_quality.get("inventory_ok", False)),
+            "temp_inventory_ratio": positive_rebuild_quality.get("temp_inventory_ratio"),
+            "reverse_room_ratio_after": positive_rebuild_quality.get("reverse_room_ratio_after"),
+            "anchor_cost_raise_bps_est": positive_rebuild_quality.get("anchor_cost_raise_bps_est"),
         },
         "threshold": {
             "threshold_version": threshold.get("threshold_version"),
@@ -500,6 +539,17 @@ def _is_market_open() -> dict:
     if t > 1500:
         return {"is_open": False, "status": "after_close", "desc": "after close"}
     return {"is_open": False, "status": "before_open", "desc": "before open"}
+
+
+def _is_board_snapshot_fetch_session(ts: Optional[datetime.datetime] = None) -> bool:
+    try:
+        now = ts if isinstance(ts, datetime.datetime) else datetime.datetime.now()
+    except Exception:
+        now = datetime.datetime.now()
+    if now.weekday() >= 5:
+        return False
+    hhmm = now.hour * 100 + now.minute
+    return (930 <= hhmm < 1130) or (1300 <= hhmm < 1500)
 
 
 def _is_signal_processing_allowed(ts_epoch: Optional[int] = None) -> bool:
