@@ -5204,17 +5204,9 @@ def detect_reverse_t(
         and bid_ask_ratio is not None
         and bid_ask_ratio >= _T0_VOL_REV_SURGE_BIDASK_BLOCK_TH
     ):
-        return {
-            **result,
-            'details': {
-                'veto': 'volume_pace_surge_block',
-                'tick_price': tick_price,
-                'volume_pace_ratio': round(vol_pace_ratio_val, 4) if vol_pace_ratio_val is not None else None,
-                'volume_pace_state': vol_pace_state,
-                'bid_ask_ratio': bid_ask_ratio,
-                'reverse_surge_bidask_block_th': _T0_VOL_REV_SURGE_BIDASK_BLOCK_TH,
-            },
-        }
+        surge_bidask_block = True
+    else:
+        surge_bidask_block = False
     trend_guard_detail = dict(main_rally_info or {})
     trend_guard_detail['trend_up'] = bool(trend_up)
     trend_guard_detail['pct_chg'] = pct_chg
@@ -5260,32 +5252,20 @@ def detect_reverse_t(
     )
     trend_guard_detail['surge_absorb_guard'] = bool(surge_absorb_guard)
     trend_guard_detail['surge_absorb_required_bearish_confirms'] = int(_T0_TREND_GUARD_SURGE_MIN_BEARISH_HARD)
-    if surge_absorb_guard and len(bearish_confirms) < _T0_TREND_GUARD_SURGE_MIN_BEARISH_HARD:
-        return {
-            **result,
-            'details': {
-                'veto': 'trend_surge_absorb_guard',
-                'tick_price': tick_price,
-                'pct_chg': pct_chg,
-                'trend_up': bool(trend_up),
-                'volume_pace_ratio': round(vol_pace_ratio_val, 4) if vol_pace_ratio_val is not None else None,
-                'volume_pace_state': vol_pace_state,
-                'trend_guard': trend_guard_detail,
-            },
-        }
-    if main_rally_guard and len(bearish_confirms) < required_bearish_confirms:
-        return {
-            **result,
-            'details': {
-                'veto': 'trend_extension_guard',
-                'tick_price': tick_price,
-                'pct_chg': pct_chg,
-                'trend_up': bool(trend_up),
-                'volume_pace_ratio': round(vol_pace_ratio_val, 4) if vol_pace_ratio_val is not None else None,
-                'volume_pace_state': vol_pace_state,
-                'trend_guard': trend_guard_detail,
-            },
-        }
+    trend_guard_detail['surge_bidask_block'] = bool(surge_bidask_block)
+    trend_guard_detail['surge_bidask_block_th'] = float(_T0_VOL_REV_SURGE_BIDASK_BLOCK_TH)
+    trend_guard_detail['surge_bidask_block_active'] = bool(surge_bidask_block)
+    trend_guard_detail['surge_absorb_shortage'] = bool(
+        surge_absorb_guard and len(bearish_confirms) < _T0_TREND_GUARD_SURGE_MIN_BEARISH_HARD
+    )
+    trend_guard_detail['main_rally_shortage'] = bool(
+        main_rally_guard and len(bearish_confirms) < required_bearish_confirms
+    )
+    trend_guard_detail['guard_veto_legacy'] = bool(
+        trend_guard_detail['surge_absorb_shortage']
+        or trend_guard_detail['main_rally_shortage']
+        or trend_guard_detail['surge_bidask_block_active']
+    )
     theme_guard = _compute_t0_theme_leadership_guard(
         tick_price=tick_price,
         vwap=vwap,
@@ -5447,6 +5427,7 @@ def detect_reverse_t(
             'main_rally_guard': bool(main_rally_guard),
             'trend_guard': trend_guard_detail,
             'trend_guard_override': bool(main_rally_guard and len(bearish_confirms) >= required_bearish_confirms),
+            'guard_veto_legacy': bool(trend_guard_detail.get('guard_veto_legacy')),
             'theme_leadership_guard': theme_guard,
             'theme_guard_override': bool(
                 theme_guard.get('active')

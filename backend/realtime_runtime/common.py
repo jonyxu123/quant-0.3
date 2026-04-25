@@ -757,6 +757,10 @@ def _build_t0_quality_payload(df: pd.DataFrame, hours: int, churn: Optional[dict
             "by_channel": {},
             "by_source": {},
             "by_channel_source": {},
+            "by_action_level": {},
+            "by_exec_status": {},
+            "by_shadow_mode": {},
+            "by_hard_block_reason": {},
             "signal_churn": churn or {
                 "flip_count": 0,
                 "sample_count": 0,
@@ -780,15 +784,33 @@ def _build_t0_quality_payload(df: pd.DataFrame, hours: int, churn: Optional[dict
     d["signal_source"] = d["signal_source"].fillna("").astype(str)
     d.loc[d["channel"].str.len() == 0, "channel"] = "unknown"
     d.loc[d["signal_source"].str.len() == 0, "signal_source"] = "unknown"
+    optional_text_columns = (
+        "action_level_after_downgrade",
+        "exec_status",
+        "shadow_mode",
+        "hard_block_reason_primary",
+    )
+    for col in optional_text_columns:
+        if col in d.columns:
+            d[col] = d[col].fillna("").astype(str)
+    optional_numeric_columns = ("final_qty", "execution_score")
+    for col in optional_numeric_columns:
+        if col in d.columns:
+            d[col] = pd.to_numeric(d[col], errors="coerce")
 
     def agg(part: pd.DataFrame) -> dict:
-        return {
+        payload = {
             "count": int(len(part)),
             "precision": _round_or_none(float(part["direction_correct"].mean()) if len(part) > 0 else None),
             "avg_ret_bps": _round_or_none(part["ret_bps"].mean() if len(part) > 0 else None, 2),
             "avg_mfe_bps": _round_or_none(part["mfe_bps"].mean() if len(part) > 0 else None, 2),
             "avg_mae_bps": _round_or_none(part["mae_bps"].mean() if len(part) > 0 else None, 2),
         }
+        if "final_qty" in part.columns:
+            payload["avg_final_qty"] = _round_or_none(part["final_qty"].mean() if len(part) > 0 else None, 1)
+        if "execution_score" in part.columns:
+            payload["avg_execution_score"] = _round_or_none(part["execution_score"].mean() if len(part) > 0 else None, 2)
+        return payload
 
     by_horizon: dict[str, dict] = {}
     for h in (60, 180, 300):
@@ -867,6 +889,78 @@ def _build_t0_quality_payload(df: pd.DataFrame, hours: int, churn: Optional[dict
             "avg_ret_bps": a["avg_ret_bps"],
         }
 
+    by_action_level: dict[str, dict] = {}
+    if "action_level_after_downgrade" in d5.columns:
+        levels = sorted({str(x) for x in d5["action_level_after_downgrade"].dropna().tolist() if str(x)})
+        for level in levels:
+            part = d5[d5["action_level_after_downgrade"] == level]
+            a = agg(part)
+            by_action_level[level] = {
+                "count": a["count"],
+                "precision_5m": a["precision"],
+                "avg_ret_bps": a["avg_ret_bps"],
+                "avg_mfe_bps": a["avg_mfe_bps"],
+                "avg_mae_bps": a["avg_mae_bps"],
+                "avg_final_qty": a.get("avg_final_qty"),
+                "avg_execution_score": a.get("avg_execution_score"),
+            }
+
+    by_exec_status: dict[str, dict] = {}
+    if "exec_status" in d5.columns:
+        statuses = sorted({str(x) for x in d5["exec_status"].dropna().tolist() if str(x)})
+        for status in statuses:
+            part = d5[d5["exec_status"] == status]
+            a = agg(part)
+            by_exec_status[status] = {
+                "count": a["count"],
+                "precision_5m": a["precision"],
+                "avg_ret_bps": a["avg_ret_bps"],
+                "avg_mfe_bps": a["avg_mfe_bps"],
+                "avg_mae_bps": a["avg_mae_bps"],
+                "avg_final_qty": a.get("avg_final_qty"),
+                "avg_execution_score": a.get("avg_execution_score"),
+            }
+
+    by_shadow_mode: dict[str, dict] = {}
+    if "shadow_mode" in d5.columns:
+        shadow_modes = sorted({str(x) for x in d5["shadow_mode"].dropna().tolist() if str(x)})
+        for mode in shadow_modes:
+            part = d5[d5["shadow_mode"] == mode]
+            a = agg(part)
+            by_shadow_mode[mode] = {
+                "count": a["count"],
+                "precision_5m": a["precision"],
+                "avg_ret_bps": a["avg_ret_bps"],
+                "avg_final_qty": a.get("avg_final_qty"),
+                "avg_execution_score": a.get("avg_execution_score"),
+            }
+
+    by_hard_block_reason: dict[str, dict] = {}
+    if "hard_block_reason_primary" in d5.columns:
+        reasons = sorted(
+            {
+                str(x)
+                for x in d5["hard_block_reason_primary"].dropna().tolist()
+                if str(x)
+            },
+            key=lambda x: (
+                -int(len(d5[d5["hard_block_reason_primary"] == x])),
+                str(x),
+            ),
+        )
+        for reason in reasons[:8]:
+            part = d5[d5["hard_block_reason_primary"] == reason]
+            a = agg(part)
+            by_hard_block_reason[reason] = {
+                "count": a["count"],
+                "precision_5m": a["precision"],
+                "avg_ret_bps": a["avg_ret_bps"],
+                "avg_mfe_bps": a["avg_mfe_bps"],
+                "avg_mae_bps": a["avg_mae_bps"],
+                "avg_final_qty": a.get("avg_final_qty"),
+                "avg_execution_score": a.get("avg_execution_score"),
+            }
+
     a1 = agg(d1) if len(d1) > 0 else {"precision": None}
     a3 = agg(d3) if len(d3) > 0 else {"precision": None}
     a5 = agg(d5)
@@ -888,6 +982,10 @@ def _build_t0_quality_payload(df: pd.DataFrame, hours: int, churn: Optional[dict
         "by_channel": by_channel,
         "by_source": by_source,
         "by_channel_source": by_channel_source,
+        "by_action_level": by_action_level,
+        "by_exec_status": by_exec_status,
+        "by_shadow_mode": by_shadow_mode,
+        "by_hard_block_reason": by_hard_block_reason,
         "signal_churn": churn or {
             "flip_count": 0,
             "sample_count": 0,

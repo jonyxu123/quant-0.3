@@ -203,6 +203,15 @@ interface QualityByPhase {
   precision_5m: number | null
   avg_ret_bps: number | null
 }
+interface QualityBucketMetric {
+  count: number
+  precision_5m: number | null
+  avg_ret_bps: number | null
+  avg_mfe_bps?: number | null
+  avg_mae_bps?: number | null
+  avg_final_qty?: number | null
+  avg_execution_score?: number | null
+}
 interface HorizonMetric { count: number; precision: number | null; avg_ret_bps: number | null; avg_mfe_bps: number | null; avg_mae_bps: number | null }
 interface SignalChurn { flip_count: number; sample_count: number; symbols: number; churn_ratio: number | null; flips_per_hour: number | null }
 interface PositiveRebuildReasonCount { reason: string; count: number }
@@ -263,11 +272,76 @@ interface QualitySummary {
     precision_5m: number | null
     avg_ret_bps: number | null
   }>
+  by_action_level?: Record<string, QualityBucketMetric>
+  by_exec_status?: Record<string, QualityBucketMetric>
+  by_shadow_mode?: Record<string, QualityBucketMetric>
+  by_hard_block_reason?: Record<string, QualityBucketMetric>
   signal_churn?: SignalChurn
   positive_rebuild_quality?: PositiveRebuildSummary
   message?: string
 }
 interface DriftFeature { psi: number | null; ks_stat: number | null; severity: string; drifted: boolean; precision_drop: number | null; alerted: boolean }
+interface DriftQualitySplitRow {
+  recent_count: number
+  recent_precision_5m: number | null
+  recent_avg_ret_bps: number | null
+  baseline_count: number
+  baseline_precision_5m: number | null
+  baseline_avg_ret_bps: number | null
+  precision_drop: number | null
+}
+interface ExecutionCalibrationSuggestion extends DriftQualitySplitRow {
+  group: string
+  bucket: string
+  label: string
+  severity: string
+  action: string
+  title: string
+  message: string
+}
+interface ExecutionCalibrationPayload {
+  enabled?: boolean
+  summary?: {
+    suggestion_count?: number
+    high_count?: number
+    medium_count?: number
+    watch_count?: number
+  }
+  items?: ExecutionCalibrationSuggestion[]
+}
+interface T0ExecutionOverrideSnapshot {
+  enabled?: boolean
+  updated_at?: string | null
+  storage_source?: string
+  live_qty_scale?: number
+  action_qty_multiplier?: Record<string, number>
+  score_thresholds?: Record<string, number>
+  effective_action_qty_multiplier?: Record<string, number>
+  effective_score_thresholds?: Record<string, number>
+  manual_override_active?: boolean
+  applied_items?: Array<{
+    group?: string
+    bucket?: string
+    action?: string
+    event_type?: string
+    label?: string
+    title?: string
+    operator?: string
+    source?: string
+    applied_at?: string
+    changes?: Array<{ field?: string; before?: number; after?: number }>
+  }>
+}
+interface T0ExecutionCalibrationSnapshot {
+  ok?: boolean
+  checked_at?: string
+  window_days?: number
+  storage_source?: string
+  message?: string
+  calibration?: ExecutionCalibrationPayload
+  manual_override?: T0ExecutionOverrideSnapshot
+}
+type T0ExecutionOverrideLogItem = NonNullable<T0ExecutionOverrideSnapshot['applied_items']>[number]
 interface DriftStatus {
   days: number
   total_checks: number
@@ -275,17 +349,23 @@ interface DriftStatus {
   latest_checked_at?: string
   latest: Record<string, DriftFeature>
   alerts: number
-  quality_split_by_channel_source?: Array<{
+  quality_split_by_channel_source?: Array<DriftQualitySplitRow & {
     channel: string
     signal_source: string
-    recent_count: number
-    recent_precision_5m: number | null
-    recent_avg_ret_bps: number | null
-    baseline_count: number
-    baseline_precision_5m: number | null
-    baseline_avg_ret_bps: number | null
-    precision_drop: number | null
   }>
+  quality_split_by_action_level?: Array<DriftQualitySplitRow & {
+    action_level: string
+  }>
+  quality_split_by_exec_status?: Array<DriftQualitySplitRow & {
+    exec_status: string
+  }>
+  quality_split_by_shadow_mode?: Array<DriftQualitySplitRow & {
+    shadow_mode: string
+  }>
+  quality_split_by_hard_block_reason?: Array<DriftQualitySplitRow & {
+    hard_block_reason: string
+  }>
+  execution_calibration?: ExecutionCalibrationPayload
   message?: string
 }
 interface Pool2InventoryStorageStatus {
@@ -307,6 +387,14 @@ interface Pool2T0ActionLogItem {
   remaining_tradable_t_qty?: number
   today_t_count?: number
   signal_seq?: number
+  action_level?: string
+  shadow_action_level?: string
+  shadow_only?: boolean
+  qty_multiplier?: number
+  soft_qty_multiplier?: number
+  base_action_qty?: number
+  final_qty?: number
+  score?: number
 }
 interface Pool2InventoryRow {
   ts_code: string
@@ -334,6 +422,14 @@ interface Pool2InventoryRow {
   last_action_qty?: number
   last_action_mode?: string
   last_action_role?: string
+  last_action_level?: string
+  last_shadow_action_level?: string
+  last_shadow_only?: boolean
+  last_qty_multiplier?: number
+  last_soft_qty_multiplier?: number
+  last_base_action_qty?: number
+  last_final_qty?: number
+  last_action_score?: number
   today_action_log?: Pool2T0ActionLogItem[]
   today_action_count?: number
   last_reset_at?: number
@@ -749,6 +845,19 @@ interface T0IndexContext extends T0IndexContextGate {
   snapshot?: Array<Record<string, any>>
   by_code?: Record<string, Record<string, any>>
 }
+interface T0ExecutionSnapshot {
+  score?: number
+  base_action_qty?: number
+  final_qty?: number
+  action_level_before_downgrade?: string
+  action_level_after_downgrade?: string
+  qty_multiplier?: number
+  soft_qty_multiplier?: number
+  hard_block_reasons?: string[]
+  downgrade_reasons?: string[]
+  shadow_action_level?: string
+  shadow_only?: boolean
+}
 interface T0DiagRow {
   ts_code: string
   name: string
@@ -768,6 +877,7 @@ interface T0DiagRow {
   trend_guard?: Record<string, any>
   positive_rebuild_quality?: Record<string, any>
   t0_inventory?: Record<string, any>
+  t0_execution?: T0ExecutionSnapshot
   market_structure?: Record<string, any>
   feature_snapshot?: Record<string, any>
   threshold?: Record<string, any>
@@ -3127,6 +3237,13 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [qualityOpen, setQualityOpen] = useState(false)
   const [qualityHours, setQualityHours] = useState(24)
   const [drift, setDrift] = useState<DriftStatus | null>(null)
+  const [executionCalibrationSnapshot, setExecutionCalibrationSnapshot] = useState<T0ExecutionCalibrationSnapshot | null>(null)
+  const [executionOverrideBusy, setExecutionOverrideBusy] = useState(false)
+  const [executionOverrideOperator, setExecutionOverrideOperator] = useState('manual-ui')
+  const [executionOverrideLogFilter, setExecutionOverrideLogFilter] = useState<'all' | 'qty_floor' | 'block_threshold'>('all')
+  const [highlightedExecutionSuggestionKey, setHighlightedExecutionSuggestionKey] = useState('')
+  const [executionSuggestionReturnSourceKey, setExecutionSuggestionReturnSourceKey] = useState('')
+  const [highlightedExecutionSourceKey, setHighlightedExecutionSourceKey] = useState('')
   const [pool1Observe, setPool1Observe] = useState<Pool1ObserveResp | null>(null)
   const [pool1ObserveUi, setPool1ObserveUi] = useState(POOL1_OBSERVE_UI_DEFAULT)
   const [pool1ExitUi, setPool1ExitUi] = useState(POOL1_EXIT_UI_DEFAULT)
@@ -3180,6 +3297,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pool2InventoryRowRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pool2InventoryFieldRefs = useRef<Record<string, HTMLElement | null>>({})
+  const executionSuggestionRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const executionSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const executionSourceRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const executionSourceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const locateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pool2LocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pool1CandidateRef = useRef<HTMLDivElement | null>(null)
@@ -3190,14 +3311,105 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const { connected, usePolling, tickMap, txnsMap, tickHistoryMap, signalRows, marketStatus, lastEvalAt, refreshSignals } = useRealtimeWS(pool.pool_id, soundOn, pageVisible)
 
   const loadQuality = useCallback(() => {
-    if (pool.pool_id !== 2) return
+    if (pool.pool_id !== 2) {
+      setExecutionCalibrationSnapshot(null)
+      return
+    }
     axios.get(`${API}/api/realtime/pool/2/quality_summary`, { params: { hours: qualityHours } })
       .then(r => setQuality(r.data))
       .catch(() => {})
     axios.get(`${API}/api/realtime/pool/2/drift_status`, { params: { days: 3 } })
       .then(r => setDrift(r.data))
       .catch(() => {})
+    axios.get<T0ExecutionCalibrationSnapshot>(`${API}/api/realtime/runtime/t0_execution_calibration_snapshot`)
+      .then(r => setExecutionCalibrationSnapshot(r.data || null))
+      .catch(() => {})
   }, [pool.pool_id, qualityHours])
+
+  const getExecutionCalibrationPanel = useCallback((): ExecutionCalibrationPayload | null => {
+    if (executionCalibrationSnapshot?.ok && executionCalibrationSnapshot.calibration) return executionCalibrationSnapshot.calibration
+    return drift?.execution_calibration || null
+  }, [executionCalibrationSnapshot, drift])
+
+  const findExecutionCalibrationSuggestion = useCallback((group: string, bucket: string): ExecutionCalibrationSuggestion | null => {
+    const panel = getExecutionCalibrationPanel()
+    const items = Array.isArray(panel?.items) ? panel?.items : []
+    return items.find((it) => String(it.group || '') === group && String(it.bucket || '') === bucket) || null
+  }, [getExecutionCalibrationPanel])
+
+  const executionSuggestionKeyOf = useCallback((item: Pick<ExecutionCalibrationSuggestion, 'group' | 'bucket' | 'action'> | null | undefined): string => {
+    if (!item) return ''
+    return `${String(item.group || '')}:${String(item.bucket || '')}:${String(item.action || '')}`
+  }, [])
+
+  const returnToExecutionSuggestionSource = useCallback((sourceKey?: string) => {
+    const key = String(sourceKey || executionSuggestionReturnSourceKey || '').trim()
+    if (!key) return
+    setHighlightedExecutionSourceKey(key)
+    if (executionSourceTimerRef.current) clearTimeout(executionSourceTimerRef.current)
+    executionSourceTimerRef.current = setTimeout(() => setHighlightedExecutionSourceKey(''), 2600)
+    setTimeout(() => {
+      const el = executionSourceRefs.current[key]
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+  }, [executionSuggestionReturnSourceKey])
+
+  const locateExecutionCalibrationSuggestion = useCallback((group: string, bucket: string, sourceKey?: string) => {
+    const target = findExecutionCalibrationSuggestion(group, bucket)
+    if (!target) return
+    const key = executionSuggestionKeyOf(target)
+    if (!key) return
+    setExecutionSuggestionReturnSourceKey(String(sourceKey || '').trim())
+    setHighlightedExecutionSuggestionKey(key)
+    if (executionSuggestionTimerRef.current) clearTimeout(executionSuggestionTimerRef.current)
+    executionSuggestionTimerRef.current = setTimeout(() => setHighlightedExecutionSuggestionKey(''), 2600)
+    setTimeout(() => {
+      const el = executionSuggestionRefs.current[key]
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+  }, [executionSuggestionKeyOf, findExecutionCalibrationSuggestion])
+
+  const applyExecutionCalibrationSuggestion = useCallback(async (item: ExecutionCalibrationSuggestion, options?: { returnToSource?: boolean }) => {
+    if (pool.pool_id !== 2 || !item || executionOverrideBusy) return
+    setExecutionOverrideBusy(true)
+    try {
+      await axios.post(`${API}/api/realtime/runtime/t0_execution_override_apply`, {
+        group: item.group,
+        bucket: item.bucket,
+        action: item.action,
+        label: item.label,
+        title: item.title,
+        operator: executionOverrideOperator.trim() || 'manual-ui',
+        source: 'realtime-monitor-ui',
+      })
+      loadQuality()
+      if (options?.returnToSource && executionSuggestionReturnSourceKey) {
+        setTimeout(() => returnToExecutionSuggestionSource(executionSuggestionReturnSourceKey), 220)
+      }
+    } catch (err: any) {
+      const msg = String(err?.response?.data?.detail || err?.message || '执行层手动应用失败')
+      window.alert(msg)
+    } finally {
+      setExecutionOverrideBusy(false)
+    }
+  }, [pool.pool_id, executionOverrideBusy, executionOverrideOperator, loadQuality, executionSuggestionReturnSourceKey, returnToExecutionSuggestionSource])
+
+  const resetExecutionCalibrationOverride = useCallback(async () => {
+    if (pool.pool_id !== 2 || executionOverrideBusy) return
+    setExecutionOverrideBusy(true)
+    try {
+      await axios.post(`${API}/api/realtime/runtime/t0_execution_override_reset`, {
+        operator: executionOverrideOperator.trim() || 'manual-ui',
+        source: 'realtime-monitor-ui',
+      })
+      loadQuality()
+    } catch (err: any) {
+      const msg = String(err?.response?.data?.detail || err?.message || '执行层 override 重置失败')
+      window.alert(msg)
+    } finally {
+      setExecutionOverrideBusy(false)
+    }
+  }, [pool.pool_id, executionOverrideBusy, executionOverrideOperator, loadQuality])
 
   const loadPool2Inventory = useCallback(() => {
     if (pool.pool_id !== 2) {
@@ -3212,6 +3424,28 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   }, [pool.pool_id])
 
   useEffect(() => { if (qualityOpen) loadQuality() }, [qualityOpen, loadQuality])
+
+  useEffect(() => {
+    if (pool.pool_id !== 2) return
+    try {
+      const saved = window.localStorage.getItem('realtime:t0ExecutionOperator')
+      if (saved && saved.trim()) setExecutionOverrideOperator(saved.trim())
+    } catch (_) {}
+  }, [pool.pool_id])
+
+  useEffect(() => {
+    if (pool.pool_id !== 2) return
+    try {
+      window.localStorage.setItem('realtime:t0ExecutionOperator', executionOverrideOperator.trim() || 'manual-ui')
+    } catch (_) {}
+  }, [pool.pool_id, executionOverrideOperator])
+
+  useEffect(() => {
+    return () => {
+      if (executionSuggestionTimerRef.current) clearTimeout(executionSuggestionTimerRef.current)
+      if (executionSourceTimerRef.current) clearTimeout(executionSourceTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (pool.pool_id !== 2) return
@@ -4028,6 +4262,14 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
           log.action_role || '',
           log.price ?? '',
           log.qty ?? '',
+          log.action_level || '',
+          log.shadow_action_level || '',
+          log.shadow_only ?? '',
+          log.qty_multiplier ?? '',
+          log.soft_qty_multiplier ?? '',
+          log.base_action_qty ?? '',
+          log.final_qty ?? '',
+          log.score ?? '',
           log.remaining_tradable_t_qty ?? '',
           log.today_t_count ?? '',
           log.signal_seq ?? '',
@@ -4061,6 +4303,14 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
         'action_role',
         'action_price',
         'action_qty',
+        'action_level',
+        'shadow_action_level',
+        'shadow_only',
+        'qty_multiplier',
+        'soft_qty_multiplier',
+        'base_action_qty',
+        'final_qty',
+        'score',
         'remaining_tradable_t_qty',
         'today_t_count_after',
         'signal_seq',
@@ -7362,6 +7612,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                     const triggerCount = Number(summary.triggered || 0)
                     const observeCount = Number(summary.observe_only || 0)
                     const indexObserveCount = Number(summary.index_observe_only || 0)
+                    const execTestCount = Number(summary.exec_test || 0)
+                    const execExecuteCount = Number(summary.exec_execute || 0)
+                    const execBlockCount = Number(summary.exec_block || 0)
+                    const execShadowCount = Number(summary.exec_shadow_only || 0)
                     const extraIndexCount = panel.key === 'positive_t'
                       ? `恐慌:${Number(summary.index_panic_selloff || 0)} · risk_off:${Number(summary.index_risk_off || 0)}`
                       : `risk_on分歧不足:${Number(summary.index_risk_on_no_distribution || 0)}`
@@ -7388,6 +7642,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                           <span>触发 <span style={{ color: triggerCount > 0 ? panel.color : C.text }}>{triggerCount}</span></span>
                           <span>仅观察 <span style={{ color: observeCount > 0 ? C.yellow : C.text }}>{observeCount}</span></span>
                           <span>指数压制 <span style={{ color: indexObserveCount > 0 ? C.yellow : C.text }}>{indexObserveCount}</span></span>
+                          <span>试单 <span style={{ color: execTestCount > 0 ? C.cyan : C.text }}>{execTestCount}</span></span>
+                          <span>执行 <span style={{ color: execExecuteCount > 0 ? C.green : C.text }}>{execExecuteCount}</span></span>
+                          <span>阻断 <span style={{ color: execBlockCount > 0 ? C.red : C.text }}>{execBlockCount}</span></span>
+                          <span>影子档 <span style={{ color: execShadowCount > 0 ? '#fb7185' : C.text }}>{execShadowCount}</span></span>
                           <span>{extraIndexCount}</span>
                         </div>
                         {panel.loading && <div style={{ color: C.dim }}>正在拉取诊断数据...</div>}
@@ -7398,15 +7656,26 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                             {rows.slice(0, 6).map((row) => {
                               const indexGate = row.index_context_gate || {}
+                              const t0Execution = row.t0_execution || {}
                               const reasons = Array.isArray(indexGate.reasons) ? indexGate.reasons : []
+                              const execHardBlockReasons = Array.isArray(t0Execution.hard_block_reasons) ? t0Execution.hard_block_reasons : []
+                              const execDowngradeReasons = Array.isArray(t0Execution.downgrade_reasons) ? t0Execution.downgrade_reasons : []
                               const primaryLabel = String(indexGate.primary_index_name || indexGate.primary_index_code || '--')
                               const stateLabel = t0IndexStateLabel(String(indexGate.state || ''))
                               const stateColor = t0IndexStateColor(String(indexGate.state || ''))
                               const statusLabel = t0DiagStatusLabel(row.status)
                               const statusColor = t0DiagStatusColor(row.status)
+                              const execLevelAfter = String(t0Execution.action_level_after_downgrade || '--')
+                              const execLevelBefore = String(t0Execution.action_level_before_downgrade || '--')
+                              const execLevelColor = t0ActionLevelColor(execLevelAfter)
+                              const execQty = Number(t0Execution.final_qty ?? NaN)
+                              const execScore = Number(t0Execution.score ?? NaN)
                               const reasonText = reasons.length > 0
                                 ? reasons.map((x: any) => t0IndexGateReasonLabel(String(x || ''))).join(' / ')
                                 : t0IndexGateReasonLabel(String(indexGate.reason || ''))
+                              const executionReasonText = execHardBlockReasons.length > 0
+                                ? execHardBlockReasons.slice(0, 2).map((x: any) => t0ExecutionReasonLabel(String(x || ''))).join(' / ')
+                                : execDowngradeReasons.slice(0, 2).map((x: any) => t0ExecutionReasonLabel(String(x || ''))).join(' / ')
                               return (
                                 <div
                                   key={`${panel.key}-${row.ts_code}`}
@@ -7446,10 +7715,20 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                                     <span>指数状态 <span style={{ color: stateColor }}>{stateLabel}</span></span>
                                   </div>
                                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, color: C.dim }}>
+                                    <span>执行档 <span style={{ color: execLevelColor }}>{t0ActionLevelLabel(execLevelAfter)}</span></span>
+                                    <span>前档 <span style={{ color: t0ActionLevelColor(execLevelBefore) }}>{t0ActionLevelLabel(execLevelBefore)}</span></span>
+                                    <span>执行分 <span style={{ color: C.text }}>{Number.isFinite(execScore) ? execScore.toFixed(1) : '--'}</span></span>
+                                    <span>最终股数 <span style={{ color: Number.isFinite(execQty) && execQty > 0 ? C.green : C.text }}>{Number.isFinite(execQty) ? execQty : '--'}</span></span>
+                                    <span>影子档 <span style={{ color: Boolean(t0Execution.shadow_only) ? '#fb7185' : C.text }}>{Boolean(t0Execution.shadow_only) ? t0ActionLevelLabel(String(t0Execution.shadow_action_level || '--')) : '--'}</span></span>
+                                  </div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, color: C.dim }}>
                                     <span>{primaryLabel}</span>
                                     <span style={{ color: C.text }}>{fmtSignedPct(Number(indexGate.primary_pct_chg ?? NaN))}</span>
                                     <span>均值 <span style={{ color: C.text }}>{fmtSignedPct(Number(indexGate.avg_pct_chg ?? NaN))}</span></span>
                                     <span>广度 <span style={{ color: C.text }}>{`${String(indexGate.positive_count ?? '--')}↑/${String(indexGate.negative_count ?? '--')}↓`}</span></span>
+                                  </div>
+                                  <div style={{ color: execHardBlockReasons.length > 0 ? C.red : (executionReasonText ? C.yellow : C.dim), whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                                    执行层: {executionReasonText || '--'}
                                   </div>
                                   <div style={{ color: (indexGate.observe_only || indexGate.blocked) ? C.yellow : C.dim, whiteSpace: 'normal', wordBreak: 'break-word' }}>
                                     指数门: {reasonText || '--'}
@@ -7765,6 +8044,12 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 10, color: C.dim, marginTop: 8 }}>
                             <span>上次动作: <span style={{ color: C.text }}>{row.last_action_mode || '--'}</span></span>
                             <span>动作量: <span style={{ color: C.text }}>{row.last_action_qty || 0}</span></span>
+                            <span>执行档: <span style={{ color: t0ActionLevelColor(row.last_action_level) }}>{t0ActionLevelLabel(row.last_action_level)}</span></span>
+                            {row.last_shadow_only && row.last_shadow_action_level ? (
+                              <span>影子档: <span style={{ color: t0ActionLevelColor(row.last_shadow_action_level) }}>{t0ActionLevelLabel(row.last_shadow_action_level)}</span></span>
+                            ) : null}
+                            <span>执行分: <span style={{ color: C.text }}>{Number.isFinite(Number(row.last_action_score ?? NaN)) ? Number(row.last_action_score).toFixed(1) : '--'}</span></span>
+                            <span>最终股数: <span style={{ color: C.text }}>{Number.isFinite(Number(row.last_final_qty ?? NaN)) ? Number(row.last_final_qty) : '--'}</span></span>
                             <span>最近信号: <span style={{ color: C.text }}>{row.last_signal_type || '--'}</span></span>
                             <span>更新时间: <span style={{ color: C.text }}>{row.updated_at_iso ? new Date(row.updated_at_iso).toLocaleTimeString() : '--:--:--'}</span></span>
                           </div>
@@ -7948,6 +8233,158 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                       </div>
                     </div>
                   )}
+                  {quality.by_action_level && Object.keys(quality.by_action_level).length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>按执行档位</div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {Object.entries(quality.by_action_level)
+                          .sort((a, b) => {
+                            const order: Record<string, number> = { block: 0, observe: 1, test: 2, execute: 3, aggressive: 4 }
+                            return (order[a[0]] ?? 99) - (order[b[0]] ?? 99)
+                          })
+                          .map(([level, v]) => (
+                            <div key={level} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: 4, padding: '4px 8px', fontSize: 10, minWidth: 150 }}>
+                              <div style={{ color: t0ActionLevelColor(level), fontWeight: 600, marginBottom: 3 }}>{t0ActionLevelLabel(level)}</div>
+                              <div style={{ display: 'flex', gap: 8, color: C.dim, flexWrap: 'wrap' }}>
+                                <span>n={v.count}</span>
+                                <span style={{ color: v.precision_5m != null ? (v.precision_5m >= 0.55 ? C.green : v.precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                  {v.precision_5m != null ? `5m ${(v.precision_5m * 100).toFixed(1)}%` : '5m --'}
+                                </span>
+                                <span style={{ color: v.avg_ret_bps != null ? (v.avg_ret_bps > 0 ? C.green : C.red) : C.dim }}>
+                                  {v.avg_ret_bps != null ? `${v.avg_ret_bps > 0 ? '+' : ''}${v.avg_ret_bps.toFixed(1)}bps` : '--'}
+                                </span>
+                                <span>均量 {v.avg_final_qty != null ? Number(v.avg_final_qty).toFixed(0) : '--'}</span>
+                                <span>均分 {v.avg_execution_score != null ? Number(v.avg_execution_score).toFixed(1) : '--'}</span>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                  {quality.by_exec_status && Object.keys(quality.by_exec_status).length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>按执行路径</div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {Object.entries(quality.by_exec_status)
+                          .sort((a, b) => Number(b[1].count || 0) - Number(a[1].count || 0))
+                          .map(([status, v]) => (
+                            <div key={status} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: 4, padding: '4px 8px', fontSize: 10 }}>
+                              <span style={{ color: status === 'hard_block' ? C.red : status === 'shadow_only' ? '#fb7185' : t0ActionLevelColor(status), marginRight: 6 }}>
+                                {t0ExecutionStatusLabel(status)}
+                              </span>
+                              <span style={{ color: C.dim, marginRight: 6 }}>n={v.count}</span>
+                              <span style={{ color: v.precision_5m != null ? (v.precision_5m >= 0.55 ? C.green : v.precision_5m >= 0.45 ? C.yellow : C.red) : C.dim, marginRight: 6 }}>
+                                {v.precision_5m != null ? `${(v.precision_5m * 100).toFixed(1)}%` : '--'}
+                              </span>
+                              <span style={{ color: v.avg_ret_bps != null ? (v.avg_ret_bps > 0 ? C.green : C.red) : C.dim }}>
+                                {v.avg_ret_bps != null ? `${v.avg_ret_bps > 0 ? '+' : ''}${v.avg_ret_bps.toFixed(1)}bps` : '--'}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                  {quality.by_shadow_mode && Object.keys(quality.by_shadow_mode).length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>按影子/实盘路径</div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {Object.entries(quality.by_shadow_mode).map(([mode, v]) => (
+                          <div key={mode} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: 4, padding: '4px 8px', fontSize: 10 }}>
+                            <span style={{ color: mode === 'shadow_only' ? '#fb7185' : C.cyan, marginRight: 6 }}>{t0ShadowModeLabel(mode)}</span>
+                            <span style={{ color: C.dim, marginRight: 6 }}>n={v.count}</span>
+                            <span style={{ color: v.precision_5m != null ? (v.precision_5m >= 0.55 ? C.green : v.precision_5m >= 0.45 ? C.yellow : C.red) : C.dim, marginRight: 6 }}>
+                              {v.precision_5m != null ? `${(v.precision_5m * 100).toFixed(1)}%` : '--'}
+                            </span>
+                            <span style={{ color: v.avg_ret_bps != null ? (v.avg_ret_bps > 0 ? C.green : C.red) : C.dim }}>
+                              {v.avg_ret_bps != null ? `${v.avg_ret_bps > 0 ? '+' : ''}${v.avg_ret_bps.toFixed(1)}bps` : '--'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {quality.by_hard_block_reason && Object.keys(quality.by_hard_block_reason).length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>按硬阻断原因</div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {Object.entries(quality.by_hard_block_reason)
+                          .slice(0, 8)
+                          .map(([reason, v]) => {
+                            const reviewMeta = t0HardBlockReviewMeta(reason)
+                            const suggestion = reviewMeta.candidate ? findExecutionCalibrationSuggestion('hard_block_reason', reason) : null
+                            const statusMeta = t0HardBlockCandidateStatus(reason, executionCalibrationSnapshot?.manual_override, !!suggestion)
+                            const sourceKey = `quality-hard-block:${reason}`
+                            const sourceHighlighted = highlightedExecutionSourceKey === sourceKey
+                            return (
+                            <div
+                              key={reason}
+                              ref={(el) => { executionSourceRefs.current[sourceKey] = el }}
+                              style={{
+                                background: sourceHighlighted ? 'rgba(250,204,21,0.12)' : 'rgba(0,0,0,0.3)',
+                                borderRadius: 4,
+                                padding: '4px 8px',
+                                fontSize: 10,
+                                minWidth: 180,
+                                border: sourceHighlighted ? `1px solid ${C.yellow}` : '1px solid transparent',
+                                boxShadow: sourceHighlighted ? `0 0 0 1px ${C.yellow}` : 'none',
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexWrap: 'wrap' }}>
+                                <div style={{ color: reviewMeta.candidate ? C.cyan : C.red, fontWeight: 600 }}>{t0ExecutionReasonLabel(reason)}</div>
+                                <span style={{
+                                  fontSize: 9,
+                                  color: reviewMeta.color,
+                                  border: `1px solid ${reviewMeta.color}`,
+                                  borderRadius: 999,
+                                  padding: '0 6px',
+                                  background: reviewMeta.candidate ? 'rgba(34,211,238,0.10)' : 'rgba(255,255,255,0.04)',
+                                }}>
+                                  {reviewMeta.label}
+                                </span>
+                                {statusMeta && (
+                                  <span style={{
+                                    fontSize: 9,
+                                    color: statusMeta.color,
+                                    border: `1px solid ${statusMeta.borderColor}`,
+                                    borderRadius: 999,
+                                    padding: '0 6px',
+                                    background: statusMeta.bg,
+                                  }}>
+                                    {statusMeta.shortLabel} · {statusMeta.label}
+                                  </span>
+                                )}
+                                {suggestion && (
+                                  <button
+                                    onClick={() => locateExecutionCalibrationSuggestion('hard_block_reason', reason, sourceKey)}
+                                    style={{
+                                      fontSize: 9,
+                                      background: 'rgba(0,0,0,0.22)',
+                                      border: `1px solid ${C.cyan}`,
+                                      borderRadius: 4,
+                                      color: C.cyan,
+                                      padding: '1px 6px',
+                                      cursor: 'pointer',
+                                      marginLeft: 'auto',
+                                    }}
+                                  >
+                                    去建议
+                                  </button>
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', gap: 8, color: C.dim, flexWrap: 'wrap' }}>
+                                <span>n={v.count}</span>
+                                <span style={{ color: v.precision_5m != null ? (v.precision_5m >= 0.55 ? C.green : v.precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                  {v.precision_5m != null ? `5m ${(v.precision_5m * 100).toFixed(1)}%` : '--'}
+                                </span>
+                                <span style={{ color: v.avg_ret_bps != null ? (v.avg_ret_bps > 0 ? C.green : C.red) : C.dim }}>
+                                  {v.avg_ret_bps != null ? `${v.avg_ret_bps > 0 ? '+' : ''}${v.avg_ret_bps.toFixed(1)}bps` : '--'}
+                                </span>
+                              </div>
+                            </div>
+                          )})}
+                      </div>
+                    </div>
+                  )}
                   {Object.keys(quality.by_phase).length > 0 && (
                     <div>
                       <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>按交易时段</div>
@@ -8033,6 +8470,305 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                           ))}
                         </div>
                       )}
+                      {(() => {
+                        const calibrationPanel = (executionCalibrationSnapshot?.ok ? executionCalibrationSnapshot.calibration : null) || drift.execution_calibration
+                        const manualOverride = executionCalibrationSnapshot?.manual_override
+                        if (!(calibrationPanel?.items && calibrationPanel.items.length > 0)) return null
+                        return (
+                          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 10, color: C.cyan, fontWeight: 600 }}>执行层校准建议</span>
+                              <span style={{ fontSize: 9, color: C.dim }}>
+                                共 {Number(calibrationPanel.summary?.suggestion_count || 0)} 条
+                              </span>
+                              {Number(calibrationPanel.summary?.high_count || 0) > 0 && (
+                                <span style={{ fontSize: 9, color: C.red }}>
+                                  高优先 {Number(calibrationPanel.summary?.high_count || 0)}
+                                </span>
+                              )}
+                              {Number(calibrationPanel.summary?.medium_count || 0) > 0 && (
+                                <span style={{ fontSize: 9, color: C.yellow }}>
+                                  中优先 {Number(calibrationPanel.summary?.medium_count || 0)}
+                                </span>
+                              )}
+                              {Number(calibrationPanel.summary?.watch_count || 0) > 0 && (
+                                <span style={{ fontSize: 9, color: C.dim }}>
+                                  观察 {Number(calibrationPanel.summary?.watch_count || 0)}
+                                </span>
+                              )}
+                              {executionCalibrationSnapshot?.checked_at && (
+                                <span style={{ marginLeft: 'auto', fontSize: 9, color: C.dim }}>
+                                  闭环快照 {Number(executionCalibrationSnapshot.window_days || 0) > 0 ? `${Number(executionCalibrationSnapshot.window_days)}d` : ''}
+                                  {executionCalibrationSnapshot.storage_source ? ` · ${executionCalibrationSnapshot.storage_source}` : ''}
+                                  {' · '}
+                                  {new Date(executionCalibrationSnapshot.checked_at).toLocaleTimeString()}
+                                </span>
+                              )}
+                            </div>
+                            {manualOverride && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 9, color: C.dim }}>
+                                  {(() => {
+                                    const fmtOverrideNum = (value?: number | null) => (value != null && Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '--')
+                                    return (
+                                      <>
+                                        <span>
+                                          手动覆盖:
+                                          <span style={{ color: manualOverride.manual_override_active ? C.yellow : C.text }}>
+                                            {manualOverride.manual_override_active ? ' 已生效' : ' 默认'}
+                                          </span>
+                                        </span>
+                                        <span>test {fmtOverrideNum(manualOverride.effective_action_qty_multiplier?.test)}</span>
+                                        <span>execute {fmtOverrideNum(manualOverride.effective_action_qty_multiplier?.execute)}</span>
+                                        <span>aggressive {fmtOverrideNum(manualOverride.effective_action_qty_multiplier?.aggressive)}</span>
+                                        <span>block_th {fmtOverrideNum(manualOverride.effective_score_thresholds?.block)}</span>
+                                        <span>live_scale {fmtOverrideNum(manualOverride.live_qty_scale)}</span>
+                                        {manualOverride.updated_at && (
+                                          <span>{new Date(manualOverride.updated_at).toLocaleTimeString()}{manualOverride.storage_source ? ` · ${manualOverride.storage_source}` : ''}</span>
+                                        )}
+                                      </>
+                                    )
+                                  })()}
+                                  <span style={{ color: C.dim }}>操作人</span>
+                                  <input
+                                    value={executionOverrideOperator}
+                                    onChange={(e) => setExecutionOverrideOperator(e.target.value)}
+                                    placeholder="manual-ui"
+                                    style={{
+                                      width: 96,
+                                      background: C.bg,
+                                      border: `1px solid ${C.border}`,
+                                      borderRadius: 4,
+                                      color: C.text,
+                                      padding: '2px 6px',
+                                      fontSize: 9,
+                                    }}
+                                  />
+                                  {manualOverride.manual_override_active && (
+                                    <button
+                                      onClick={() => resetExecutionCalibrationOverride()}
+                                      disabled={executionOverrideBusy}
+                                      style={{
+                                        fontSize: 9,
+                                        background: C.bg,
+                                        border: `1px solid ${C.border}`,
+                                        borderRadius: 4,
+                                        color: C.text,
+                                        padding: '2px 8px',
+                                        cursor: executionOverrideBusy ? 'default' : 'pointer',
+                                        opacity: executionOverrideBusy ? 0.7 : 1,
+                                      }}
+                                    >
+                                      {executionOverrideBusy ? '处理中...' : '恢复默认'}
+                                    </button>
+                                  )}
+                                </div>
+                                <div style={{ background: 'rgba(0,0,0,0.18)', border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                                    <div style={{ fontSize: 9, color: C.dim }}>最近操作日志</div>
+                                    {[
+                                      { key: 'all', label: '全部' },
+                                      { key: 'qty_floor', label: '手数门' },
+                                      { key: 'block_threshold', label: '阻断阈值' },
+                                    ].map((it) => {
+                                      const active = executionOverrideLogFilter === it.key
+                                      return (
+                                        <button
+                                          key={it.key}
+                                          onClick={() => setExecutionOverrideLogFilter(it.key as 'all' | 'qty_floor' | 'block_threshold')}
+                                          style={{
+                                            fontSize: 9,
+                                            background: active ? 'rgba(34,211,238,0.10)' : 'rgba(0,0,0,0.18)',
+                                            border: `1px solid ${active ? C.cyan : C.border}`,
+                                            borderRadius: 999,
+                                            color: active ? C.cyan : C.dim,
+                                            padding: '0 7px',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          {it.label}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                  {Array.isArray(manualOverride.applied_items) && manualOverride.applied_items.length > 0 ? (
+                                    (() => {
+                                      const filteredLogs = manualOverride.applied_items
+                                        .filter((log) => executionOverrideLogFilter === 'all' || t0ExecutionLogCategory(log) === executionOverrideLogFilter)
+                                        .slice(0, 6)
+                                      if (filteredLogs.length <= 0) {
+                                        return <div style={{ color: C.dim, fontSize: 9 }}>当前筛选下暂无记录</div>
+                                      }
+                                      return (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                      {filteredLogs.map((log, idx) => {
+                                        const logTime = log.applied_at ? new Date(log.applied_at).toLocaleTimeString() : '--:--:--'
+                                        const changeText = Array.isArray(log.changes) && log.changes.length > 0
+                                          ? log.changes.map((chg) => {
+                                            const before = chg.before != null && Number.isFinite(Number(chg.before)) ? Number(chg.before).toFixed(2) : '--'
+                                            const after = chg.after != null && Number.isFinite(Number(chg.after)) ? Number(chg.after).toFixed(2) : '--'
+                                            return `${String(chg.field || '--')}: ${before}→${after}`
+                                          }).join(' / ')
+                                          : '无参数变化'
+                                        const eventText = String(log.event_type || log.action || 'apply') === 'reset' ? '恢复默认' : '应用建议'
+                                        const category = t0ExecutionLogCategory(log)
+                                        const categoryMeta = category === 'qty_floor'
+                                          ? { label: '手数门', color: '#10b981' }
+                                          : category === 'block_threshold'
+                                            ? { label: '阻断阈值', color: '#84cc16' }
+                                            : null
+                                        return (
+                                          <div key={`${String(log.applied_at || idx)}-${idx}`} style={{ fontSize: 9, color: C.dim, lineHeight: 1.5 }}>
+                                            <span style={{ color: C.text }}>{logTime}</span>
+                                            <span style={{ marginLeft: 8, color: eventText === '恢复默认' ? C.yellow : C.cyan }}>{eventText}</span>
+                                            {categoryMeta && <span style={{ marginLeft: 8, color: categoryMeta.color }}>{categoryMeta.label}</span>}
+                                            <span style={{ marginLeft: 8 }}>操作人 <span style={{ color: C.text }}>{String(log.operator || '--')}</span></span>
+                                            <span style={{ marginLeft: 8 }}>{String(log.title || log.label || '--')}</span>
+                                            <div style={{ marginTop: 2 }}>{changeText}</div>
+                                          </div>
+                                        )
+                                      })}
+                                        </div>
+                                      )
+                                    })()
+                                  ) : (
+                                    <div style={{ color: C.dim, fontSize: 9 }}>暂无执行层人工调整记录</div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 6 }}>
+                              {calibrationPanel.items.slice(0, 6).map((it, idx) => {
+                                const severityColor = it.severity === 'high' ? C.red : it.severity === 'medium' ? C.yellow : C.cyan
+                                const suggestionKey = executionSuggestionKeyOf(it)
+                                const highlighted = highlightedExecutionSuggestionKey === suggestionKey
+                                const actionLabelMap: Record<string, string> = {
+                                  tighten: '建议收紧',
+                                  tighten_live: '收紧实盘',
+                                  promote_review: '放宽复核',
+                                  loosen_review: '检查过严阻断',
+                                  relax_qty_floor: '放宽手数门',
+                                  lower_block_threshold: '降低阻断阈值',
+                                  manual_review: '人工复核',
+                                }
+                                const groupLabelMap: Record<string, string> = {
+                                  action_level: '动作档位',
+                                  exec_status: '执行路径',
+                                  shadow_mode: '影子/实盘',
+                                  hard_block_reason: '硬阻断原因',
+                                }
+                                const canApply = (
+                                  ((it.group === 'action_level' || it.group === 'exec_status') && ['test', 'execute', 'aggressive'].includes(it.bucket) && ['tighten', 'promote_review'].includes(it.action))
+                                  || (it.group === 'shadow_mode' && it.bucket === 'live_path' && it.action === 'tighten_live')
+                                  || (it.group === 'shadow_mode' && ['shadow_only', 'shadow_only_vs_live_path'].includes(it.bucket) && it.action === 'promote_review')
+                                  || (it.group === 'hard_block_reason' && it.bucket === 'qty_too_small_after_multiplier' && it.action === 'relax_qty_floor')
+                                  || (it.group === 'hard_block_reason' && it.bucket === 'action_level_block' && it.action === 'lower_block_threshold')
+                                )
+                                return (
+                                  <div
+                                    key={`${it.group}-${it.bucket}-${idx}`}
+                                    ref={(el) => { executionSuggestionRefs.current[suggestionKey] = el }}
+                                    style={{
+                                    background: highlighted ? 'rgba(250,204,21,0.12)' : 'rgba(0,0,0,0.22)',
+                                    border: `1px solid ${highlighted ? C.yellow : severityColor}`,
+                                    borderRadius: 6,
+                                    padding: '6px 8px',
+                                    boxShadow: highlighted ? `0 0 0 1px ${C.yellow}` : 'none',
+                                    transition: 'background 120ms ease, border-color 120ms ease, box-shadow 120ms ease',
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                                      <span style={{ fontSize: 10, color: severityColor, fontWeight: 600 }}>{it.title}</span>
+                                      <span style={{ fontSize: 9, color: C.dim }}>{groupLabelMap[it.group] || it.group}</span>
+                                      <span style={{ fontSize: 9, color: C.text }}>{it.label}</span>
+                                      <span style={{ fontSize: 9, color: canApply ? C.cyan : C.dim }}>
+                                        {canApply ? '可应用' : '人工复核'}
+                                      </span>
+                                      <span style={{ marginLeft: 'auto', fontSize: 9, color: severityColor }}>
+                                        {actionLabelMap[it.action] || it.action}
+                                      </span>
+                                      {canApply ? (
+                                        <>
+                                          <button
+                                            onClick={() => applyExecutionCalibrationSuggestion(it)}
+                                            disabled={executionOverrideBusy}
+                                            style={{
+                                              fontSize: 9,
+                                              background: 'rgba(0,0,0,0.22)',
+                                              border: `1px solid ${severityColor}`,
+                                              borderRadius: 4,
+                                              color: severityColor,
+                                              padding: '2px 8px',
+                                              cursor: executionOverrideBusy ? 'default' : 'pointer',
+                                              opacity: executionOverrideBusy ? 0.7 : 1,
+                                            }}
+                                          >
+                                            {executionOverrideBusy ? '处理中...' : '应用'}
+                                          </button>
+                                          {highlighted && executionSuggestionReturnSourceKey && (
+                                            <>
+                                              <button
+                                                onClick={() => applyExecutionCalibrationSuggestion(it, { returnToSource: true })}
+                                                disabled={executionOverrideBusy}
+                                                style={{
+                                                  fontSize: 9,
+                                                  background: 'rgba(250,204,21,0.10)',
+                                                  border: `1px solid ${C.yellow}`,
+                                                  borderRadius: 4,
+                                                  color: C.yellow,
+                                                  padding: '2px 8px',
+                                                  cursor: executionOverrideBusy ? 'default' : 'pointer',
+                                                  opacity: executionOverrideBusy ? 0.7 : 1,
+                                                }}
+                                              >
+                                                {executionOverrideBusy ? '处理中...' : '应用并返回'}
+                                              </button>
+                                              <button
+                                                onClick={() => returnToExecutionSuggestionSource()}
+                                                disabled={executionOverrideBusy}
+                                                style={{
+                                                  fontSize: 9,
+                                                  background: 'rgba(0,0,0,0.18)',
+                                                  border: `1px solid ${C.border}`,
+                                                  borderRadius: 4,
+                                                  color: C.text,
+                                                  padding: '2px 8px',
+                                                  cursor: executionOverrideBusy ? 'default' : 'pointer',
+                                                  opacity: executionOverrideBusy ? 0.7 : 1,
+                                                }}
+                                              >
+                                                返回来源
+                                              </button>
+                                            </>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <span style={{ fontSize: 9, color: C.dim }}>人工复核</span>
+                                      )}
+                                    </div>
+                                    <div style={{ fontSize: 9, color: C.dim, lineHeight: 1.5 }}>
+                                      {it.message}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4, fontSize: 9, color: C.dim }}>
+                                      <span>最近 n={it.recent_count}</span>
+                                      <span style={{ color: it.recent_precision_5m != null ? (it.recent_precision_5m >= 0.55 ? C.green : it.recent_precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                        5m {it.recent_precision_5m != null ? `${(it.recent_precision_5m * 100).toFixed(1)}%` : '--'}
+                                      </span>
+                                      <span style={{ color: it.baseline_precision_5m != null ? C.text : C.dim }}>
+                                        基线 {it.baseline_precision_5m != null ? `${(it.baseline_precision_5m * 100).toFixed(1)}%` : '--'}
+                                      </span>
+                                      {it.precision_drop != null && (
+                                        <span style={{ color: it.precision_drop > 0 ? C.red : C.green }}>
+                                          Δ{it.precision_drop > 0 ? '+' : ''}{(it.precision_drop * 100).toFixed(1)}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })()}
                       {Array.isArray(drift.quality_split_by_channel_source) && drift.quality_split_by_channel_source.length > 0 && (
                         <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {drift.quality_split_by_channel_source.slice(0, 6).map((it, idx) => (
@@ -8051,6 +8787,158 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                               )}
                             </div>
                           ))}
+                        </div>
+                      )}
+                      {Array.isArray(drift.quality_split_by_action_level) && drift.quality_split_by_action_level.length > 0 && (
+                        <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {drift.quality_split_by_action_level.slice(0, 6).map((it, idx) => (
+                            <div key={`${it.action_level}-${idx}`} style={{
+                              fontSize: 9, padding: '2px 6px', borderRadius: 3,
+                              background: 'rgba(0,0,0,0.2)', border: `1px solid ${C.border}`, color: C.dim,
+                            }}>
+                              <span style={{ color: t0ActionLevelColor(it.action_level), marginRight: 4 }}>
+                                {t0ActionLevelLabel(it.action_level)}
+                              </span>
+                              n={it.recent_count}
+                              <span style={{ marginLeft: 4, color: it.recent_precision_5m != null ? (it.recent_precision_5m >= 0.55 ? C.green : it.recent_precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                {it.recent_precision_5m != null ? `${(it.recent_precision_5m * 100).toFixed(1)}%` : '--'}
+                              </span>
+                              {it.precision_drop != null && (
+                                <span style={{ marginLeft: 4, color: it.precision_drop > 0 ? C.red : C.green }}>
+                                  Δ{it.precision_drop > 0 ? '+' : ''}{(it.precision_drop * 100).toFixed(1)}%
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {Array.isArray(drift.quality_split_by_exec_status) && drift.quality_split_by_exec_status.length > 0 && (
+                        <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {drift.quality_split_by_exec_status.slice(0, 6).map((it, idx) => (
+                            <div key={`${it.exec_status}-${idx}`} style={{
+                              fontSize: 9, padding: '2px 6px', borderRadius: 3,
+                              background: 'rgba(0,0,0,0.2)', border: `1px solid ${C.border}`, color: C.dim,
+                            }}>
+                              <span style={{ color: it.exec_status === 'hard_block' ? C.red : it.exec_status === 'shadow_only' ? '#fb7185' : t0ActionLevelColor(it.exec_status), marginRight: 4 }}>
+                                {t0ExecutionStatusLabel(it.exec_status)}
+                              </span>
+                              n={it.recent_count}
+                              <span style={{ marginLeft: 4, color: it.recent_precision_5m != null ? (it.recent_precision_5m >= 0.55 ? C.green : it.recent_precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                {it.recent_precision_5m != null ? `${(it.recent_precision_5m * 100).toFixed(1)}%` : '--'}
+                              </span>
+                              {it.precision_drop != null && (
+                                <span style={{ marginLeft: 4, color: it.precision_drop > 0 ? C.red : C.green }}>
+                                  Δ{it.precision_drop > 0 ? '+' : ''}{(it.precision_drop * 100).toFixed(1)}%
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {Array.isArray(drift.quality_split_by_shadow_mode) && drift.quality_split_by_shadow_mode.length > 0 && (
+                        <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {drift.quality_split_by_shadow_mode.slice(0, 6).map((it, idx) => (
+                            <div key={`${it.shadow_mode}-${idx}`} style={{
+                              fontSize: 9, padding: '2px 6px', borderRadius: 3,
+                              background: 'rgba(0,0,0,0.2)', border: `1px solid ${C.border}`, color: C.dim,
+                            }}>
+                              <span style={{ color: it.shadow_mode === 'shadow_only' ? '#fb7185' : C.cyan, marginRight: 4 }}>
+                                {t0ShadowModeLabel(it.shadow_mode)}
+                              </span>
+                              n={it.recent_count}
+                              <span style={{ marginLeft: 4, color: it.recent_precision_5m != null ? (it.recent_precision_5m >= 0.55 ? C.green : it.recent_precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                {it.recent_precision_5m != null ? `${(it.recent_precision_5m * 100).toFixed(1)}%` : '--'}
+                              </span>
+                              {it.precision_drop != null && (
+                                <span style={{ marginLeft: 4, color: it.precision_drop > 0 ? C.red : C.green }}>
+                                  Δ{it.precision_drop > 0 ? '+' : ''}{(it.precision_drop * 100).toFixed(1)}%
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {Array.isArray(drift.quality_split_by_hard_block_reason) && drift.quality_split_by_hard_block_reason.length > 0 && (
+                        <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {drift.quality_split_by_hard_block_reason
+                            .slice()
+                            .sort((a, b) => {
+                              const aCandidate = t0HardBlockReviewMeta(a.hard_block_reason).candidate ? 1 : 0
+                              const bCandidate = t0HardBlockReviewMeta(b.hard_block_reason).candidate ? 1 : 0
+                              if (aCandidate !== bCandidate) return bCandidate - aCandidate
+                              return Number(b.recent_count || 0) - Number(a.recent_count || 0)
+                            })
+                            .slice(0, 6)
+                            .map((it, idx) => {
+                              const reviewMeta = t0HardBlockReviewMeta(it.hard_block_reason)
+                              const suggestion = reviewMeta.candidate ? findExecutionCalibrationSuggestion('hard_block_reason', it.hard_block_reason) : null
+                              const statusMeta = t0HardBlockCandidateStatus(it.hard_block_reason, executionCalibrationSnapshot?.manual_override, !!suggestion)
+                              const sourceKey = `drift-hard-block:${it.hard_block_reason}`
+                              const sourceHighlighted = highlightedExecutionSourceKey === sourceKey
+                              return (
+                              <div
+                                key={`${it.hard_block_reason}-${idx}`}
+                                ref={(el) => { executionSourceRefs.current[sourceKey] = el }}
+                                style={{
+                                fontSize: 9, padding: '2px 6px', borderRadius: 3,
+                                background: sourceHighlighted
+                                  ? 'rgba(250,204,21,0.12)'
+                                  : (reviewMeta.candidate ? 'rgba(8,145,178,0.14)' : 'rgba(127,29,29,0.16)'),
+                                border: `1px solid ${sourceHighlighted ? C.yellow : (reviewMeta.candidate ? 'rgba(34,211,238,0.35)' : C.border)}`,
+                                color: C.dim,
+                                boxShadow: sourceHighlighted ? `0 0 0 1px ${C.yellow}` : 'none',
+                              }}>
+                                <span style={{ color: reviewMeta.candidate ? C.cyan : C.red, marginRight: 4 }}>
+                                  {t0ExecutionReasonLabel(it.hard_block_reason)}
+                                </span>
+                                <span style={{ marginRight: 4, color: reviewMeta.color }}>
+                                  [{reviewMeta.label}]
+                                </span>
+                                {statusMeta && (
+                                  <span style={{
+                                    marginRight: 4,
+                                    color: statusMeta.color,
+                                    border: `1px solid ${statusMeta.borderColor}`,
+                                    borderRadius: 999,
+                                    padding: '0 5px',
+                                    background: statusMeta.bg,
+                                  }}>
+                                    {statusMeta.shortLabel}
+                                  </span>
+                                )}
+                                {suggestion && (
+                                  <button
+                                    onClick={() => locateExecutionCalibrationSuggestion('hard_block_reason', it.hard_block_reason, sourceKey)}
+                                    style={{
+                                      fontSize: 9,
+                                      background: 'rgba(0,0,0,0.18)',
+                                      border: `1px solid ${C.cyan}`,
+                                      borderRadius: 4,
+                                      color: C.cyan,
+                                      padding: '0 5px',
+                                      cursor: 'pointer',
+                                      marginRight: 4,
+                                    }}
+                                  >
+                                    去建议
+                                  </button>
+                                )}
+                                n={it.recent_count}
+                                <span style={{ marginLeft: 4, color: it.recent_precision_5m != null ? (it.recent_precision_5m >= 0.55 ? C.green : it.recent_precision_5m >= 0.45 ? C.yellow : C.red) : C.dim }}>
+                                  {it.recent_precision_5m != null ? `${(it.recent_precision_5m * 100).toFixed(1)}%` : '--'}
+                                </span>
+                                {it.precision_drop != null && (
+                                  <span style={{ marginLeft: 4, color: it.precision_drop > 0 ? C.red : C.green }}>
+                                    Δ{it.precision_drop > 0 ? '+' : ''}{(it.precision_drop * 100).toFixed(1)}%
+                                  </span>
+                                )}
+                                {it.recent_avg_ret_bps != null && (
+                                  <span style={{ marginLeft: 4, color: it.recent_avg_ret_bps > 0 ? C.green : C.red }}>
+                                    {it.recent_avg_ret_bps > 0 ? '+' : ''}{it.recent_avg_ret_bps.toFixed(1)}bps
+                                  </span>
+                                )}
+                              </div>
+                            )})}
                         </div>
                       )}
                     </div>
@@ -8843,8 +9731,6 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
   const details = signal.details && typeof signal.details === 'object' ? signal.details as Record<string, any> : {}
   const observeOnly = Boolean(details.observe_only) || String(signal.message || '').includes('仅观察')
   const actionable = !observeOnly
-  const actionLabel = actionable ? '可执行' : '待观察'
-  const actionColor = actionable ? C.red : C.yellow
   const pool1StageRaw = details.pool1_stage
   const pool1Stage = pool1StageRaw && typeof pool1StageRaw === 'object' ? pool1StageRaw as Record<string, any> : null
   const resonanceInfoRaw = pool1Stage?.resonance_60m_info ?? details.resonance_60m_info
@@ -8929,6 +9815,8 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
   const doNotTEnv = doNotTEnvRaw && typeof doNotTEnvRaw === 'object' ? doNotTEnvRaw as Record<string, any> : null
   const indexGateRaw = details.index_context_gate
   const indexGate = indexGateRaw && typeof indexGateRaw === 'object' ? indexGateRaw as Record<string, any> : null
+  const t0ExecutionRaw = details.t0_execution
+  const t0Execution = t0ExecutionRaw && typeof t0ExecutionRaw === 'object' ? t0ExecutionRaw as T0ExecutionSnapshot : null
   const trendGuardActive = Boolean(trendGuard?.active ?? trendGuard?.guard)
   const trendGuardOverride = Boolean(details.trend_guard_override)
   const surgeAbsorbGuard = Boolean(trendGuard?.surge_absorb_guard)
@@ -8936,6 +9824,33 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
   const themeGuardObserveOnly = Boolean(themeGuard?.observe_only)
   const doNotTEnvReasons = Array.isArray(doNotTEnv?.reasons) ? doNotTEnv.reasons as any[] : []
   const indexGateReasons = Array.isArray(indexGate?.reasons) ? indexGate.reasons as any[] : []
+  const isPool2TSignal = signal.type === 'positive_t' || signal.type === 'reverse_t'
+  const t0ExecScore = Number(t0Execution?.score ?? details.score ?? NaN)
+  const t0ExecBaseQty = Number(t0Execution?.base_action_qty ?? details.base_action_qty ?? NaN)
+  const t0ExecFinalQty = Number(t0Execution?.final_qty ?? details.final_qty ?? NaN)
+  const t0ExecLevelBefore = String(t0Execution?.action_level_before_downgrade || details.action_level_before_downgrade || '')
+  const t0ExecLevelAfter = String(t0Execution?.action_level_after_downgrade || details.action_level_after_downgrade || '')
+  const t0ShadowActionLevel = String(t0Execution?.shadow_action_level || details.shadow_action_level || '')
+  const t0ShadowOnly = Boolean(t0Execution?.shadow_only ?? details.shadow_only)
+  const t0HardBlockReasons = Array.isArray(t0Execution?.hard_block_reasons ?? details.hard_block_reasons)
+    ? (t0Execution?.hard_block_reasons ?? details.hard_block_reasons) as any[]
+    : []
+  const t0DowngradeReasons = Array.isArray(t0Execution?.downgrade_reasons ?? details.downgrade_reasons)
+    ? (t0Execution?.downgrade_reasons ?? details.downgrade_reasons) as any[]
+    : []
+  const hasT0Execution = isPool2TSignal && (
+    !!t0Execution
+    || !!t0ExecLevelAfter
+    || Number.isFinite(t0ExecScore)
+    || Number.isFinite(t0ExecFinalQty)
+  )
+  let actionLabel = actionable ? '可执行' : '待观察'
+  let actionColor = actionable ? C.red : C.yellow
+  if (hasT0Execution) {
+    const levelForBadge = t0ShadowOnly && t0ShadowActionLevel ? t0ShadowActionLevel : (t0ExecLevelAfter || (observeOnly ? 'observe' : 'execute'))
+    actionLabel = t0ShadowOnly && t0ShadowActionLevel ? `影子${t0ActionLevelLabel(t0ShadowActionLevel)}` : t0ActionLevelLabel(levelForBadge)
+    actionColor = t0ActionLevelColor(levelForBadge)
+  }
   const trendGuardParts: string[] = []
   if (vetoLabel) trendGuardParts.push(`保护:${vetoLabel}`)
   else if (surgeAbsorbGuard) trendGuardParts.push('保护:强延续监控')
@@ -8960,13 +9875,31 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
   if (gateReason) metaParts.push(`门控:${gateReason}`)
   if (antiChurnReject) metaParts.push(`防抖:${antiChurnReject}`)
   if (thresholdVersion) metaParts.push(`阈值:${thresholdVersion}`)
+  const t0ExecParts: string[] = []
+  if (hasT0Execution) {
+    if (t0ExecLevelBefore && t0ExecLevelAfter && t0ExecLevelBefore !== t0ExecLevelAfter) {
+      t0ExecParts.push(`档位:${t0ActionLevelLabel(t0ExecLevelBefore)}→${t0ActionLevelLabel(t0ExecLevelAfter)}`)
+    } else if (t0ExecLevelAfter) {
+      t0ExecParts.push(`档位:${t0ActionLevelLabel(t0ExecLevelAfter)}`)
+    }
+    if (Number.isFinite(t0ExecScore)) t0ExecParts.push(`执行分:${t0ExecScore.toFixed(1)}`)
+    if (Number.isFinite(t0ExecBaseQty) && t0ExecBaseQty > 0) t0ExecParts.push(`基准:${t0ExecBaseQty}股`)
+    if (Number.isFinite(t0ExecFinalQty) && t0ExecFinalQty > 0) t0ExecParts.push(`最终:${t0ExecFinalQty}股`)
+    if (t0ShadowOnly && t0ShadowActionLevel) t0ExecParts.push(`影子:${t0ActionLevelLabel(t0ShadowActionLevel)}`)
+    if (t0HardBlockReasons.length > 0) {
+      t0ExecParts.push(`硬阻断:${t0HardBlockReasons.slice(0, 2).map((x: any) => t0ExecutionReasonLabel(String(x || ''))).join(' / ')}`)
+    } else if (t0DowngradeReasons.length > 0) {
+      t0ExecParts.push(`降档:${t0DowngradeReasons.slice(0, 2).map((x: any) => t0ExecutionReasonLabel(String(x || ''))).join(' / ')}`)
+    }
+  }
   const longMsg = (signal.message || '').length > 46
   const longResonance = resonanceParts.join(' · ').length > 72
   const longChannel = signalSourceRaw.length > 56
   const longMicro = (`${msTagLabel} ${msParts.join(' · ')}`).length > 72
   const longMeta = metaParts.join(' · ').length > 56
   const longGuard = trendGuardParts.join(' · ').length > 56
-  const showExpandToggle = longMsg || longResonance || longChannel || longMicro || longMeta || longGuard
+  const longExec = t0ExecParts.join(' · ').length > 56
+  const showExpandToggle = longMsg || longResonance || longChannel || longMicro || longMeta || longGuard || longExec
 
   return (
     <div style={{
@@ -9079,6 +10012,21 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
           maxHeight: expanded ? 'none' : '2.7em', overflow: 'hidden',
         }}>
           {metaParts.join(' · ')}
+        </div>
+      )}
+      {t0ExecParts.length > 0 && (
+        <div style={{
+          paddingLeft: 22,
+          color: t0HardBlockReasons.length > 0 ? C.red : (t0DowngradeReasons.length > 0 || t0ShadowOnly ? C.yellow : C.dim),
+          fontSize: 9,
+          fontFamily: 'monospace',
+          lineHeight: 1.35,
+          whiteSpace: 'normal',
+          wordBreak: 'break-word',
+          maxHeight: expanded ? 'none' : '2.7em',
+          overflow: 'hidden',
+        }}>
+          {t0ExecParts.join(' · ')}
         </div>
       )}
       {showExpandToggle && (
@@ -9229,6 +10177,169 @@ function t0IndexGateReasonLabel(reason?: string | null): string {
     snapshot_missing: '指数快照缺失',
     missing: '指数快照缺失',
     disabled: '指数门关闭',
+  }
+  return map[key] || key || '--'
+}
+
+function t0ActionLevelLabel(level?: string | null): string {
+  const key = String(level || '').trim()
+  const map: Record<string, string> = {
+    block: '阻断',
+    observe: '观察',
+    test: '试单',
+    execute: '执行',
+    aggressive: '激进',
+  }
+  return map[key] || key || '--'
+}
+
+function t0ActionLevelColor(level?: string | null): string {
+  const key = String(level || '').trim()
+  if (key === 'block') return C.red
+  if (key === 'observe') return C.yellow
+  if (key === 'test') return C.cyan
+  if (key === 'execute') return C.green
+  if (key === 'aggressive') return '#fb7185'
+  return C.dim
+}
+
+function t0HardBlockReviewMeta(reason?: string | null): { candidate: boolean; label: string; color: string } {
+  const key = String(reason || '').trim()
+  const candidate = key === 'qty_too_small_after_multiplier' || key === 'action_level_block'
+  return {
+    candidate,
+    label: candidate ? '白名单候选' : '人工复核',
+    color: candidate ? C.cyan : C.dim,
+  }
+}
+
+function t0ActiveOverrideActionKeys(manualOverride?: T0ExecutionOverrideSnapshot | null): Set<string> {
+  const out = new Set<string>()
+  const items = Array.isArray(manualOverride?.applied_items) ? manualOverride!.applied_items : []
+  for (const item of items) {
+    const eventType = String(item?.event_type || item?.action || 'apply')
+    if (eventType === 'reset') break
+    if (eventType !== 'apply') continue
+    out.add(`${String(item?.group || '')}:${String(item?.bucket || '')}:${String(item?.action || '')}`)
+  }
+  return out
+}
+
+function t0ExecutionLogCategory(log?: T0ExecutionOverrideLogItem): 'qty_floor' | 'block_threshold' | 'other' {
+  const action = String(log?.action || '').trim()
+  if (action === 'relax_qty_floor') return 'qty_floor'
+  if (action === 'lower_block_threshold') return 'block_threshold'
+  return 'other'
+}
+
+function t0HardBlockCandidateStatus(
+  reason?: string | null,
+  manualOverride?: T0ExecutionOverrideSnapshot | null,
+  hasSuggestion = false,
+): { label: string; shortLabel: string; color: string; borderColor: string; bg: string } | null {
+  const key = String(reason || '').trim()
+  if (!key) return null
+  const activeActions = t0ActiveOverrideActionKeys(manualOverride)
+  const hasBlockOverride = !!manualOverride?.score_thresholds && Object.prototype.hasOwnProperty.call(manualOverride.score_thresholds, 'block')
+  if (key === 'qty_too_small_after_multiplier' && activeActions.has('hard_block_reason:qty_too_small_after_multiplier:relax_qty_floor')) {
+    return {
+      label: '已放宽手数门',
+      shortLabel: '手数',
+      color: '#10b981',
+      borderColor: 'rgba(16,185,129,0.45)',
+      bg: 'rgba(16,185,129,0.12)',
+    }
+  }
+  if (key === 'action_level_block' && (activeActions.has('hard_block_reason:action_level_block:lower_block_threshold') || hasBlockOverride)) {
+    return {
+      label: '已降低阻断阈值',
+      shortLabel: '阈值',
+      color: '#84cc16',
+      borderColor: 'rgba(132,204,22,0.45)',
+      bg: 'rgba(132,204,22,0.12)',
+    }
+  }
+  if (hasSuggestion) {
+    return {
+      label: '已有可应用建议',
+      shortLabel: '建议',
+      color: C.cyan,
+      borderColor: 'rgba(34,211,238,0.35)',
+      bg: 'rgba(34,211,238,0.10)',
+    }
+  }
+  if (key === 'qty_too_small_after_multiplier' || key === 'action_level_block') {
+    return {
+      label: '白名单候选',
+      shortLabel: '候选',
+      color: C.dim,
+      borderColor: C.border,
+      bg: 'rgba(255,255,255,0.04)',
+    }
+  }
+  return null
+}
+
+function t0ExecutionReasonLabel(reason?: string | null): string {
+  const key = String(reason || '').trim()
+  if (!key) return '--'
+  if (key.startsWith('session_policy:')) {
+    const policy = key.split(':')[1] || ''
+    return `时段限制:${sessionPolicyLabel(policy, policy) || policy}`
+  }
+  if (key.startsWith('listing_stage:')) {
+    return `上市阶段:${key.split(':')[1] || '--'}`
+  }
+  const map: Record<string, string> = {
+    index_panic_selloff: '指数恐慌杀跌硬阻断',
+    index_risk_off: '指数 risk_off 降档',
+    index_risk_on: '指数 risk_on 降档',
+    index_risk_on_no_distribution: '指数强修复且分歧不足',
+    reverse_main_rally_guard: '主升浪保护降档',
+    reverse_theme_guard: '主线保护降档',
+    reverse_hard_protect: '强延续保护封顶',
+    theme_accelerating: '题材加速降档',
+    breadth_climax: '题材高潮降档',
+    aggressive_shadow_only: '激进档仅影子记录',
+    aggressive_capped_execute: '激进档封顶为执行',
+    qty_too_small_after_multiplier: '乘数后不足 1 手',
+    action_level_block: '执行层档位阻断',
+    threshold_blocked: '阈值层阻断',
+    net_executable_edge_low: '净边际不足',
+    no_tradable_t_inventory: '无可T底仓',
+    no_cash_available_for_positive_t: '正T缺少可用现金',
+    t_count_exhausted: '当日T次数已满',
+    action_qty_below_lot: '动作不足 1 手',
+    spoofing_suspected: '疑似骗单',
+    wash_trade_spread_abnormal: '对倒且价差异常',
+    limit_magnet: '涨跌停磁吸区',
+    board_seal_env: '封板环境',
+    risk_warning: '风险警示股',
+    volume_drought_low_liquidity: '量枯且低流动性',
+    t0_inventory_missing: '缺少底仓建模',
+  }
+  return map[key] || key
+}
+
+function t0ExecutionStatusLabel(status?: string | null): string {
+  const key = String(status || '').trim()
+  const map: Record<string, string> = {
+    hard_block: '硬阻断',
+    shadow_only: '影子档',
+    block: '阻断档',
+    observe: '观察档',
+    test: '试单档',
+    execute: '执行档',
+    aggressive: '激进档',
+  }
+  return map[key] || key || '--'
+}
+
+function t0ShadowModeLabel(mode?: string | null): string {
+  const key = String(mode || '').trim()
+  const map: Record<string, string> = {
+    shadow_only: '影子路径',
+    live_path: '实盘路径',
   }
   return map[key] || key || '--'
 }
@@ -9393,6 +10504,9 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
   const t0Action = details.t0_action && typeof details.t0_action === 'object'
     ? details.t0_action as Record<string, any>
     : null
+  const t0Execution = details.t0_execution && typeof details.t0_execution === 'object'
+    ? details.t0_execution as T0ExecutionSnapshot
+    : null
   const rebuildMode = Boolean(details.rebuild_mode)
   const rebuildAddRatio = Number(details.rebuild_add_ratio ?? NaN)
   const rebuildAddRatioBase = Number(details.rebuild_add_ratio_base ?? NaN)
@@ -9499,6 +10613,21 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
   const t0ActionMode = t0Action ? String(t0Action.mode || t0Inventory?.action_path || '--') : (t0Inventory ? String(t0Inventory.action_path || '--') : '--')
   const t0ActionRole = t0Action ? String(t0Action.role || t0Inventory?.action_role || '--') : (t0Inventory ? String(t0Inventory.action_role || '--') : '--')
   const t0ObserveReason = t0Inventory ? String(t0Inventory.observe_reason || '--') : '--'
+  const t0ExecScore = Number(t0Execution?.score ?? details.score ?? NaN)
+  const t0ExecBaseQty = Number(t0Execution?.base_action_qty ?? details.base_action_qty ?? NaN)
+  const t0ExecFinalQty = Number(t0Execution?.final_qty ?? details.final_qty ?? NaN)
+  const t0ExecQtyMultiplier = Number(t0Execution?.qty_multiplier ?? details.qty_multiplier ?? NaN)
+  const t0ExecSoftQtyMultiplier = Number(t0Execution?.soft_qty_multiplier ?? details.soft_qty_multiplier ?? NaN)
+  const t0ExecLevelBefore = String(t0Execution?.action_level_before_downgrade || details.action_level_before_downgrade || '--')
+  const t0ExecLevelAfter = String(t0Execution?.action_level_after_downgrade || details.action_level_after_downgrade || '--')
+  const t0ExecShadowLevel = String(t0Execution?.shadow_action_level || details.shadow_action_level || '--')
+  const t0ExecShadowOnly = Boolean(t0Execution?.shadow_only ?? details.shadow_only)
+  const t0HardBlockReasons = Array.isArray(t0Execution?.hard_block_reasons ?? details.hard_block_reasons)
+    ? (t0Execution?.hard_block_reasons ?? details.hard_block_reasons) as any[]
+    : []
+  const t0DowngradeReasons = Array.isArray(t0Execution?.downgrade_reasons ?? details.downgrade_reasons)
+    ? (t0Execution?.downgrade_reasons ?? details.downgrade_reasons) as any[]
+    : []
   const positiveRecoveryScore = positiveRebuildQuality ? Number(positiveRebuildQuality.recover_after_rebuild_score ?? NaN) : NaN
   const positiveRecoveryMin = positiveRebuildQuality ? Number(positiveRebuildQuality.recover_after_rebuild_min_score ?? NaN) : NaN
   const positiveExpectedEdge = positiveRebuildQuality ? Number(positiveRebuildQuality.expected_edge_bps ?? NaN) : NaN
@@ -9728,6 +10857,20 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
               <div style={{ color: C.dim }}>T可用现金: <span style={{ color: C.text }}>{Number.isFinite(t0CashAvailable) ? t0CashAvailable.toFixed(2) : '--'}</span></div>
               <div style={{ color: C.dim }}>底仓锚成本: <span style={{ color: C.text }}>{Number.isFinite(t0AnchorCost) ? t0AnchorCost.toFixed(3) : '--'}</span></div>
               <div style={{ color: C.dim }}>底仓约束: <span style={{ color: observeOnly ? C.yellow : C.text }}>{t0ObserveReason}</span></div>
+            </>
+          )}
+          {t0Execution && (
+            <>
+              <div style={{ color: C.dim }}>执行层前档: <span style={{ color: t0ActionLevelColor(t0ExecLevelBefore) }}>{t0ActionLevelLabel(t0ExecLevelBefore)}</span></div>
+              <div style={{ color: C.dim }}>执行层后档: <span style={{ color: t0ActionLevelColor(t0ExecLevelAfter) }}>{t0ActionLevelLabel(t0ExecLevelAfter)}</span></div>
+              <div style={{ color: C.dim }}>影子档: <span style={{ color: t0ExecShadowOnly ? t0ActionLevelColor(t0ExecShadowLevel) : C.text }}>{t0ExecShadowOnly ? t0ActionLevelLabel(t0ExecShadowLevel) : '--'}</span></div>
+              <div style={{ color: C.dim }}>执行层评分: <span style={{ color: Number.isFinite(t0ExecScore) ? C.text : C.dim }}>{Number.isFinite(t0ExecScore) ? t0ExecScore.toFixed(1) : '--'}</span></div>
+              <div style={{ color: C.dim }}>基准股数: <span style={{ color: C.text }}>{Number.isFinite(t0ExecBaseQty) ? `${t0ExecBaseQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>最终股数: <span style={{ color: Number.isFinite(t0ExecFinalQty) && t0ExecFinalQty > 0 ? C.green : C.text }}>{Number.isFinite(t0ExecFinalQty) ? `${t0ExecFinalQty}` : '--'}</span></div>
+              <div style={{ color: C.dim }}>数量乘数: <span style={{ color: C.text }}>{Number.isFinite(t0ExecQtyMultiplier) ? t0ExecQtyMultiplier.toFixed(2) : '--'}</span></div>
+              <div style={{ color: C.dim }}>软降档乘数: <span style={{ color: C.text }}>{Number.isFinite(t0ExecSoftQtyMultiplier) ? t0ExecSoftQtyMultiplier.toFixed(2) : '--'}</span></div>
+              <div style={{ color: C.dim }}>硬阻断原因: <span style={{ color: t0HardBlockReasons.length > 0 ? C.red : C.text }}>{t0HardBlockReasons.length > 0 ? t0HardBlockReasons.map((x: any) => t0ExecutionReasonLabel(String(x || ''))).join(', ') : '--'}</span></div>
+              <div style={{ color: C.dim }}>降档原因: <span style={{ color: t0DowngradeReasons.length > 0 ? C.yellow : C.text }}>{t0DowngradeReasons.length > 0 ? t0DowngradeReasons.map((x: any) => t0ExecutionReasonLabel(String(x || ''))).join(', ') : '--'}</span></div>
             </>
           )}
           {positiveRebuildQuality && (

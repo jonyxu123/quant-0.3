@@ -17,6 +17,12 @@ _BOARD_CATALOG_SYNC_MINUTE = int(os.getenv("BOARD_CATALOG_SYNC_MINUTE", "45") or
 _BOARD_CATALOG_SYNC_STARTUP_BEFORE_HHMM = int(os.getenv("BOARD_CATALOG_SYNC_STARTUP_BEFORE_HHMM", "925") or 925)
 _board_catalog_sync_lock = threading.Lock()
 _board_catalog_last_success_date = ""
+_t0_execution_calibration_started = False
+_t0_execution_calibration_last: dict = {}
+_t0_execution_override_last: dict = {}
+_T0_EXECUTION_CALIBRATION_ENABLED = str(os.getenv("T0_EXECUTION_CALIBRATION_ENABLED", "1") or "1").lower() in ("1", "true", "yes", "on")
+_T0_EXECUTION_CALIBRATION_INTERVAL_MIN = float(os.getenv("T0_EXECUTION_CALIBRATION_INTERVAL_MIN", str(_CLOSED_LOOP_INTERVAL_MIN if float(_CLOSED_LOOP_INTERVAL_MIN or 0) > 0 else 15.0)) or (_CLOSED_LOOP_INTERVAL_MIN if float(_CLOSED_LOOP_INTERVAL_MIN or 0) > 0 else 15.0))
+_T0_EXECUTION_CALIBRATION_WINDOW_DAYS = int(os.getenv("T0_EXECUTION_CALIBRATION_WINDOW_DAYS", "3") or 3)
 
 
 def _is_weekday(now_dt: datetime.datetime) -> bool:
@@ -620,6 +626,63 @@ def _write_threshold_calibration_payload(payload: dict) -> bool:
     except Exception:
         _metric_inc("threshold_calib_write_fail_total")
         return False
+
+
+def _write_t0_execution_calibration_payload(payload: dict) -> bool:
+    cli = _get_runtime_state_redis()
+    if cli is None:
+        return False
+    key_latest = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:t0:execution_calibration:latest"
+    key_hist = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:t0:execution_calibration:history:{_trade_date_from_dt()}"
+    ttl = _runtime_state_ttl_sec()
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        pipe = cli.pipeline(transaction=False)
+        pipe.set(key_latest, raw, ex=ttl)
+        pipe.lpush(key_hist, raw)
+        pipe.ltrim(key_hist, 0, 199)
+        pipe.expire(key_hist, ttl)
+        pipe.execute()
+        _metric_inc("t0_exec_cali_write_total")
+        return True
+    except Exception:
+        _metric_inc("t0_exec_cali_write_fail_total")
+        return False
+
+
+def _write_t0_execution_override_payload(payload: dict) -> bool:
+    global _t0_execution_override_last
+    if isinstance(payload, dict):
+        _t0_execution_override_last.clear()
+        _t0_execution_override_last.update(payload)
+    cli = _get_runtime_state_redis()
+    if cli is None:
+        return False
+    key_latest = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:t0:execution_override:latest"
+    key_hist = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:t0:execution_override:history:{_trade_date_from_dt()}"
+    ttl = _runtime_state_ttl_sec()
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        pipe = cli.pipeline(transaction=False)
+        pipe.set(key_latest, raw, ex=ttl)
+        pipe.lpush(key_hist, raw)
+        pipe.ltrim(key_hist, 0, 199)
+        pipe.expire(key_hist, ttl)
+        pipe.execute()
+        _metric_inc("t0_exec_override_write_total")
+        return True
+    except Exception:
+        _metric_inc("t0_exec_override_write_fail_total")
+        return False
+
+
+def clear_t0_execution_override_snapshot_local() -> None:
+    global _t0_execution_override_last
+    _t0_execution_override_last.clear()
+
+
+def persist_t0_execution_override_payload(payload: dict) -> bool:
+    return _write_t0_execution_override_payload(payload if isinstance(payload, dict) else {})
 def _start_threshold_closed_loop(interval_min: float = 15.0) -> None:
     global _threshold_closed_loop_started, _threshold_calibration_last
     if _threshold_closed_loop_started or not _CLOSED_LOOP_ENABLED:
@@ -652,6 +715,42 @@ def _start_threshold_closed_loop(interval_min: float = 15.0) -> None:
             time.sleep(sec)
 
     threading.Thread(target=_loop, daemon=True, name="threshold-closed-loop").start()
+
+
+def _start_t0_execution_calibration_closed_loop(interval_min: float | None = None) -> None:
+    global _t0_execution_calibration_started, _t0_execution_calibration_last
+    if _t0_execution_calibration_started or not _T0_EXECUTION_CALIBRATION_ENABLED:
+        return
+    _t0_execution_calibration_started = True
+    interval_min = float(interval_min if interval_min is not None else _T0_EXECUTION_CALIBRATION_INTERVAL_MIN)
+    sec = max(30.0, interval_min * 60.0)
+
+    def _loop() -> None:
+        logger.info(f"[T0ExecCalib] closed-loop started interval={sec:.0f}s")
+        while True:
+            try:
+                from . import pool_service
+
+                snap = pool_service.build_t0_execution_calibration_snapshot(days=_T0_EXECUTION_CALIBRATION_WINDOW_DAYS)
+                payload = dict(snap) if isinstance(snap, dict) else {}
+                payload.setdefault("checked_at", datetime.datetime.now().isoformat())
+                payload.setdefault("window_days", int(_T0_EXECUTION_CALIBRATION_WINDOW_DAYS))
+                calibration = payload.get("calibration") if isinstance(payload.get("calibration"), dict) else {}
+                items = calibration.get("items") if isinstance(calibration.get("items"), list) else []
+                payload["summary"] = {
+                    "suggestion_count": len(items),
+                    "high_count": sum(1 for item in items if str((item or {}).get("severity") or "") == "high"),
+                    "medium_count": sum(1 for item in items if str((item or {}).get("severity") or "") == "medium"),
+                    "watch_count": sum(1 for item in items if str((item or {}).get("severity") or "") == "watch"),
+                }
+                _t0_execution_calibration_last.clear()
+                _t0_execution_calibration_last.update(payload)
+                _write_t0_execution_calibration_payload(payload)
+            except Exception as e:
+                logger.error(f"[T0ExecCalib] closed-loop error: {e}")
+            time.sleep(sec)
+
+    threading.Thread(target=_loop, daemon=True, name="t0-execution-calibration").start()
 def _start_tick_persistence() -> None:
     global _tick_persist_started
     if _tick_persist_started:
@@ -1092,3 +1191,11 @@ def is_threshold_closed_loop_started() -> bool:
 
 def get_threshold_calibration_snapshot_local() -> dict:
     return dict(_threshold_calibration_last) if isinstance(_threshold_calibration_last, dict) else {}
+
+
+def get_t0_execution_calibration_snapshot_local() -> dict:
+    return dict(_t0_execution_calibration_last) if isinstance(_t0_execution_calibration_last, dict) else {}
+
+
+def get_t0_execution_override_snapshot_local() -> dict:
+    return dict(_t0_execution_override_last) if isinstance(_t0_execution_override_last, dict) else {}

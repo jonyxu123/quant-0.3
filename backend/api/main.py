@@ -127,6 +127,11 @@ async def _lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[启动] 动态阈值闭环线程启动失败: {e}")
 
+    try:
+        runtime_jobs._start_t0_execution_calibration_closed_loop(interval_min=float(getattr(runtime_jobs, "_T0_EXECUTION_CALIBRATION_INTERVAL_MIN", 15.0)))
+    except Exception as e:
+        logger.warning(f"[鍚姩] T+0 鎵ц灞傛牎鍑嗙嚎绋嬪惎鍔ㄥけ璐? {e}")
+
     refresh_task = asyncio.create_task(_daily_refresh_loop())
     logger.info("[启动] 每日 20:00 日线缓存检查任务已启动")
 

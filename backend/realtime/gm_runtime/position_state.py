@@ -569,6 +569,14 @@ def _pool2_t0_inventory_empty(now_ts: Optional[int] = None) -> dict:
         'last_action_qty': 0,
         'last_action_mode': '',
         'last_action_role': '',
+        'last_action_level': '',
+        'last_shadow_action_level': '',
+        'last_shadow_only': False,
+        'last_qty_multiplier': 0.0,
+        'last_soft_qty_multiplier': 1.0,
+        'last_base_action_qty': 0,
+        'last_final_qty': 0,
+        'last_action_score': 0.0,
         'today_action_log': [],
         'last_reset_at': ts,
         'signal_seq': 0,
@@ -597,6 +605,18 @@ def _normalize_pool2_cost(value: object) -> float:
     except Exception:
         cost = 0.0
     return round(max(0.0, cost), 4)
+
+
+def _normalize_pool2_level(value: object) -> str:
+    return str(value or '').strip().lower()
+
+
+def _normalize_pool2_ratio(value: object, default: float = 0.0) -> float:
+    try:
+        vv = float(value if value is not None else default)
+    except Exception:
+        vv = float(default)
+    return round(max(0.0, vv), 4)
 
 
 def _normalize_pool2_action_log(value: object, trade_date: str, limit: int = 20) -> list[dict]:
@@ -630,6 +650,14 @@ def _normalize_pool2_action_log(value: object, trade_date: str, limit: int = 20)
                 'remaining_tradable_t_qty': _normalize_pool2_qty(item.get('remaining_tradable_t_qty')),
                 'today_t_count': max(0, int(float(item.get('today_t_count') or 0))),
                 'signal_seq': seq,
+                'action_level': _normalize_pool2_level(item.get('action_level')),
+                'shadow_action_level': _normalize_pool2_level(item.get('shadow_action_level')),
+                'shadow_only': bool(item.get('shadow_only', False)),
+                'qty_multiplier': _normalize_pool2_ratio(item.get('qty_multiplier')),
+                'soft_qty_multiplier': _normalize_pool2_ratio(item.get('soft_qty_multiplier'), 1.0),
+                'base_action_qty': _normalize_pool2_qty(item.get('base_action_qty')),
+                'final_qty': _normalize_pool2_qty(item.get('final_qty')),
+                'score': _normalize_pool2_ratio(item.get('score')),
             }
         )
     normalized.sort(key=lambda x: (int(x.get('at', 0) or 0), int(x.get('signal_seq', 0) or 0)))
@@ -658,6 +686,14 @@ def _normalize_pool2_inventory_entry(item: dict, now_ts: Optional[int] = None) -
                 'last_action_qty': _normalize_pool2_qty(item.get('last_action_qty')),
                 'last_action_mode': str(item.get('last_action_mode') or ''),
                 'last_action_role': str(item.get('last_action_role') or ''),
+                'last_action_level': _normalize_pool2_level(item.get('last_action_level')),
+                'last_shadow_action_level': _normalize_pool2_level(item.get('last_shadow_action_level')),
+                'last_shadow_only': bool(item.get('last_shadow_only', False)),
+                'last_qty_multiplier': _normalize_pool2_ratio(item.get('last_qty_multiplier')),
+                'last_soft_qty_multiplier': _normalize_pool2_ratio(item.get('last_soft_qty_multiplier'), 1.0),
+                'last_base_action_qty': _normalize_pool2_qty(item.get('last_base_action_qty')),
+                'last_final_qty': _normalize_pool2_qty(item.get('last_final_qty')),
+                'last_action_score': _normalize_pool2_ratio(item.get('last_action_score')),
                 'last_reset_at': int(item.get('last_reset_at', ts) or ts),
                 'signal_seq': int(item.get('signal_seq', 0) or 0),
             }
@@ -881,6 +917,14 @@ def _pool2_apply_t0_signal(
     signal_type: str,
     signal_price: Optional[float] = None,
     action_qty: Optional[int] = None,
+    action_level: Optional[str] = None,
+    shadow_action_level: Optional[str] = None,
+    shadow_only: bool = False,
+    qty_multiplier: Optional[float] = None,
+    soft_qty_multiplier: Optional[float] = None,
+    base_action_qty: Optional[int] = None,
+    final_qty: Optional[int] = None,
+    score: Optional[float] = None,
     now_ts: Optional[int] = None,
 ) -> tuple[dict, dict]:
     _load_pool2_t0_inventory_state()
@@ -918,6 +962,14 @@ def _pool2_apply_t0_signal(
                 ent['last_signal_type'] = sig_type
                 ent['last_signal_price'] = px
                 ent['last_action_qty'] = applied_qty
+                ent['last_action_level'] = _normalize_pool2_level(action_level)
+                ent['last_shadow_action_level'] = _normalize_pool2_level(shadow_action_level)
+                ent['last_shadow_only'] = bool(shadow_only)
+                ent['last_qty_multiplier'] = _normalize_pool2_ratio(qty_multiplier)
+                ent['last_soft_qty_multiplier'] = _normalize_pool2_ratio(soft_qty_multiplier, 1.0)
+                ent['last_base_action_qty'] = _normalize_pool2_qty(base_action_qty)
+                ent['last_final_qty'] = _normalize_pool2_qty(final_qty if final_qty is not None else applied_qty)
+                ent['last_action_score'] = _normalize_pool2_ratio(score)
                 ent['updated_at'] = ts
                 ent['signal_seq'] = int(ent.get('signal_seq', 0) or 0) + 1
                 action_log = list(ent.get('today_action_log') or [])
@@ -934,6 +986,14 @@ def _pool2_apply_t0_signal(
                         'remaining_tradable_t_qty': _normalize_pool2_qty(ent.get('tradable_t_qty')),
                         'today_t_count': int(ent.get('today_t_count', 0) or 0),
                         'signal_seq': int(ent.get('signal_seq', 0) or 0),
+                        'action_level': _normalize_pool2_level(action_level),
+                        'shadow_action_level': _normalize_pool2_level(shadow_action_level),
+                        'shadow_only': bool(shadow_only),
+                        'qty_multiplier': _normalize_pool2_ratio(qty_multiplier),
+                        'soft_qty_multiplier': _normalize_pool2_ratio(soft_qty_multiplier, 1.0),
+                        'base_action_qty': _normalize_pool2_qty(base_action_qty),
+                        'final_qty': _normalize_pool2_qty(final_qty if final_qty is not None else applied_qty),
+                        'score': _normalize_pool2_ratio(score),
                     }
                 )
                 ent['today_action_log'] = _normalize_pool2_action_log(

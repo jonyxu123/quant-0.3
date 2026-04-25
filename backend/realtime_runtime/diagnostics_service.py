@@ -7,6 +7,7 @@ from .pool_service import _build_member_data, _evaluate_signals_fast_internal
 from . import pool_service as pool_service_module
 import backend.realtime_runtime.runtime_jobs as runtime_jobs
 from backend.realtime.gm_runtime.common import load_t0_index_context
+from backend.realtime.gm_runtime import signal_engine as gm_signal_engine
 
 def runtime_pool1_left_replay(
     hours: int = Query(72, ge=1, le=240),
@@ -30,20 +31,20 @@ def runtime_pool1_left_replay(
 
     def _stage_label(snapshot: dict | None, message: str) -> tuple[str, str]:
         hs = snapshot if isinstance(snapshot, dict) else {}
-        lsm = hs.get("left_state_machine") if isinstance(hs.get("left_state_machine"), dict) else {}
+        lsm = hs.get("left_state_machine") if isinstance(lsm := hs.get("left_state_machine"), dict) else {}
         stage_a = lsm.get("stage_a") if isinstance(lsm.get("stage_a"), dict) else {}
         stage_b = lsm.get("stage_b") if isinstance(lsm.get("stage_b"), dict) else {}
         stage_c = lsm.get("stage_c") if isinstance(lsm.get("stage_c"), dict) else {}
         observe_only = bool(hs.get("observe_only", False) or lsm.get("observe_only", False))
         observe_reason = str(hs.get("observe_reason") or lsm.get("observe_reason") or "")
         if bool(stage_a.get("passed")) and not bool(stage_b.get("passed")):
-            return "B??", "?????????????????"
+            return "B待确认", "已满足极限偏离，等待回收确认"
         if bool(stage_a.get("passed")) and bool(stage_b.get("passed")) and (not bool(stage_c.get("passed")) or bool(stage_c.get("observe_only"))):
-            return "C??", "???????????????????"
+            return "C待确认", "已满足回收确认，等待生态确认"
         if bool(lsm.get("executable_ready")) and not observe_only:
-            return "???", "?? A/B/C ???????????"
-        if "?????" in message:
-            return "B??", "?????????????????"
+            return "可执行", "左侧 A/B/C 状态机已全部通过"
+        if "回收确认" in message:
+            return "B待确认", "已满足极限偏离，等待回收确认"
         if observe_reason in {
             "concept_retreat",
             "concept_weak",
@@ -55,14 +56,14 @@ def runtime_pool1_left_replay(
             "left_side_streak_weak",
             "left_side_repeat_weak",
         }:
-            return "C??", "??????????????????"
+            return "C观察", "生态确认未通过，暂时只观察"
         if observe_only:
-            return "??", "????????????"
-        return "???", "????????????"
+            return "观察", "左侧信号仍处观察期"
+        return "执行", "左侧状态允许继续执行"
 
     def _stage_c_block(snapshot: dict | None, observe_reason: str) -> tuple[str, str]:
         hs = snapshot if isinstance(snapshot, dict) else {}
-        lsm = hs.get("left_state_machine") if isinstance(hs.get("left_state_machine"), dict) else {}
+        lsm = hs.get("left_state_machine") if isinstance(lsm := hs.get("left_state_machine"), dict) else {}
         stage_c = lsm.get("stage_c") if isinstance(lsm.get("stage_c"), dict) else {}
         items = [str(x or "").strip() for x in (stage_c.get("items") or [])] if isinstance(stage_c.get("items"), list) else []
         observe_reason = str(observe_reason or "").strip()
@@ -70,18 +71,18 @@ def runtime_pool1_left_replay(
             return "industry_joint_weak", "行业+概念共弱"
         if bool(stage_c.get("industry_retreat")) or "行业退潮" in items:
             return "industry_retreat", "行业退潮"
-        if bool(stage_c.get("industry_weak")) or "行业承接转弱" in items:
-            return "industry_weak", "行业承接转弱"
-        if bool(stage_c.get("concept_heat_cliff")) or observe_reason == "left_concept_heat_cliff" or "??????" in items:
-            return "concept_heat_cliff", "??????"
-        if "???????" in items or observe_reason == "concept_retreat":
-            return "concept_retreat_main", "???????"
-        if "??????" in items or observe_reason == "concept_weak":
-            return "concept_weak_main", "??????"
+        if bool(stage_c.get("industry_weak")) or "行业偏弱" in items:
+            return "industry_weak", "行业偏弱"
+        if bool(stage_c.get("concept_heat_cliff")) or observe_reason == "left_concept_heat_cliff" or "概念热度断崖" in items:
+            return "concept_heat_cliff", "概念热度断崖"
+        if "概念退潮主跌" in items or observe_reason == "concept_retreat":
+            return "concept_retreat_main", "概念退潮主跌"
+        if "概念偏弱" in items or observe_reason == "concept_weak":
+            return "concept_weak_main", "概念偏弱"
         if bool(stage_c.get("high_position_catchdown")) or observe_reason == "left_high_position_catchdown":
-            return "high_position_catchdown", "????"
+            return "high_position_catchdown", "高位补跌"
         if bool(stage_c.get("distribution_structure")) or observe_reason == "left_distribution_structure":
-            return "distribution_structure", "????"
+            return "distribution_structure", "出货结构"
         return "", ""
 
     def _future_tick_ret_bps(conn, ts_code: str, trigger_ts: float, trigger_price: float, horizon_sec: int, tolerance_sec: int) -> float | None:
@@ -211,40 +212,40 @@ def runtime_pool1_left_replay(
                     next_clear = item
 
             classification = "pending"
-            classification_reason = "????????"
-            if stage_label in {"B??", "C??", "??"}:
+            classification_reason = "等待后续价格演化"
+            if stage_label in {"B待确认", "C待确认", "C观察", "观察"}:
                 if next_exec_build is not None:
                     classification = "promoted_build"
-                    classification_reason = "????????????/??"
+                    classification_reason = "观察阶段后续转成建仓/加仓"
                 elif ret_60m_bps is not None and ret_60m_bps <= -120:
                     classification = "watch_avoided_drop"
-                    classification_reason = "??????????????????"
+                    classification_reason = "观察阶段避开了后续明显下跌"
                 elif ret_60m_bps is not None and ret_60m_bps >= 80:
                     classification = "watch_too_early"
-                    classification_reason = "?????????????????????"
+                    classification_reason = "观察阶段后续继续上行，说明转观察偏早"
                 elif ret_5m_bps is not None or ret_60m_bps is not None:
                     classification = "mixed"
-                    classification_reason = "???????????????????????"
+                    classification_reason = "观察阶段后续走势分化，暂未形成明确结论"
             else:
                 if next_clear is not None and ret_60m_bps is not None and ret_60m_bps < 0:
                     classification = "fast_fail"
-                    classification_reason = "????????????????????"
+                    classification_reason = "转可执行后较快走弱，并出现退出信号"
                 elif ret_60m_bps is not None and ret_60m_bps >= 80:
                     classification = "good_follow"
-                    classification_reason = "????? 60 ???????"
+                    classification_reason = "转可执行后 60 分钟内仍有明显延续"
                 elif ret_60m_bps is not None and ret_60m_bps <= -120:
                     classification = "fast_fail"
-                    classification_reason = "????? 60 ???????"
+                    classification_reason = "转可执行后 60 分钟内明显走弱"
                 elif ret_5m_bps is not None or ret_60m_bps is not None:
                     classification = "mixed"
-                    classification_reason = "??????????????????????"
+                    classification_reason = "转可执行后走势分化，延续性一般"
 
             summary["signals"] += 1
-            if stage_label == "B??":
+            if stage_label == "B待确认":
                 summary["stage_b_pending"] += 1
-            elif stage_label == "C??":
+            elif stage_label in {"C待确认", "C观察"}:
                 summary["stage_c_observe"] += 1
-            elif stage_label == "???":
+            elif stage_label in {"可执行", "执行"}:
                 summary["executable"] += 1
             if stage_c_block_type and stage_c_block_type in summary:
                 summary[stage_c_block_type] += 1
@@ -357,14 +358,14 @@ def runtime_t0_reverse_replay(
 
     def _classify_reverse_row(match: Optional[dict]) -> tuple[str, str]:
         if not isinstance(match, dict):
-            return "pending", "等待5分钟质量评估"
+            return "pending", "等待 5 分钟反T质量评估"
         ret_bps = float(match.get("ret_bps", 0.0) or 0.0)
         direction_correct = bool(match.get("direction_correct", False))
         if (not direction_correct) or ret_bps < 0:
-            return "bad_sell", "卖出后价格继续上行，疑似误卖/漏杀"
+            return "bad_sell", "卖出后继续上涨，说明反T过早或卖飞"
         if ret_bps < fee:
-            return "weak_edge", "方向虽对但边际不足，可能覆盖不了手续费"
-        return "good_hit", "反T命中，5分钟收益覆盖成本"
+            return "weak_edge", "方向虽对，但边际不足，可能覆盖不了手续费"
+        return "good_hit", "卖出后回落，边际覆盖手续费"
 
     rows: list[dict] = []
     summary = {
@@ -536,14 +537,14 @@ def runtime_t0_positive_replay(
                     return "observe_missed", "库存质量门偏严，过滤后仍出现覆盖成本回补"
                 return "observe_missed", "质量门偏严，过滤后仍出现覆盖成本回补"
             if "inventory_quality_degraded" in observe_reasons:
-                return "observe_filtered", "库存质量门拦截后，5 分钟内未形成有效回补"
-            return "observe_filtered", "质量门拦截后，5 分钟内未形成有效回补"
+                return "observe_filtered", "库存质量门触发后，本次回补未覆盖成本"
+            return "observe_filtered", "质量门触发后，本次回补未覆盖成本"
 
         if (not direction_correct) or ret_bps < 0:
-            return "false_rebuild", "回补后 5 分钟继续走弱，疑似接在下跌延续段"
+            return "false_rebuild", "回补后 5 分钟继续走弱，说明抄底过早"
         if net_ret_bps < 0:
-            return "weak_rebuild", "回补方向正确，但净边际未覆盖成本"
-        return "good_rebuild", "回补后 5 分钟反抽覆盖成本"
+            return "weak_rebuild", "回补方向虽对，但净边际不足以覆盖手续费"
+        return "good_rebuild", "回补后 5 分钟修复，边际覆盖手续费"
 
     rows: list[dict] = []
     summary = {
@@ -906,6 +907,7 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
         concept_ecology_multi=m.get("concept_ecology_multi"),
         index_context=load_t0_index_context(instrument_profile=m.get("instrument_profile"), ts_code=ts_code),
     )
+    pos = gm_signal_engine._finalize_pool2_execution_signal(pos)
 
     try:
         bias_vwap_th = float((thresholds or {}).get("bias_vwap_th"))
@@ -956,6 +958,7 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
     strength = float(pos.get("strength", 0) or 0)
     positive_rebuild_quality = details.get("positive_rebuild_quality") if isinstance(details.get("positive_rebuild_quality"), dict) else {}
     t0_inventory = details.get("t0_inventory") if isinstance(details.get("t0_inventory"), dict) else inventory_state
+    t0_execution = details.get("t0_execution") if isinstance(details.get("t0_execution"), dict) else {}
     index_context_gate = details.get("index_context_gate") if isinstance(details.get("index_context_gate"), dict) else {}
     index_context = details.get("index_context") if isinstance(details.get("index_context"), dict) else {}
 
@@ -999,6 +1002,7 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
         "threshold": details.get("threshold") if isinstance(details.get("threshold"), dict) else thresholds,
         "positive_rebuild_quality": positive_rebuild_quality,
         "t0_inventory": t0_inventory,
+        "t0_execution": t0_execution,
         "index_context_gate": index_context_gate,
         "index_context": index_context,
         "market_structure": {
@@ -1082,6 +1086,14 @@ def runtime_t0_positive_diagnostics(
         "recovery_quality_low": 0,
         "net_executable_edge_low": 0,
         "inventory_degraded": 0,
+        "exec_block": 0,
+        "exec_observe": 0,
+        "exec_test": 0,
+        "exec_execute": 0,
+        "exec_aggressive_before": 0,
+        "exec_shadow_only": 0,
+        "exec_hard_block": 0,
+        "exec_qty_too_small": 0,
     }
     for row in rows:
         status = str(row.get("status") or "")
@@ -1122,6 +1134,21 @@ def runtime_t0_positive_diagnostics(
             summary["net_executable_edge_low"] += 1
         if "inventory_quality_degraded" in observe_reasons:
             summary["inventory_degraded"] += 1
+
+        execution = row.get("t0_execution") if isinstance(row.get("t0_execution"), dict) else {}
+        level_after = str(execution.get("action_level_after_downgrade") or "").strip()
+        level_before = str(execution.get("action_level_before_downgrade") or "").strip()
+        if level_after in {"block", "observe", "test", "execute"}:
+            summary[f"exec_{level_after}"] += 1
+        if level_before == "aggressive":
+            summary["exec_aggressive_before"] += 1
+        if bool(execution.get("shadow_only", False)):
+            summary["exec_shadow_only"] += 1
+        hard_block_reasons = [str(x or "").strip() for x in (execution.get("hard_block_reasons") or [])] if isinstance(execution.get("hard_block_reasons"), list) else []
+        if hard_block_reasons:
+            summary["exec_hard_block"] += 1
+        if "qty_too_small_after_multiplier" in hard_block_reasons:
+            summary["exec_qty_too_small"] += 1
 
     if interesting_only:
         rows = [r for r in rows if str(r.get("status") or "") not in {"idle", "off_session_skip"}]
@@ -1354,6 +1381,286 @@ def runtime_threshold_calibration_snapshot():
             "message": "threshold calibration snapshot not ready",
             "storage_source": "memory",
         }
+    payload["storage_source"] = "memory"
+    return payload
+
+
+def _runtime_t0_execution_override_snapshot() -> dict:
+    cli = _get_runtime_state_redis()
+    key_latest = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:t0:execution_override:latest"
+    if cli is not None:
+        try:
+            raw = cli.get(key_latest)
+            if raw:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    payload["storage_source"] = "redis"
+                    return payload
+        except Exception:
+            pass
+    payload = runtime_jobs.get_t0_execution_override_snapshot_local()
+    if isinstance(payload, dict) and payload:
+        payload["storage_source"] = "memory"
+        return payload
+    base_exec_cfg = T0_SIGNAL_CONFIG.get("execution_layer", {}) if isinstance(T0_SIGNAL_CONFIG, dict) else {}
+    base_qty = base_exec_cfg.get("action_qty_multiplier", {}) if isinstance(base_exec_cfg.get("action_qty_multiplier"), dict) else {}
+    base_score = base_exec_cfg.get("score_thresholds", {}) if isinstance(base_exec_cfg.get("score_thresholds"), dict) else {}
+    return {
+        "enabled": True,
+        "updated_at": None,
+        "storage_source": "memory",
+        "action_qty_multiplier": {},
+        "score_thresholds": {},
+        "effective_action_qty_multiplier": {
+            "block": float(base_qty.get("block", 0.0) or 0.0),
+            "observe": float(base_qty.get("observe", 0.0) or 0.0),
+            "test": float(base_qty.get("test", 0.10) or 0.10),
+            "execute": float(base_qty.get("execute", 0.25) or 0.25),
+            "aggressive": float(base_qty.get("aggressive", 0.40) or 0.40),
+        },
+        "effective_score_thresholds": {
+            "block": float(base_score.get("block", 55.0) or 55.0),
+            "observe": float(base_score.get("observe", 65.0) or 65.0),
+            "test": float(base_score.get("test", 75.0) or 75.0),
+            "execute": float(base_score.get("execute", 88.0) or 88.0),
+        },
+        "live_qty_scale": 1.0,
+        "manual_override_active": False,
+        "applied_items": [],
+    }
+
+
+def _normalize_t0_execution_override_snapshot(payload: dict) -> dict:
+    raw = dict(payload) if isinstance(payload, dict) else {}
+    base_exec_cfg = T0_SIGNAL_CONFIG.get("execution_layer", {}) if isinstance(T0_SIGNAL_CONFIG, dict) else {}
+    base_qty = base_exec_cfg.get("action_qty_multiplier", {}) if isinstance(base_exec_cfg.get("action_qty_multiplier"), dict) else {}
+    base_score = base_exec_cfg.get("score_thresholds", {}) if isinstance(base_exec_cfg.get("score_thresholds"), dict) else {}
+    override_qty = raw.get("action_qty_multiplier", {}) if isinstance(raw.get("action_qty_multiplier"), dict) else {}
+    override_score = raw.get("score_thresholds", {}) if isinstance(raw.get("score_thresholds"), dict) else {}
+    effective_qty = {
+        "block": float(override_qty.get("block", base_qty.get("block", 0.0)) or 0.0),
+        "observe": float(override_qty.get("observe", base_qty.get("observe", 0.0)) or 0.0),
+        "test": float(override_qty.get("test", base_qty.get("test", 0.10)) or 0.10),
+        "execute": float(override_qty.get("execute", base_qty.get("execute", 0.25)) or 0.25),
+        "aggressive": float(override_qty.get("aggressive", base_qty.get("aggressive", 0.40)) or 0.40),
+    }
+    effective_score = {
+        "block": float(override_score.get("block", base_score.get("block", 55.0)) or 55.0),
+        "observe": float(override_score.get("observe", base_score.get("observe", 65.0)) or 65.0),
+        "test": float(override_score.get("test", base_score.get("test", 75.0)) or 75.0),
+        "execute": float(override_score.get("execute", base_score.get("execute", 88.0)) or 88.0),
+    }
+    raw["action_qty_multiplier"] = {str(k): float(v) for k, v in override_qty.items()}
+    raw["score_thresholds"] = {str(k): float(v) for k, v in override_score.items()}
+    raw["effective_action_qty_multiplier"] = effective_qty
+    raw["effective_score_thresholds"] = effective_score
+    raw["live_qty_scale"] = round(float(raw.get("live_qty_scale", 1.0) or 1.0), 4)
+    applied_items = raw.get("applied_items", []) if isinstance(raw.get("applied_items"), list) else []
+    raw["applied_items"] = applied_items[:20]
+    raw["manual_override_active"] = bool(
+        raw.get("action_qty_multiplier")
+        or raw.get("score_thresholds")
+        or abs(float(raw.get("live_qty_scale", 1.0) or 1.0) - 1.0) > 1e-9
+    )
+    return raw
+
+
+def runtime_t0_execution_override_snapshot():
+    return _normalize_t0_execution_override_snapshot(_runtime_t0_execution_override_snapshot())
+
+
+class T0ExecutionOverrideApplyRequest(BaseModel):
+    group: str
+    bucket: str
+    action: str
+    label: str | None = None
+    title: str | None = None
+    operator: str | None = None
+    source: str | None = None
+
+
+class T0ExecutionOverrideResetRequest(BaseModel):
+    operator: str | None = None
+    source: str | None = None
+
+
+def _build_t0_execution_override_update(req: T0ExecutionOverrideApplyRequest, current: dict) -> dict:
+    payload = dict(current) if isinstance(current, dict) else {}
+    override_qty = dict(payload.get("action_qty_multiplier") or {}) if isinstance(payload.get("action_qty_multiplier"), dict) else {}
+    override_score = dict(payload.get("score_thresholds") or {}) if isinstance(payload.get("score_thresholds"), dict) else {}
+    effective_snapshot = _normalize_t0_execution_override_snapshot(payload)
+    effective_qty = effective_snapshot.get("effective_action_qty_multiplier", {}) if isinstance(effective_snapshot.get("effective_action_qty_multiplier"), dict) else {}
+    effective_score = effective_snapshot.get("effective_score_thresholds", {}) if isinstance(effective_snapshot.get("effective_score_thresholds"), dict) else {}
+    live_qty_scale = float(payload.get("live_qty_scale", 1.0) or 1.0)
+    group = str(req.group or "").strip().lower()
+    bucket = str(req.bucket or "").strip().lower()
+    action = str(req.action or "").strip().lower()
+    label = str(req.label or "").strip()
+    title = str(req.title or "").strip()
+    operator = str(req.operator or "").strip() or "manual-ui"
+    source = str(req.source or "").strip() or "realtime-monitor-ui"
+
+    qty_step_map = {"test": 0.02, "execute": 0.03, "aggressive": 0.05}
+    qty_floor_map = {"test": 0.04, "execute": 0.10, "aggressive": 0.18}
+    qty_cap_map = {"test": 0.20, "execute": 0.45, "aggressive": 0.60}
+
+    applied_changes: list[dict] = []
+    if group in {"action_level", "exec_status"} and bucket in qty_step_map and action in {"tighten", "promote_review"}:
+        current_value = float(override_qty.get(bucket, effective_qty.get(bucket, 0.0)) or 0.0)
+        delta = -qty_step_map[bucket] if action == "tighten" else qty_step_map[bucket]
+        new_value = max(qty_floor_map[bucket], min(qty_cap_map[bucket], current_value + delta))
+        new_value = round(float(new_value), 4)
+        override_qty[bucket] = new_value
+        applied_changes.append({"field": f"action_qty_multiplier.{bucket}", "before": round(float(current_value), 4), "after": new_value})
+    elif group == "shadow_mode" and bucket == "live_path" and action == "tighten_live":
+        before = round(float(live_qty_scale), 4)
+        live_qty_scale = round(max(0.50, min(1.20, live_qty_scale - 0.10)), 4)
+        applied_changes.append({"field": "live_qty_scale", "before": before, "after": live_qty_scale})
+    elif group == "shadow_mode" and bucket in {"shadow_only", "shadow_only_vs_live_path"} and action == "promote_review":
+        before = round(float(live_qty_scale), 4)
+        live_qty_scale = round(max(0.50, min(1.20, live_qty_scale + 0.10)), 4)
+        applied_changes.append({"field": "live_qty_scale", "before": before, "after": live_qty_scale})
+    elif group == "hard_block_reason" and bucket == "qty_too_small_after_multiplier" and action == "relax_qty_floor":
+        before = round(float(live_qty_scale), 4)
+        live_qty_scale = round(max(0.50, min(1.20, live_qty_scale + 0.05)), 4)
+        applied_changes.append({"field": "live_qty_scale", "before": before, "after": live_qty_scale})
+    elif group == "hard_block_reason" and bucket == "action_level_block" and action == "lower_block_threshold":
+        current_block = round(float(effective_score.get("block", 55.0) or 55.0), 4)
+        current_observe = round(float(effective_score.get("observe", 65.0) or 65.0), 4)
+        target_block = round(max(45.0, min(current_observe - 3.0, current_block - 2.0)), 4)
+        if target_block >= current_block - 1e-9:
+            target_block = round(max(45.0, current_block - 1.0), 4)
+        override_score["block"] = target_block
+        applied_changes.append({"field": "score_thresholds.block", "before": current_block, "after": target_block})
+    else:
+        raise HTTPException(status_code=400, detail="unsupported execution calibration suggestion")
+
+    payload["enabled"] = True
+    payload["updated_at"] = datetime.datetime.now().isoformat()
+    payload["action_qty_multiplier"] = override_qty
+    payload["score_thresholds"] = override_score
+    payload["live_qty_scale"] = live_qty_scale
+    history = payload.get("applied_items", []) if isinstance(payload.get("applied_items"), list) else []
+    history.insert(
+        0,
+        {
+            "group": group,
+            "bucket": bucket,
+            "action": action,
+            "label": label or bucket,
+            "title": title or label or bucket,
+            "event_type": "apply",
+            "operator": operator,
+            "source": source,
+            "applied_at": payload["updated_at"],
+            "changes": applied_changes,
+        },
+    )
+    payload["applied_items"] = history[:20]
+    return payload
+
+
+def _build_t0_execution_override_reset_payload(current: dict, *, operator: str = "", source: str = "") -> dict:
+    current_norm = _normalize_t0_execution_override_snapshot(current if isinstance(current, dict) else {})
+    base_exec_cfg = T0_SIGNAL_CONFIG.get("execution_layer", {}) if isinstance(T0_SIGNAL_CONFIG, dict) else {}
+    base_qty = base_exec_cfg.get("action_qty_multiplier", {}) if isinstance(base_exec_cfg.get("action_qty_multiplier"), dict) else {}
+    base_score = base_exec_cfg.get("score_thresholds", {}) if isinstance(base_exec_cfg.get("score_thresholds"), dict) else {}
+    operator_text = str(operator or "").strip() or "manual-ui"
+    source_text = str(source or "").strip() or "realtime-monitor-ui"
+    updated_at = datetime.datetime.now().isoformat()
+    changes: list[dict] = []
+    effective_before = current_norm.get("effective_action_qty_multiplier", {}) if isinstance(current_norm.get("effective_action_qty_multiplier"), dict) else {}
+    effective_score_before = current_norm.get("effective_score_thresholds", {}) if isinstance(current_norm.get("effective_score_thresholds"), dict) else {}
+    override_qty = current_norm.get("action_qty_multiplier", {}) if isinstance(current_norm.get("action_qty_multiplier"), dict) else {}
+    override_score = current_norm.get("score_thresholds", {}) if isinstance(current_norm.get("score_thresholds"), dict) else {}
+    for bucket in ("test", "execute", "aggressive"):
+        if bucket in override_qty:
+            before = round(float(effective_before.get(bucket, base_qty.get(bucket, 0.0)) or 0.0), 4)
+            after = round(float(base_qty.get(bucket, before) or before), 4)
+            changes.append({"field": f"action_qty_multiplier.{bucket}", "before": before, "after": after})
+    for bucket in ("block", "observe", "test", "execute"):
+        if bucket in override_score:
+            before = round(float(effective_score_before.get(bucket, base_score.get(bucket, 0.0)) or 0.0), 4)
+            after = round(float(base_score.get(bucket, before) or before), 4)
+            changes.append({"field": f"score_thresholds.{bucket}", "before": before, "after": after})
+    before_live_scale = round(float(current_norm.get("live_qty_scale", 1.0) or 1.0), 4)
+    if abs(before_live_scale - 1.0) > 1e-9:
+        changes.append({"field": "live_qty_scale", "before": before_live_scale, "after": 1.0})
+    history = current_norm.get("applied_items", []) if isinstance(current_norm.get("applied_items"), list) else []
+    history.insert(
+        0,
+        {
+            "group": "override",
+            "bucket": "reset",
+            "action": "reset",
+            "label": "恢复默认",
+            "title": "恢复默认",
+            "event_type": "reset",
+            "operator": operator_text,
+            "source": source_text,
+            "applied_at": updated_at,
+            "changes": changes,
+        },
+    )
+    return {
+        "enabled": True,
+        "updated_at": updated_at,
+        "action_qty_multiplier": {},
+        "score_thresholds": {},
+        "live_qty_scale": 1.0,
+        "applied_items": history[:20],
+    }
+
+def runtime_t0_execution_override_apply(req: T0ExecutionOverrideApplyRequest):
+    current = _normalize_t0_execution_override_snapshot(_runtime_t0_execution_override_snapshot())
+    updated = _build_t0_execution_override_update(req, current)
+    runtime_jobs.persist_t0_execution_override_payload(updated)
+    return {
+        "ok": True,
+        "message": "t0 execution override applied",
+        "override": _normalize_t0_execution_override_snapshot(updated),
+    }
+
+
+def runtime_t0_execution_override_reset(req: T0ExecutionOverrideResetRequest | None = None):
+    current = _normalize_t0_execution_override_snapshot(_runtime_t0_execution_override_snapshot())
+    payload = _build_t0_execution_override_reset_payload(
+        current,
+        operator=str((req.operator if req else "") or ""),
+        source=str((req.source if req else "") or ""),
+    )
+    runtime_jobs.persist_t0_execution_override_payload(payload)
+    return {
+        "ok": True,
+        "message": "t0 execution override reset",
+        "override": _normalize_t0_execution_override_snapshot(payload),
+    }
+
+
+def runtime_t0_execution_calibration_snapshot():
+    cli = _get_runtime_state_redis()
+    key_latest = f"{_RUNTIME_STATE_REDIS_KEY_PREFIX}:t0:execution_calibration:latest"
+    if cli is not None:
+        try:
+            raw = cli.get(key_latest)
+            if raw:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    payload["manual_override"] = _normalize_t0_execution_override_snapshot(_runtime_t0_execution_override_snapshot())
+                    payload["storage_source"] = "redis"
+                    return payload
+        except Exception:
+            pass
+    payload = runtime_jobs.get_t0_execution_calibration_snapshot_local()
+    if not payload:
+        return {
+            "ok": False,
+            "checked_at": datetime.datetime.now().isoformat(),
+            "message": "t0 execution calibration snapshot not ready",
+            "manual_override": _normalize_t0_execution_override_snapshot(_runtime_t0_execution_override_snapshot()),
+            "storage_source": "memory",
+        }
+    payload["manual_override"] = _normalize_t0_execution_override_snapshot(_runtime_t0_execution_override_snapshot())
     payload["storage_source"] = "memory"
     return payload
 
@@ -1829,7 +2136,7 @@ def runtime_board_catalog_status():
 
 
 def runtime_board_catalog_refresh(
-    force: bool = Query(False, description="是否强制重刷今天已同步过的板块目录与成分股"),
+    force: bool = Query(False, description="是否强制刷新，即使缓存仍有效也重新拉取并写入缓存"),
 ):
     checked_at = datetime.datetime.now()
     before = runtime_jobs._get_board_catalog_status()
@@ -1930,7 +2237,7 @@ def runtime_selfcheck():
                 pass
 def runtime_channel_split_stats(hours: int = Query(24, ge=1, le=240)):
     """
-    统计近 N 小时 Pool1/Pool2 的通道分布，检测是否存在串池污染。
+    统计最近 N 小时 Pool1/Pool2 的多通道信号分布和相互打架情况
     """
     since_ts = int(time.time()) - int(hours) * 3600
     since_dt = datetime.datetime.fromtimestamp(since_ts)
@@ -2104,7 +2411,7 @@ def runtime_fast_slow_diff(
         msg = str(signal_obj.get("message") or "")
         if not msg:
             return []
-        # message schema usually: "<title> | 条件1 + 条件2 + 确认:..."
+        # message schema usually: "<title> | 条件1 + 条件2 + 备注:..."
         tail = msg.split("|", 1)[1] if "|" in msg else msg
         return [p.strip() for p in tail.split("+") if p and p.strip()]
 
@@ -2502,6 +2809,7 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
         ts_code=ts_code,
         thresholds=thresholds,
     )
+    rev = gm_signal_engine._finalize_pool2_execution_signal(rev)
 
     z_th = None
     try:
@@ -2543,6 +2851,7 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
     has_signal = bool(rev.get("has_signal", False))
     observe_only = bool(details.get("observe_only", False))
     strength = float(rev.get("strength", 0) or 0)
+    t0_execution = details.get("t0_execution") if isinstance(details.get("t0_execution"), dict) else {}
     index_context_gate = details.get("index_context_gate") if isinstance(details.get("index_context_gate"), dict) else {}
     index_context = details.get("index_context") if isinstance(details.get("index_context"), dict) else {}
 
@@ -2578,6 +2887,7 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
         "confirm_items": confirm_items,
         "bearish_confirm_count": len(confirm_items),
         "threshold": details.get("threshold") if isinstance(details.get("threshold"), dict) else thresholds,
+        "t0_execution": t0_execution,
         "index_context_gate": index_context_gate,
         "index_context": index_context,
         "momentum_divergence": dict(vpower_info or {}),
@@ -2644,6 +2954,14 @@ def runtime_t0_reverse_diagnostics(
         "candidate": 0,
         "off_session_skip": 0,
         "error": 0,
+        "exec_block": 0,
+        "exec_observe": 0,
+        "exec_test": 0,
+        "exec_execute": 0,
+        "exec_aggressive_before": 0,
+        "exec_shadow_only": 0,
+        "exec_hard_block": 0,
+        "exec_qty_too_small": 0,
     }
     for row in rows:
         status = str(row.get("status") or "")
@@ -2674,6 +2992,21 @@ def runtime_t0_reverse_diagnostics(
             summary["index_observe_only"] += 1
         if "index_risk_on_no_distribution" in index_reasons:
             summary["index_risk_on_no_distribution"] += 1
+
+        execution = row.get("t0_execution") if isinstance(row.get("t0_execution"), dict) else {}
+        level_after = str(execution.get("action_level_after_downgrade") or "").strip()
+        level_before = str(execution.get("action_level_before_downgrade") or "").strip()
+        if level_after in {"block", "observe", "test", "execute"}:
+            summary[f"exec_{level_after}"] += 1
+        if level_before == "aggressive":
+            summary["exec_aggressive_before"] += 1
+        if bool(execution.get("shadow_only", False)):
+            summary["exec_shadow_only"] += 1
+        hard_block_reasons = [str(x or "").strip() for x in (execution.get("hard_block_reasons") or [])] if isinstance(execution.get("hard_block_reasons"), list) else []
+        if hard_block_reasons:
+            summary["exec_hard_block"] += 1
+        if "qty_too_small_after_multiplier" in hard_block_reasons:
+            summary["exec_qty_too_small"] += 1
 
     if interesting_only:
         rows = [r for r in rows if str(r.get("status") or "") not in {"idle", "off_session_skip"}]

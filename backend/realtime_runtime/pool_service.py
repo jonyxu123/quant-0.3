@@ -3247,6 +3247,629 @@ def _parse_history_snapshot_json(raw) -> dict | None:
     return None
 
 
+def _t0_quality_history_match_key(ts_code: object, signal_type: object, dt_value: object) -> str:
+    code = str(ts_code or "").strip().upper()
+    sig = str(signal_type or "").strip()
+    if not code or not sig:
+        return ""
+    dt_obj: Optional[datetime.datetime] = None
+    if isinstance(dt_value, datetime.datetime):
+        dt_obj = dt_value
+    elif isinstance(dt_value, str) and dt_value.strip():
+        try:
+            parsed = pd.to_datetime(dt_value, errors="coerce")
+            if pd.notna(parsed):
+                dt_obj = parsed.to_pydatetime()
+        except Exception:
+            dt_obj = None
+    if dt_obj is None:
+        return ""
+    try:
+        ts = int(dt_obj.timestamp())
+    except Exception:
+        return ""
+    return f"{code}|{sig}|{ts}"
+
+
+def _extract_t0_execution_meta(snapshot: Optional[dict]) -> dict:
+    payload = snapshot if isinstance(snapshot, dict) else {}
+    execution = payload.get("t0_execution") if isinstance(payload.get("t0_execution"), dict) else {}
+    action_level_before = str(execution.get("action_level_before_downgrade") or payload.get("action_level_before_downgrade") or "").strip().lower()
+    action_level_after = str(execution.get("action_level_after_downgrade") or payload.get("action_level_after_downgrade") or "").strip().lower()
+    shadow_action_level = str(execution.get("shadow_action_level") or payload.get("shadow_action_level") or "").strip().lower()
+    shadow_only = bool(execution.get("shadow_only", payload.get("shadow_only", False)))
+    hard_block_reasons = [str(x or "").strip() for x in (execution.get("hard_block_reasons") or payload.get("hard_block_reasons") or []) if str(x or "").strip()]
+    downgrade_reasons = [str(x or "").strip() for x in (execution.get("downgrade_reasons") or payload.get("downgrade_reasons") or []) if str(x or "").strip()]
+    final_qty = execution.get("final_qty", payload.get("final_qty"))
+    score = execution.get("score", payload.get("score"))
+    exec_status = ""
+    if shadow_only:
+        exec_status = "shadow_only"
+    elif hard_block_reasons:
+        exec_status = "hard_block"
+    elif action_level_after:
+        exec_status = action_level_after
+    shadow_mode = "shadow_only" if shadow_only else "live_path"
+    try:
+        final_qty = int(float(final_qty or 0))
+    except Exception:
+        final_qty = 0
+    try:
+        score = round(float(score), 2) if score is not None else None
+    except Exception:
+        score = None
+    return {
+        "action_level_before_downgrade": action_level_before,
+        "action_level_after_downgrade": action_level_after,
+        "shadow_action_level": shadow_action_level,
+        "shadow_only": bool(shadow_only),
+        "exec_status": exec_status,
+        "shadow_mode": shadow_mode,
+        "hard_block_reason_primary": hard_block_reasons[0] if hard_block_reasons else "",
+        "downgrade_reason_primary": downgrade_reasons[0] if downgrade_reasons else "",
+        "final_qty": final_qty,
+        "execution_score": score,
+    }
+
+
+def _attach_t0_execution_meta_to_quality_df(
+    conn: duckdb.DuckDBPyConnection,
+    df_quality: pd.DataFrame,
+    *,
+    history_where_sql: str,
+) -> pd.DataFrame:
+    if df_quality is None or df_quality.empty:
+        return df_quality
+    hist_rows = conn.execute(
+        f"""
+        SELECT ts_code, signal_type, triggered_at, details_json
+        FROM signal_history
+        WHERE pool_id = 2
+          AND {history_where_sql}
+        """
+    ).fetchall()
+    execution_meta_map: dict[str, dict] = {}
+    for hr in hist_rows:
+        key = _t0_quality_history_match_key(hr[0] if hr else "", hr[1] if hr else "", hr[2] if hr else None)
+        if not key or key in execution_meta_map:
+            continue
+        snapshot = _parse_history_snapshot_json(hr[3] if hr else None)
+        execution_meta_map[key] = _extract_t0_execution_meta(snapshot)
+    if not execution_meta_map:
+        return df_quality
+    out = df_quality.copy()
+    meta_rows: list[dict] = []
+    for row in out.itertuples(index=False):
+        key = _t0_quality_history_match_key(getattr(row, "ts_code", ""), getattr(row, "signal_type", ""), getattr(row, "trigger_time", None))
+        meta_rows.append(execution_meta_map.get(key, {}))
+    meta_df = pd.DataFrame(meta_rows)
+    if not meta_df.empty:
+        for col in meta_df.columns:
+            out[col] = meta_df[col]
+    return out
+
+
+def _build_t0_quality_drift_split(
+    recent_df: pd.DataFrame,
+    baseline_df: pd.DataFrame,
+    group_columns: list[str],
+    output_keys: list[str],
+) -> list[dict]:
+    if not group_columns or not output_keys or len(group_columns) != len(output_keys):
+        return []
+
+    def _prep(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=group_columns + ["direction_correct", "ret_bps"])
+        out = df.copy()
+        out["direction_correct"] = out["direction_correct"].astype(bool)
+        out["ret_bps"] = pd.to_numeric(out["ret_bps"], errors="coerce")
+        for col in group_columns:
+            if col not in out.columns:
+                out[col] = ""
+            out[col] = out[col].fillna("").astype(str)
+        return out
+
+    def _agg(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=group_columns + [f"{prefix}_count", f"{prefix}_precision_5m", f"{prefix}_avg_ret_bps"])
+        grp = (
+            df.groupby(group_columns, dropna=False)
+            .agg(
+                count=("direction_correct", "size"),
+                precision_5m=("direction_correct", "mean"),
+                avg_ret_bps=("ret_bps", "mean"),
+            )
+            .reset_index()
+        )
+        grp = grp.rename(
+            columns={
+                "count": f"{prefix}_count",
+                "precision_5m": f"{prefix}_precision_5m",
+                "avg_ret_bps": f"{prefix}_avg_ret_bps",
+            }
+        )
+        return grp
+
+    recent_prepped = _prep(recent_df)
+    baseline_prepped = _prep(baseline_df)
+    merged = _agg(recent_prepped, "recent").merge(
+        _agg(baseline_prepped, "baseline"),
+        on=group_columns,
+        how="outer",
+    ).fillna(
+        {
+            "recent_count": 0,
+            "baseline_count": 0,
+        }
+    )
+    rows: list[dict] = []
+    for record in merged.to_dict(orient="records"):
+        item = {out_key: str(record.get(src_col, "") or "") for src_col, out_key in zip(group_columns, output_keys)}
+        recent_precision = _round_or_none(record.get("recent_precision_5m"), 4)
+        baseline_precision = _round_or_none(record.get("baseline_precision_5m"), 4)
+        item.update(
+            {
+                "recent_count": int(record.get("recent_count", 0) or 0),
+                "recent_precision_5m": recent_precision,
+                "recent_avg_ret_bps": _round_or_none(record.get("recent_avg_ret_bps"), 2),
+                "baseline_count": int(record.get("baseline_count", 0) or 0),
+                "baseline_precision_5m": baseline_precision,
+                "baseline_avg_ret_bps": _round_or_none(record.get("baseline_avg_ret_bps"), 2),
+                "precision_drop": _round_or_none((baseline_precision - recent_precision), 4)
+                if baseline_precision is not None and recent_precision is not None
+                else None,
+            }
+        )
+        rows.append(item)
+    rows.sort(
+        key=lambda x: (
+            -int(x.get("recent_count", 0) or 0),
+            -int(x.get("baseline_count", 0) or 0),
+            *(str(x.get(k, "") or "") for k in output_keys),
+        )
+    )
+    return rows
+
+
+def _build_t0_execution_calibration_payload(
+    action_level_rows: list[dict],
+    exec_status_rows: list[dict],
+    shadow_mode_rows: list[dict],
+    hard_block_reason_rows: list[dict],
+) -> dict:
+    def _fmt_pct(value) -> str:
+        num = _round_or_none(value, 4)
+        if num is None:
+            return "--"
+        return f"{num * 100.0:.1f}%"
+
+    def _fmt_drop(value) -> str:
+        num = _round_or_none(value, 4)
+        if num is None:
+            return "--"
+        return f"{num * 100.0:.1f}%"
+
+    def _add_item(
+        out: list[dict],
+        *,
+        group: str,
+        bucket: str,
+        label: str,
+        severity: str,
+        action: str,
+        title: str,
+        message: str,
+        row: dict,
+    ) -> None:
+        out.append(
+            {
+                "group": group,
+                "bucket": bucket,
+                "label": label,
+                "severity": severity,
+                "action": action,
+                "title": title,
+                "message": message,
+                "recent_count": int(row.get("recent_count", 0) or 0),
+                "recent_precision_5m": _round_or_none(row.get("recent_precision_5m"), 4),
+                "recent_avg_ret_bps": _round_or_none(row.get("recent_avg_ret_bps"), 2),
+                "baseline_count": int(row.get("baseline_count", 0) or 0),
+                "baseline_precision_5m": _round_or_none(row.get("baseline_precision_5m"), 4),
+                "baseline_avg_ret_bps": _round_or_none(row.get("baseline_avg_ret_bps"), 2),
+                "precision_drop": _round_or_none(row.get("precision_drop"), 4),
+            }
+        )
+
+    suggestions: list[dict] = []
+    action_level_labels = {
+        "block": "阻断档",
+        "observe": "观察档",
+        "test": "试单档",
+        "execute": "执行档",
+        "aggressive": "激进档",
+    }
+    exec_status_labels = {
+        "hard_block": "硬阻断",
+        "shadow_only": "影子档",
+        "block": "阻断档",
+        "observe": "观察档",
+        "test": "试单档",
+        "execute": "执行档",
+        "aggressive": "激进档",
+    }
+    shadow_mode_labels = {
+        "shadow_only": "影子路径",
+        "live_path": "实盘路径",
+    }
+    hard_block_reason_labels = {
+        "qty_too_small_after_multiplier": "手数不足",
+        "action_level_block": "执行层分数阻断",
+        "spoofing_suspected": "疑似骗单",
+        "wash_trade_spread_abnormal": "对倒且价差异常",
+        "limit_magnet": "涨跌停磁吸区",
+        "board_seal_env": "封板环境",
+        "risk_warning": "风险警示股",
+        "volume_drought_low_liquidity": "量枯且低流动性",
+        "no_tradable_t_inventory": "无可T底仓",
+        "no_cash_available_for_positive_t": "正T缺少现金",
+        "t_count_exhausted": "当日T次数已满",
+        "action_qty_below_lot": "动作不足1手",
+    }
+    relaxable_hard_block_actions = {
+        "qty_too_small_after_multiplier": "relax_qty_floor",
+        "action_level_block": "lower_block_threshold",
+    }
+
+    for row in (action_level_rows or []):
+        bucket = str(row.get("action_level") or "").strip().lower()
+        label = action_level_labels.get(bucket, bucket or "--")
+        recent_count = int(row.get("recent_count", 0) or 0)
+        baseline_count = int(row.get("baseline_count", 0) or 0)
+        recent_precision = _round_or_none(row.get("recent_precision_5m"), 4)
+        baseline_precision = _round_or_none(row.get("baseline_precision_5m"), 4)
+        precision_drop = _round_or_none(row.get("precision_drop"), 4)
+        if recent_count < 6 or recent_precision is None:
+            continue
+        if bucket in {"test", "execute", "aggressive"} and baseline_count >= 6 and precision_drop is not None and precision_drop >= 0.08:
+            severity = "high" if precision_drop >= 0.12 or recent_precision <= 0.45 else "medium"
+            _add_item(
+                suggestions,
+                group="action_level",
+                bucket=bucket,
+                label=label,
+                severity=severity,
+                action="tighten",
+                title=f"{label}近期胜率回落",
+                message=f"最近5m胜率 {_fmt_pct(recent_precision)}，低于基线 {_fmt_pct(baseline_precision)}，回落 {_fmt_drop(precision_drop)}；建议先收紧该档位阈值或下调 qty multiplier。",
+                row=row,
+            )
+        elif bucket in {"observe", "test"} and baseline_count >= 6 and precision_drop is not None and precision_drop <= -0.08 and recent_precision >= 0.58:
+            _add_item(
+                suggestions,
+                group="action_level",
+                bucket=bucket,
+                label=label,
+                severity="watch",
+                action="promote_review",
+                title=f"{label}近期表现改善",
+                message=f"最近5m胜率 {_fmt_pct(recent_precision)}，优于基线 {_fmt_pct(baseline_precision)}，改善 {_fmt_drop(abs(precision_drop))}；可复核是否放宽到更高执行档。",
+                row=row,
+            )
+
+    for row in (exec_status_rows or []):
+        bucket = str(row.get("exec_status") or "").strip().lower()
+        label = exec_status_labels.get(bucket, bucket or "--")
+        recent_count = int(row.get("recent_count", 0) or 0)
+        recent_precision = _round_or_none(row.get("recent_precision_5m"), 4)
+        baseline_count = int(row.get("baseline_count", 0) or 0)
+        baseline_precision = _round_or_none(row.get("baseline_precision_5m"), 4)
+        precision_drop = _round_or_none(row.get("precision_drop"), 4)
+        if recent_count < 6 or recent_precision is None:
+            continue
+        if bucket == "hard_block" and recent_precision >= 0.60:
+            _add_item(
+                suggestions,
+                group="exec_status",
+                bucket=bucket,
+                label=label,
+                severity="watch",
+                action="loosen_review",
+                title="硬阻断样本事后表现偏强",
+                message=f"最近被硬阻断样本 5m 胜率仍有 {_fmt_pct(recent_precision)}；建议抽样检查阻断原因是否过严。",
+                row=row,
+            )
+        elif bucket in {"test", "execute"} and baseline_count >= 6 and precision_drop is not None and precision_drop >= 0.08:
+            severity = "high" if precision_drop >= 0.12 or recent_precision <= 0.45 else "medium"
+            _add_item(
+                suggestions,
+                group="exec_status",
+                bucket=bucket,
+                label=label,
+                severity=severity,
+                action="tighten",
+                title=f"{label}近期退化",
+                message=f"最近5m胜率 {_fmt_pct(recent_precision)}，低于基线 {_fmt_pct(baseline_precision)}；建议优先复核该执行路径的降档/放行规则。",
+                row=row,
+            )
+
+    shadow_rows_map = {
+        str(row.get("shadow_mode") or "").strip().lower(): row
+        for row in (shadow_mode_rows or [])
+        if isinstance(row, dict)
+    }
+    for row in (shadow_mode_rows or []):
+        bucket = str(row.get("shadow_mode") or "").strip().lower()
+        label = shadow_mode_labels.get(bucket, bucket or "--")
+        recent_count = int(row.get("recent_count", 0) or 0)
+        recent_precision = _round_or_none(row.get("recent_precision_5m"), 4)
+        baseline_count = int(row.get("baseline_count", 0) or 0)
+        baseline_precision = _round_or_none(row.get("baseline_precision_5m"), 4)
+        precision_drop = _round_or_none(row.get("precision_drop"), 4)
+        if recent_count < 6 or recent_precision is None:
+            continue
+        if bucket == "live_path" and baseline_count >= 6 and precision_drop is not None and precision_drop >= 0.08:
+            severity = "high" if precision_drop >= 0.12 or recent_precision <= 0.45 else "medium"
+            _add_item(
+                suggestions,
+                group="shadow_mode",
+                bucket=bucket,
+                label=label,
+                severity=severity,
+                action="tighten_live",
+                title="实盘路径近期回落",
+                message=f"实盘路径最近5m胜率 {_fmt_pct(recent_precision)}，较基线回落 {_fmt_drop(precision_drop)}；建议先收紧实盘放行口径。",
+                row=row,
+            )
+        elif bucket == "shadow_only" and baseline_count >= 6 and precision_drop is not None and precision_drop <= -0.08 and recent_precision >= 0.58:
+            _add_item(
+                suggestions,
+                group="shadow_mode",
+                bucket=bucket,
+                label=label,
+                severity="watch",
+                action="promote_review",
+                title="影子路径近期更强",
+                message=f"影子路径最近5m胜率 {_fmt_pct(recent_precision)}，优于基线 {_fmt_pct(baseline_precision)}；可复核哪些降档/封顶逻辑值得放宽。",
+                row=row,
+            )
+
+    shadow_only_row = shadow_rows_map.get("shadow_only")
+    live_path_row = shadow_rows_map.get("live_path")
+    shadow_precision = _round_or_none((shadow_only_row or {}).get("recent_precision_5m"), 4)
+    live_precision = _round_or_none((live_path_row or {}).get("recent_precision_5m"), 4)
+    shadow_count = int((shadow_only_row or {}).get("recent_count", 0) or 0)
+    live_count = int((live_path_row or {}).get("recent_count", 0) or 0)
+    if shadow_precision is not None and live_precision is not None and shadow_count >= 6 and live_count >= 6:
+        diff = shadow_precision - live_precision
+        if diff >= 0.08:
+            _add_item(
+                suggestions,
+                group="shadow_mode",
+                bucket="shadow_only_vs_live_path",
+                label="影子优于实盘",
+                severity="watch",
+                action="promote_review",
+                title="影子路径显著优于实盘",
+                message=f"影子路径最近5m胜率 {_fmt_pct(shadow_precision)}，实盘路径 {_fmt_pct(live_precision)}；建议优先检查降档和硬阻断是否把优质样本挡掉了。",
+                row={
+                    "recent_count": min(shadow_count, live_count),
+                    "recent_precision_5m": shadow_precision,
+                    "recent_avg_ret_bps": (shadow_only_row or {}).get("recent_avg_ret_bps"),
+                    "baseline_count": min(int((shadow_only_row or {}).get("baseline_count", 0) or 0), int((live_path_row or {}).get("baseline_count", 0) or 0)),
+                    "baseline_precision_5m": live_precision,
+                    "baseline_avg_ret_bps": (live_path_row or {}).get("recent_avg_ret_bps"),
+                    "precision_drop": round(diff, 4),
+                },
+            )
+
+    for row in (hard_block_reason_rows or []):
+        bucket = str(row.get("hard_block_reason") or "").strip().lower()
+        if not bucket:
+            continue
+        label = hard_block_reason_labels.get(bucket, bucket)
+        recent_count = int(row.get("recent_count", 0) or 0)
+        recent_precision = _round_or_none(row.get("recent_precision_5m"), 4)
+        baseline_count = int(row.get("baseline_count", 0) or 0)
+        baseline_precision = _round_or_none(row.get("baseline_precision_5m"), 4)
+        precision_drop = _round_or_none(row.get("precision_drop"), 4)
+        if recent_count < 6 or recent_precision is None or recent_precision < 0.58:
+            continue
+        if bucket in relaxable_hard_block_actions:
+            action = relaxable_hard_block_actions[bucket]
+            severity = "medium" if recent_precision >= 0.65 else "watch"
+            if bucket == "qty_too_small_after_multiplier":
+                msg = f"{label}阻断样本最近5m胜率 {_fmt_pct(recent_precision)}；可先把 live qty scale 小幅上调，观察是否能释放优质小样本。"
+                title = "手数不足阻断可纳入白名单"
+            else:
+                msg = f"{label}样本最近5m胜率 {_fmt_pct(recent_precision)}；可先小幅下调 block 阈值，观察是否仍能控制风险。"
+                title = "分数阻断可纳入白名单"
+            _add_item(
+                suggestions,
+                group="hard_block_reason",
+                bucket=bucket,
+                label=label,
+                severity=severity,
+                action=action,
+                title=title,
+                message=msg,
+                row=row,
+            )
+        else:
+            msg = f"{label}阻断样本最近5m胜率 {_fmt_pct(recent_precision)}；该原因属于高风险语义，建议保留人工复核，不直接自动放宽。"
+            if baseline_count >= 6 and baseline_precision is not None and precision_drop is not None and precision_drop >= 0.08:
+                msg = f"{label}阻断样本最近5m胜率 {_fmt_pct(recent_precision)}，但较基线仍回落 {_fmt_drop(precision_drop)}；建议继续人工复核，不纳入自动白名单。"
+            _add_item(
+                suggestions,
+                group="hard_block_reason",
+                bucket=bucket,
+                label=label,
+                severity="watch",
+                action="manual_review",
+                title="硬阻断需人工复核",
+                message=msg,
+                row=row,
+            )
+
+    severity_rank = {"high": 0, "medium": 1, "watch": 2}
+    suggestions.sort(
+        key=lambda x: (
+            severity_rank.get(str(x.get("severity") or "watch"), 9),
+            -int(x.get("recent_count", 0) or 0),
+            -abs(float(x.get("precision_drop", 0) or 0)),
+            str(x.get("group") or ""),
+            str(x.get("bucket") or ""),
+        )
+    )
+    summary = {
+        "suggestion_count": len(suggestions),
+        "high_count": sum(1 for item in suggestions if str(item.get("severity") or "") == "high"),
+        "medium_count": sum(1 for item in suggestions if str(item.get("severity") or "") == "medium"),
+        "watch_count": sum(1 for item in suggestions if str(item.get("severity") or "") == "watch"),
+    }
+    return {
+        "enabled": True,
+        "summary": summary,
+        "items": suggestions[:12],
+    }
+
+
+def _collect_t0_execution_quality_splits(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    days: int,
+) -> dict:
+    d = max(1, int(days or 3))
+    recent_quality_rows = conn.execute(
+        f"""
+        SELECT
+            ts_code,
+            signal_type,
+            trigger_time,
+            COALESCE(channel, 'unknown') AS channel,
+            COALESCE(signal_source, 'unknown') AS signal_source,
+            direction_correct,
+            ret_bps
+        FROM t0_signal_quality
+        WHERE eval_horizon_sec = 300
+          AND created_at >= CURRENT_TIMESTAMP - INTERVAL '{d} days'
+        """
+    ).fetchall()
+    baseline_quality_rows = conn.execute(
+        """
+        SELECT
+            ts_code,
+            signal_type,
+            trigger_time,
+            COALESCE(channel, 'unknown') AS channel,
+            COALESCE(signal_source, 'unknown') AS signal_source,
+            direction_correct,
+            ret_bps
+        FROM t0_signal_quality
+        WHERE eval_horizon_sec = 300
+          AND created_at BETWEEN CURRENT_TIMESTAMP - INTERVAL '7 days'
+                              AND CURRENT_TIMESTAMP - INTERVAL '3 days'
+        """
+    ).fetchall()
+    recent_quality_df = pd.DataFrame(
+        recent_quality_rows,
+        columns=[
+            "ts_code",
+            "signal_type",
+            "trigger_time",
+            "channel",
+            "signal_source",
+            "direction_correct",
+            "ret_bps",
+        ],
+    )
+    baseline_quality_df = pd.DataFrame(
+        baseline_quality_rows,
+        columns=[
+            "ts_code",
+            "signal_type",
+            "trigger_time",
+            "channel",
+            "signal_source",
+            "direction_correct",
+            "ret_bps",
+        ],
+    )
+    history_where_sql = "triggered_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'"
+    recent_quality_df = _attach_t0_execution_meta_to_quality_df(conn, recent_quality_df, history_where_sql=history_where_sql)
+    baseline_quality_df = _attach_t0_execution_meta_to_quality_df(conn, baseline_quality_df, history_where_sql=history_where_sql)
+    quality_split_by_channel_source = _build_t0_quality_drift_split(
+        recent_quality_df,
+        baseline_quality_df,
+        ["channel", "signal_source"],
+        ["channel", "signal_source"],
+    )
+    quality_split_by_action_level = _build_t0_quality_drift_split(
+        recent_quality_df,
+        baseline_quality_df,
+        ["action_level_after_downgrade"],
+        ["action_level"],
+    )
+    quality_split_by_exec_status = _build_t0_quality_drift_split(
+        recent_quality_df,
+        baseline_quality_df,
+        ["exec_status"],
+        ["exec_status"],
+    )
+    quality_split_by_shadow_mode = _build_t0_quality_drift_split(
+        recent_quality_df,
+        baseline_quality_df,
+        ["shadow_mode"],
+        ["shadow_mode"],
+    )
+    quality_split_by_hard_block_reason = _build_t0_quality_drift_split(
+        recent_quality_df,
+        baseline_quality_df,
+        ["hard_block_reason_primary"],
+        ["hard_block_reason"],
+    )
+    execution_calibration = _build_t0_execution_calibration_payload(
+        quality_split_by_action_level,
+        quality_split_by_exec_status,
+        quality_split_by_shadow_mode,
+        quality_split_by_hard_block_reason,
+    )
+    return {
+        "quality_split_by_channel_source": quality_split_by_channel_source,
+        "quality_split_by_action_level": quality_split_by_action_level,
+        "quality_split_by_exec_status": quality_split_by_exec_status,
+        "quality_split_by_shadow_mode": quality_split_by_shadow_mode,
+        "quality_split_by_hard_block_reason": quality_split_by_hard_block_reason,
+        "execution_calibration": execution_calibration,
+    }
+
+
+def build_t0_execution_calibration_snapshot(days: int = 3) -> dict:
+    checked_at = datetime.datetime.now()
+    d = max(1, int(days or 3))
+    try:
+        with _ro_conn_ctx() as conn:
+            payload = _collect_t0_execution_quality_splits(conn, days=d)
+        return {
+            "ok": True,
+            "checked_at": checked_at.isoformat(),
+            "window_days": d,
+            "quality_split_by_action_level": payload.get("quality_split_by_action_level", []),
+            "quality_split_by_exec_status": payload.get("quality_split_by_exec_status", []),
+            "quality_split_by_shadow_mode": payload.get("quality_split_by_shadow_mode", []),
+            "quality_split_by_hard_block_reason": payload.get("quality_split_by_hard_block_reason", []),
+            "calibration": payload.get("execution_calibration", {"enabled": True, "summary": {}, "items": []}),
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "checked_at": checked_at.isoformat(),
+            "window_days": d,
+            "message": f"t0 execution calibration snapshot failed: {e}",
+            "calibration": {"enabled": True, "summary": {}, "items": []},
+        }
+
+
 def _compact_positive_rebuild_entry(
     quality_obj: Optional[dict],
     *,
@@ -4506,7 +5129,7 @@ def get_t0_quality_summary(hours: int = Query(24, ge=1, le=168)):
         h = int(hours)
         rows = conn.execute(
             f"""
-            SELECT signal_type, market_phase, eval_horizon_sec, ret_bps, mfe_bps, mae_bps, direction_correct,
+            SELECT ts_code, signal_type, trigger_time, market_phase, eval_horizon_sec, ret_bps, mfe_bps, mae_bps, direction_correct,
                    COALESCE(channel, '') AS channel,
                    COALESCE(signal_source, '') AS signal_source
             FROM t0_signal_quality
@@ -4516,7 +5139,9 @@ def get_t0_quality_summary(hours: int = Query(24, ge=1, le=168)):
         df_quality = pd.DataFrame(
             rows,
             columns=[
+                "ts_code",
                 "signal_type",
+                "trigger_time",
                 "market_phase",
                 "eval_horizon_sec",
                 "ret_bps",
@@ -4526,6 +5151,11 @@ def get_t0_quality_summary(hours: int = Query(24, ge=1, le=168)):
                 "channel",
                 "signal_source",
             ],
+        )
+        df_quality = _attach_t0_execution_meta_to_quality_df(
+            conn,
+            df_quality,
+            history_where_sql=f"triggered_at >= CURRENT_TIMESTAMP - INTERVAL '{h} hours'",
         )
 
         sig_rows = conn.execute(
@@ -4570,75 +5200,13 @@ def get_t0_drift_status(days: int = Query(3, ge=1, le=30)):
             ORDER BY checked_at DESC
             """
         ).fetchall()
-        split_rows = conn.execute(
-            f"""
-            WITH recent AS (
-                SELECT
-                    COALESCE(channel, 'unknown') AS channel,
-                    COALESCE(signal_source, 'unknown') AS signal_source,
-                    COUNT(*) AS recent_cnt,
-                    AVG(CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END) AS recent_precision,
-                    AVG(ret_bps) AS recent_ret_bps
-                FROM t0_signal_quality
-                WHERE eval_horizon_sec = 300
-                  AND created_at >= CURRENT_TIMESTAMP - INTERVAL '{d} days'
-                GROUP BY 1,2
-            ),
-            baseline AS (
-                SELECT
-                    COALESCE(channel, 'unknown') AS channel,
-                    COALESCE(signal_source, 'unknown') AS signal_source,
-                    COUNT(*) AS base_cnt,
-                    AVG(CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END) AS base_precision,
-                    AVG(ret_bps) AS base_ret_bps
-                FROM t0_signal_quality
-                WHERE eval_horizon_sec = 300
-                  AND created_at BETWEEN CURRENT_TIMESTAMP - INTERVAL '7 days'
-                                      AND CURRENT_TIMESTAMP - INTERVAL '3 days'
-                GROUP BY 1,2
-            )
-            SELECT
-                COALESCE(r.channel, b.channel) AS channel,
-                COALESCE(r.signal_source, b.signal_source) AS signal_source,
-                COALESCE(r.recent_cnt, 0) AS recent_cnt,
-                r.recent_precision,
-                r.recent_ret_bps,
-                COALESCE(b.base_cnt, 0) AS base_cnt,
-                b.base_precision,
-                b.base_ret_bps
-            FROM recent r
-            FULL OUTER JOIN baseline b
-              ON r.channel = b.channel
-             AND r.signal_source = b.signal_source
-            ORDER BY recent_cnt DESC, base_cnt DESC, channel, signal_source
-            """
-        ).fetchall()
-        quality_split = []
-        for sr in split_rows:
-            channel = str(sr[0] or "unknown")
-            signal_source = str(sr[1] or "unknown")
-            recent_cnt = int(sr[2] or 0)
-            recent_precision = _round_or_none(sr[3], 4)
-            recent_ret_bps = _round_or_none(sr[4], 2)
-            base_cnt = int(sr[5] or 0)
-            base_precision = _round_or_none(sr[6], 4)
-            base_ret_bps = _round_or_none(sr[7], 2)
-            precision_drop = None
-            if base_precision is not None and recent_precision is not None:
-                precision_drop = _round_or_none(base_precision - recent_precision, 4)
-            quality_split.append(
-                {
-                    "channel": channel,
-                    "signal_source": signal_source,
-                    "recent_count": recent_cnt,
-                    "recent_precision_5m": recent_precision,
-                    "recent_avg_ret_bps": recent_ret_bps,
-                    "baseline_count": base_cnt,
-                    "baseline_precision_5m": base_precision,
-                    "baseline_avg_ret_bps": base_ret_bps,
-                    "precision_drop": precision_drop,
-                }
-            )
+        split_payload = _collect_t0_execution_quality_splits(conn, days=d)
+        quality_split = split_payload.get("quality_split_by_channel_source", [])
+        quality_split_action_level = split_payload.get("quality_split_by_action_level", [])
+        quality_split_exec_status = split_payload.get("quality_split_by_exec_status", [])
+        quality_split_shadow_mode = split_payload.get("quality_split_by_shadow_mode", [])
+        quality_split_hard_block_reason = split_payload.get("quality_split_by_hard_block_reason", [])
+        execution_calibration = split_payload.get("execution_calibration", {"enabled": True, "summary": {}, "items": []})
         if not rows:
             return {
                 "days": d,
@@ -4648,6 +5216,11 @@ def get_t0_drift_status(days: int = Query(3, ge=1, le=30)):
                 "latest": {},
                 "alerts": 0,
                 "quality_split_by_channel_source": quality_split,
+                "quality_split_by_action_level": quality_split_action_level,
+                "quality_split_by_exec_status": quality_split_exec_status,
+                "quality_split_by_shadow_mode": quality_split_shadow_mode,
+                "quality_split_by_hard_block_reason": quality_split_hard_block_reason,
+                "execution_calibration": execution_calibration,
             }
         latest_at = rows[0][0]
         latest_rows = [r for r in rows if r[0] == latest_at]
@@ -4669,6 +5242,11 @@ def get_t0_drift_status(days: int = Query(3, ge=1, le=30)):
             "latest": latest,
             "alerts": sum(1 for r in rows if bool(r[8])),
             "quality_split_by_channel_source": quality_split,
+            "quality_split_by_action_level": quality_split_action_level,
+            "quality_split_by_exec_status": quality_split_exec_status,
+            "quality_split_by_shadow_mode": quality_split_shadow_mode,
+            "quality_split_by_hard_block_reason": quality_split_hard_block_reason,
+            "execution_calibration": execution_calibration,
         }
 
 

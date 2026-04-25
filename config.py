@@ -505,7 +505,7 @@ T0_SIGNAL_CONFIG = {
         "enabled": os.getenv("T0_DO_NOT_T_ENV_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
         "block_session_policies": tuple(
             x.strip()
-            for x in os.getenv("T0_DO_NOT_T_BLOCK_POLICIES", "auction_pause,open_strict,lunch_pause,close_reduce").split(",")
+            for x in os.getenv("T0_DO_NOT_T_BLOCK_POLICIES", "auction_pause,lunch_pause,close_reduce").split(",")
             if x.strip()
         ),
         "block_limit_magnet": os.getenv("T0_DO_NOT_T_LIMIT_MAGNET", "1").lower() in ("1", "true", "yes", "on"),
@@ -513,9 +513,9 @@ T0_SIGNAL_CONFIG = {
         "block_risk_warning": os.getenv("T0_DO_NOT_T_RISK_WARNING", "1").lower() in ("1", "true", "yes", "on"),
         "block_ipo_early": os.getenv("T0_DO_NOT_T_IPO_EARLY", "1").lower() in ("1", "true", "yes", "on"),
         "block_volume_drought_spread": os.getenv("T0_DO_NOT_T_DROUGHT_SPREAD", "1").lower() in ("1", "true", "yes", "on"),
-        "block_theme_acceleration": os.getenv("T0_DO_NOT_T_THEME_ACCEL", "1").lower() in ("1", "true", "yes", "on"),
-        "block_breadth_climax": os.getenv("T0_DO_NOT_T_BREADTH_CLIMAX", "1").lower() in ("1", "true", "yes", "on"),
-        "require_whitelist_for_execute": os.getenv("T0_DO_NOT_T_REQUIRE_WHITELIST", "1").lower() in ("1", "true", "yes", "on"),
+        "block_theme_acceleration": os.getenv("T0_DO_NOT_T_THEME_ACCEL", "0").lower() in ("1", "true", "yes", "on"),
+        "block_breadth_climax": os.getenv("T0_DO_NOT_T_BREADTH_CLIMAX", "0").lower() in ("1", "true", "yes", "on"),
+        "require_whitelist_for_execute": os.getenv("T0_DO_NOT_T_REQUIRE_WHITELIST", "0").lower() in ("1", "true", "yes", "on"),
         "theme_accel_score": float(os.getenv("T0_DO_NOT_T_THEME_ACCEL_SCORE", "45")),
         "theme_climax_breadth": float(os.getenv("T0_DO_NOT_T_CLIMAX_BREADTH", "0.45")),
         "theme_climax_leader_pct": float(os.getenv("T0_DO_NOT_T_CLIMAX_LEADER_PCT", "7.0")),
@@ -540,6 +540,35 @@ T0_SIGNAL_CONFIG = {
         "reverse_observe_on_risk_on": os.getenv("T0_INDEX_GUARD_REV_OBSERVE_ON_RISK_ON", "1").lower() in ("1", "true", "yes", "on"),
         "reverse_distribution_min_confirms": int(os.getenv("T0_INDEX_GUARD_REV_MIN_DISTRIBUTION", "2")),
         "reverse_super_outflow_bps": float(os.getenv("T0_INDEX_GUARD_REV_SUPER_OUT_BPS", "-80")),
+    },
+    "execution_layer": {
+        "enabled": os.getenv("T0_EXECUTION_LAYER_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
+        "score_thresholds": {
+            "block": float(os.getenv("T0_EXEC_SCORE_BLOCK_MAX", "55")),
+            "observe": float(os.getenv("T0_EXEC_SCORE_OBSERVE_MAX", "65")),
+            "test": float(os.getenv("T0_EXEC_SCORE_TEST_MAX", "75")),
+            "execute": float(os.getenv("T0_EXEC_SCORE_EXECUTE_MAX", "88")),
+        },
+        "action_qty_multiplier": {
+            "block": float(os.getenv("T0_EXEC_QTY_BLOCK", "0.00")),
+            "observe": float(os.getenv("T0_EXEC_QTY_OBSERVE", "0.00")),
+            "test": float(os.getenv("T0_EXEC_QTY_TEST", "0.10")),
+            "execute": float(os.getenv("T0_EXEC_QTY_EXECUTE", "0.25")),
+            "aggressive": float(os.getenv("T0_EXEC_QTY_AGGRESSIVE", "0.40")),
+        },
+        "enable_aggressive_live": os.getenv("T0_EXEC_ENABLE_AGGRESSIVE_LIVE", "0").lower() in ("1", "true", "yes", "on"),
+        "aggressive_shadow_only": os.getenv("T0_EXEC_AGGRESSIVE_SHADOW_ONLY", "1").lower() in ("1", "true", "yes", "on"),
+        "soft_downgrade": {
+            "risk_off_qty_multiplier": float(os.getenv("T0_EXEC_RISK_OFF_QTY_MULT", "0.70")),
+            "risk_on_qty_multiplier": float(os.getenv("T0_EXEC_RISK_ON_QTY_MULT", "0.70")),
+            "open_strict_qty_multiplier": float(os.getenv("T0_EXEC_OPEN_STRICT_QTY_MULT", "0.70")),
+            "open_strict_cap_level": os.getenv("T0_EXEC_OPEN_STRICT_CAP_LEVEL", "test"),
+            "reverse_trend_guard_qty_multiplier": float(os.getenv("T0_EXEC_REV_TREND_GUARD_QTY_MULT", "0.60")),
+            "reverse_theme_guard_qty_multiplier": float(os.getenv("T0_EXEC_REV_THEME_GUARD_QTY_MULT", "0.60")),
+            "reverse_hard_protect_cap_level": os.getenv("T0_EXEC_REV_HARD_PROTECT_CAP_LEVEL", "observe"),
+            "theme_acceleration_qty_multiplier": float(os.getenv("T0_EXEC_THEME_ACCEL_QTY_MULT", "0.70")),
+            "breadth_climax_qty_multiplier": float(os.getenv("T0_EXEC_BREADTH_CLIMAX_QTY_MULT", "0.70")),
+        },
     },
     "quality": {
         "horizons_sec": [60, 180, 300],

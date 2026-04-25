@@ -1,10 +1,754 @@
 """gm runtime signal engine, state machine, and microstructure analysis."""
 from __future__ import annotations
 
+from enum import Enum
+
 import backend.realtime.gm_runtime.common as gm_common
 from .common import *  # noqa: F401,F403
 from .position_state import *  # noqa: F401,F403
 from .observe_service import *  # noqa: F401,F403
+try:
+    from config import REALTIME_RUNTIME_STATE_CONFIG as _RUNTIME_STATE_CFG
+except Exception:
+    _RUNTIME_STATE_CFG = {}
+try:
+    import redis as _redis_mod
+except Exception:
+    _redis_mod = None
+
+
+class T0ActionLevel(str, Enum):
+    BLOCK = "block"
+    OBSERVE = "observe"
+    TEST = "test"
+    EXECUTE = "execute"
+    AGGRESSIVE = "aggressive"
+
+
+_T0_EXEC_CFG = _T0_CFG.get('execution_layer', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_EXEC_ENABLED = bool(_T0_EXEC_CFG.get('enabled', True))
+_T0_EXEC_SCORE_CFG = _T0_EXEC_CFG.get('score_thresholds', {}) if isinstance(_T0_EXEC_CFG.get('score_thresholds'), dict) else {}
+_T0_EXEC_QTY_CFG = _T0_EXEC_CFG.get('action_qty_multiplier', {}) if isinstance(_T0_EXEC_CFG.get('action_qty_multiplier'), dict) else {}
+_T0_EXEC_SOFT_CFG = _T0_EXEC_CFG.get('soft_downgrade', {}) if isinstance(_T0_EXEC_CFG.get('soft_downgrade'), dict) else {}
+_T0_EXEC_ENABLE_AGGRESSIVE_LIVE = bool(_T0_EXEC_CFG.get('enable_aggressive_live', False))
+_T0_EXEC_AGGRESSIVE_SHADOW_ONLY = bool(_T0_EXEC_CFG.get('aggressive_shadow_only', True))
+_T0_EXEC_SCORE_BLOCK_MAX = float(_T0_EXEC_SCORE_CFG.get('block', 55) or 55)
+_T0_EXEC_SCORE_OBSERVE_MAX = float(_T0_EXEC_SCORE_CFG.get('observe', 65) or 65)
+_T0_EXEC_SCORE_TEST_MAX = float(_T0_EXEC_SCORE_CFG.get('test', 75) or 75)
+_T0_EXEC_SCORE_EXECUTE_MAX = float(_T0_EXEC_SCORE_CFG.get('execute', 88) or 88)
+ACTION_QTY_MULTIPLIER = {
+    T0ActionLevel.BLOCK.value: float(_T0_EXEC_QTY_CFG.get('block', 0.00) or 0.00),
+    T0ActionLevel.OBSERVE.value: float(_T0_EXEC_QTY_CFG.get('observe', 0.00) or 0.00),
+    T0ActionLevel.TEST.value: float(_T0_EXEC_QTY_CFG.get('test', 0.10) or 0.10),
+    T0ActionLevel.EXECUTE.value: float(_T0_EXEC_QTY_CFG.get('execute', 0.25) or 0.25),
+    T0ActionLevel.AGGRESSIVE.value: float(_T0_EXEC_QTY_CFG.get('aggressive', 0.40) or 0.40),
+}
+ACTION_LEVEL_ORDER = {
+    T0ActionLevel.BLOCK.value: 0,
+    T0ActionLevel.OBSERVE.value: 1,
+    T0ActionLevel.TEST.value: 2,
+    T0ActionLevel.EXECUTE.value: 3,
+    T0ActionLevel.AGGRESSIVE.value: 4,
+}
+_T0_EXEC_OPEN_STRICT_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('open_strict_qty_multiplier', 0.70) or 0.70)
+_T0_EXEC_OPEN_STRICT_CAP_LEVEL = str(_T0_EXEC_SOFT_CFG.get('open_strict_cap_level', T0ActionLevel.TEST.value) or T0ActionLevel.TEST.value)
+_T0_EXEC_RISK_OFF_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('risk_off_qty_multiplier', 0.70) or 0.70)
+_T0_EXEC_RISK_ON_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('risk_on_qty_multiplier', 0.70) or 0.70)
+_T0_EXEC_REV_TREND_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('reverse_trend_guard_qty_multiplier', 0.60) or 0.60)
+_T0_EXEC_REV_THEME_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('reverse_theme_guard_qty_multiplier', 0.60) or 0.60)
+_T0_EXEC_REV_HARD_PROTECT_CAP = str(_T0_EXEC_SOFT_CFG.get('reverse_hard_protect_cap_level', T0ActionLevel.OBSERVE.value) or T0ActionLevel.OBSERVE.value)
+_T0_EXEC_THEME_ACCEL_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('theme_acceleration_qty_multiplier', 0.70) or 0.70)
+_T0_EXEC_BREADTH_CLIMAX_QTY_MULT = float(_T0_EXEC_SOFT_CFG.get('breadth_climax_qty_multiplier', 0.70) or 0.70)
+_T0_EXEC_RUNTIME_REDIS_CFG = _RUNTIME_STATE_CFG.get('redis', {}) if isinstance(_RUNTIME_STATE_CFG, dict) else {}
+_T0_EXEC_RUNTIME_OVERRIDE_ENABLED = str(os.getenv("T0_EXEC_RUNTIME_OVERRIDE_ENABLED", "1") or "1").lower() in ("1", "true", "yes", "on")
+_T0_EXEC_RUNTIME_OVERRIDE_REFRESH_SEC = max(3.0, float(os.getenv("T0_EXEC_RUNTIME_OVERRIDE_REFRESH_SEC", "5") or 5.0))
+_T0_EXEC_RUNTIME_REDIS_URL = str(
+    _T0_EXEC_RUNTIME_REDIS_CFG.get(
+        "url",
+        os.getenv("RUNTIME_STATE_REDIS_URL", os.getenv("REALTIME_DB_WRITER_REDIS_URL", "redis://127.0.0.1:6379/0")),
+    )
+)
+_T0_EXEC_RUNTIME_REDIS_ENABLED = bool(
+    _T0_EXEC_RUNTIME_REDIS_CFG.get("enabled", os.getenv("RUNTIME_STATE_REDIS_ENABLED", "0").lower() in ("1", "true", "yes", "on"))
+)
+_T0_EXEC_RUNTIME_REDIS_KEY = f"{str(_T0_EXEC_RUNTIME_REDIS_CFG.get('key_prefix', os.getenv('RUNTIME_STATE_REDIS_KEY_PREFIX', 'quant:runtime')))}:t0:execution_override:latest"
+_t0_exec_runtime_redis = None
+_t0_exec_runtime_next_retry = 0.0
+_t0_exec_runtime_cache_at = 0.0
+_t0_exec_runtime_cache_payload: dict = {}
+
+
+def _safe_float_value(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _clamp_score(value: object, low: float = 0.0, high: float = 100.0) -> float:
+    try:
+        vv = float(value)
+    except Exception:
+        vv = float(low)
+    return max(float(low), min(float(high), vv))
+
+
+def _normalized_score(value: Optional[float], low: float, high: float, *, invert: bool = False, neutral: float = 50.0) -> float:
+    if value is None:
+        return float(neutral)
+    lo = float(low)
+    hi = float(high)
+    if hi <= lo:
+        return float(neutral)
+    ratio = (float(value) - lo) / (hi - lo)
+    ratio = max(0.0, min(1.0, ratio))
+    if invert:
+        ratio = 1.0 - ratio
+    return ratio * 100.0
+
+
+def _get_t0_exec_runtime_redis():
+    global _t0_exec_runtime_redis, _t0_exec_runtime_next_retry
+    if not (_T0_EXEC_RUNTIME_OVERRIDE_ENABLED and _T0_EXEC_RUNTIME_REDIS_ENABLED) or _redis_mod is None:
+        return None
+    if _t0_exec_runtime_redis is not None:
+        return _t0_exec_runtime_redis
+    now = time.time()
+    if now < _t0_exec_runtime_next_retry:
+        return None
+    try:
+        cli = _redis_mod.Redis.from_url(_T0_EXEC_RUNTIME_REDIS_URL, decode_responses=True)
+        cli.ping()
+        _t0_exec_runtime_redis = cli
+        return _t0_exec_runtime_redis
+    except Exception:
+        _t0_exec_runtime_next_retry = now + 5.0
+        return None
+
+
+def _load_t0_exec_runtime_override() -> dict:
+    global _t0_exec_runtime_cache_at, _t0_exec_runtime_cache_payload
+    now = time.time()
+    if _t0_exec_runtime_cache_payload and (now - _t0_exec_runtime_cache_at) < _T0_EXEC_RUNTIME_OVERRIDE_REFRESH_SEC:
+        return _t0_exec_runtime_cache_payload
+    payload: dict = {}
+    cli = _get_t0_exec_runtime_redis()
+    if cli is not None:
+        try:
+            raw = cli.get(_T0_EXEC_RUNTIME_REDIS_KEY)
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    payload = parsed
+        except Exception:
+            payload = {}
+    if not payload:
+        try:
+            import backend.realtime_runtime.runtime_jobs as _runtime_jobs
+
+            local_payload = _runtime_jobs.get_t0_execution_override_snapshot_local()
+            if isinstance(local_payload, dict):
+                payload = local_payload
+        except Exception:
+            payload = {}
+    _t0_exec_runtime_cache_payload = payload or {}
+    _t0_exec_runtime_cache_at = now
+    return _t0_exec_runtime_cache_payload
+
+
+def _get_t0_exec_effective_cfg() -> dict:
+    override = _load_t0_exec_runtime_override()
+    score_cfg = dict(_T0_EXEC_SCORE_CFG) if isinstance(_T0_EXEC_SCORE_CFG, dict) else {}
+    qty_cfg = dict(_T0_EXEC_QTY_CFG) if isinstance(_T0_EXEC_QTY_CFG, dict) else {}
+    soft_cfg = dict(_T0_EXEC_SOFT_CFG) if isinstance(_T0_EXEC_SOFT_CFG, dict) else {}
+    if isinstance(override.get('score_thresholds'), dict):
+        score_cfg.update(override.get('score_thresholds') or {})
+    if isinstance(override.get('action_qty_multiplier'), dict):
+        qty_cfg.update(override.get('action_qty_multiplier') or {})
+    if isinstance(override.get('soft_downgrade'), dict):
+        soft_cfg.update(override.get('soft_downgrade') or {})
+    return {
+        'score_thresholds': score_cfg,
+        'action_qty_multiplier': qty_cfg,
+        'soft_downgrade': soft_cfg,
+        'enable_aggressive_live': bool(override.get('enable_aggressive_live', _T0_EXEC_ENABLE_AGGRESSIVE_LIVE)),
+        'aggressive_shadow_only': bool(override.get('aggressive_shadow_only', _T0_EXEC_AGGRESSIVE_SHADOW_ONLY)),
+        'live_qty_scale': max(0.0, _safe_float_value(override.get('live_qty_scale', 1.0), 1.0)),
+        'override': override if isinstance(override, dict) else {},
+    }
+
+
+def score_to_action_level(score: float) -> str:
+    vv = _clamp_score(score)
+    cfg = _get_t0_exec_effective_cfg()
+    score_cfg = cfg.get('score_thresholds') if isinstance(cfg.get('score_thresholds'), dict) else {}
+    block_max = float(score_cfg.get('block', _T0_EXEC_SCORE_BLOCK_MAX) or _T0_EXEC_SCORE_BLOCK_MAX)
+    observe_max = float(score_cfg.get('observe', _T0_EXEC_SCORE_OBSERVE_MAX) or _T0_EXEC_SCORE_OBSERVE_MAX)
+    test_max = float(score_cfg.get('test', _T0_EXEC_SCORE_TEST_MAX) or _T0_EXEC_SCORE_TEST_MAX)
+    execute_max = float(score_cfg.get('execute', _T0_EXEC_SCORE_EXECUTE_MAX) or _T0_EXEC_SCORE_EXECUTE_MAX)
+    if vv < block_max:
+        return T0ActionLevel.BLOCK.value
+    if vv < observe_max:
+        return T0ActionLevel.OBSERVE.value
+    if vv < test_max:
+        return T0ActionLevel.TEST.value
+    if vv < execute_max:
+        return T0ActionLevel.EXECUTE.value
+    return T0ActionLevel.AGGRESSIVE.value
+
+
+def downgrade_action_level(level: str, steps: int = 1) -> str:
+    lvl = str(level or T0ActionLevel.BLOCK.value).strip().lower()
+    if lvl not in ACTION_LEVEL_ORDER:
+        lvl = T0ActionLevel.BLOCK.value
+    rank = max(0, ACTION_LEVEL_ORDER[lvl] - max(0, int(steps or 0)))
+    for name, order in ACTION_LEVEL_ORDER.items():
+        if order == rank:
+            return name
+    return T0ActionLevel.BLOCK.value
+
+
+def cap_action_level(level: str, max_level: str) -> str:
+    lvl = str(level or T0ActionLevel.BLOCK.value).strip().lower()
+    cap = str(max_level or T0ActionLevel.BLOCK.value).strip().lower()
+    if lvl not in ACTION_LEVEL_ORDER:
+        lvl = T0ActionLevel.BLOCK.value
+    if cap not in ACTION_LEVEL_ORDER:
+        cap = T0ActionLevel.BLOCK.value
+    if ACTION_LEVEL_ORDER[lvl] <= ACTION_LEVEL_ORDER[cap]:
+        return lvl
+    return cap
+
+
+def _t0_floor_to_lot(qty: float, lot_size: int) -> int:
+    lot = max(1, int(lot_size or 1))
+    try:
+        value = int(float(qty))
+    except Exception:
+        value = 0
+    if value <= 0:
+        return 0
+    return max(0, value // lot * lot)
+
+
+def _t0_distribution_confirm_count(details: dict) -> int:
+    trend_guard = details.get('trend_guard') if isinstance(details.get('trend_guard'), dict) else {}
+    theme_guard = details.get('theme_leadership_guard') if isinstance(details.get('theme_leadership_guard'), dict) else {}
+    bearish_confirms = details.get('bearish_confirms') if isinstance(details.get('bearish_confirms'), list) else []
+    return max(
+        len(bearish_confirms),
+        int(theme_guard.get('distribution_confirm_count', 0) or 0),
+        len(trend_guard.get('bearish_confirms') or []),
+    )
+
+
+def _compute_positive_t_action_score(signal: dict, details: dict) -> dict:
+    inventory = details.get('t0_inventory') if isinstance(details.get('t0_inventory'), dict) else {}
+    rebuild = details.get('positive_rebuild_quality') if isinstance(details.get('positive_rebuild_quality'), dict) else {}
+    anti = details.get('anti_churn') if isinstance(details.get('anti_churn'), dict) else {}
+    env = details.get('do_not_t_env') if isinstance(details.get('do_not_t_env'), dict) else {}
+    index_gate = details.get('index_context_gate') if isinstance(details.get('index_context_gate'), dict) else {}
+    concept = details.get('concept_ecology') if isinstance(details.get('concept_ecology'), dict) else {}
+    industry = details.get('industry_ecology') if isinstance(details.get('industry_ecology'), dict) else {}
+    ms = details.get('market_structure') if isinstance(details.get('market_structure'), dict) else {}
+
+    tick_price = _safe_float_value(signal.get('price') or details.get('tick_price'), 0.0)
+    anchor_cost = _safe_float_value(inventory.get('inventory_anchor_cost'), 0.0)
+    expected_edge_bps = rebuild.get('expected_edge_bps')
+    if expected_edge_bps is None:
+        expected_edge_bps = anti.get('expected_edge_bps')
+    net_edge_bps = rebuild.get('net_executable_edge_bps')
+    bias_vwap = details.get('bias_vwap')
+    bid_ask_ratio = details.get('bid_ask_ratio')
+    super_order_bias = details.get('super_order_bias')
+    super_net_flow_bps = details.get('super_net_flow_bps')
+    recovery_score = rebuild.get('recover_after_rebuild_score')
+
+    position_score = 50.0
+    if tick_price > 0 and anchor_cost > 0:
+        improve_bps = (anchor_cost - tick_price) / anchor_cost * 10000.0
+        position_score = _normalized_score(improve_bps, -80.0, 180.0, neutral=50.0)
+
+    edge_score = _normalized_score(
+        float(expected_edge_bps) if expected_edge_bps is not None else None,
+        0.0,
+        80.0,
+        neutral=50.0,
+    )
+    bias_score = _normalized_score(
+        abs(float(bias_vwap)) if bias_vwap is not None and float(bias_vwap) < 0 else 0.0,
+        0.0,
+        3.0,
+        neutral=50.0,
+    )
+    mean_reversion_score = _clamp_score(
+        (
+            _clamp_score(recovery_score if recovery_score is not None else 50.0) * 0.50
+            + edge_score * 0.30
+            + bias_score * 0.20
+        )
+        + (6.0 if bool(details.get('boll_break')) else 0.0)
+    )
+
+    orderflow_score = 45.0
+    orderflow_score += (_normalized_score(float(bid_ask_ratio), 0.9, 1.6, neutral=45.0) - 50.0) * 0.30 if bid_ask_ratio is not None else 0.0
+    orderflow_score += (_normalized_score(float(super_order_bias), -0.2, 0.45, neutral=50.0) - 50.0) * 0.20 if super_order_bias is not None else 0.0
+    orderflow_score += (_normalized_score(float(super_net_flow_bps), -120.0, 220.0, neutral=50.0) - 50.0) * 0.25 if super_net_flow_bps is not None else 0.0
+    if bool(details.get('ask_wall_absorb')) or bool(ms.get('ask_wall_absorbed')):
+        orderflow_score += 10.0
+    if bool(details.get('lure_short')):
+        orderflow_score += 8.0
+    if str(ms.get('tag') or '') == 'real_buy':
+        orderflow_score += 8.0
+    if str(ms.get('tag') or '') == 'lure_short':
+        orderflow_score += 10.0
+    if str(ms.get('tag') or '') in {'wash', 'lure_long'}:
+        orderflow_score -= 10.0
+    orderflow_score = _clamp_score(orderflow_score)
+
+    max_action_qty = max(0, int(inventory.get('max_action_qty', 0) or 0))
+    cash_room_qty = max(0, int(inventory.get('cash_room_qty', 0) or 0))
+    today_t_count = max(0, int(inventory.get('today_t_count', 0) or 0))
+    reverse_room_ratio_after = rebuild.get('reverse_room_ratio_after')
+    inventory_score = 40.0
+    if bool(inventory.get('state_ready')):
+        inventory_score += 20.0
+    if max_action_qty > 0:
+        inventory_score += 18.0
+    if cash_room_qty > 0:
+        inventory_score += 12.0
+    if reverse_room_ratio_after is not None:
+        inventory_score += (_normalized_score(float(reverse_room_ratio_after), 0.15, 0.60, neutral=50.0) - 50.0) * 0.25
+    inventory_score -= max(0.0, float(today_t_count)) * 4.0
+    inventory_score = _clamp_score(inventory_score)
+
+    env_score = 60.0
+    env_score += (_normalized_score(float(concept.get('score', 0.0) or 0.0), 10.0, 60.0, neutral=50.0) - 50.0) * 0.20 if concept else 0.0
+    env_score += (_normalized_score(float(industry.get('score', 0.0) or 0.0), 5.0, 50.0, neutral=50.0) - 50.0) * 0.15 if industry else 0.0
+    if str(index_gate.get('state') or '') == 'risk_off':
+        env_score -= 18.0
+    elif str(index_gate.get('state') or '') == 'panic_selloff':
+        env_score -= 35.0
+    elif str(index_gate.get('state') or '') == 'risk_on':
+        env_score += 6.0
+    if str(env.get('session_policy') or '') == 'open_strict':
+        env_score -= 8.0
+    if bool(env.get('theme_accelerating')):
+        env_score -= 10.0
+    if bool(env.get('breadth_climax')):
+        env_score -= 8.0
+    env_score = _clamp_score(env_score)
+
+    micro_risk_score = 0.0
+    if bool(details.get('wash_trade')):
+        micro_risk_score += 10.0
+    if bool(details.get('spoofing_suspected')):
+        micro_risk_score += 25.0
+    if str(ms.get('tag') or '') == 'wash':
+        micro_risk_score += 8.0
+    if str(ms.get('tag') or '') == 'lure_long':
+        micro_risk_score += 10.0
+    if _safe_float_value(ms.get('strength_delta'), 0.0) < 0:
+        micro_risk_score += min(12.0, abs(_safe_float_value(ms.get('strength_delta'), 0.0)) * 0.35)
+    micro_risk_score = _clamp_score(micro_risk_score, 0.0, 45.0)
+
+    score = (
+        position_score * 0.30
+        + mean_reversion_score * 0.25
+        + orderflow_score * 0.25
+        + inventory_score * 0.10
+        + env_score * 0.10
+        - micro_risk_score
+    )
+    return {
+        'score': _clamp_score(score),
+        'position_score': _clamp_score(position_score),
+        'mean_reversion_score': _clamp_score(mean_reversion_score),
+        'orderflow_score': _clamp_score(orderflow_score),
+        'inventory_score': _clamp_score(inventory_score),
+        'env_score': _clamp_score(env_score),
+        'micro_risk_score': _clamp_score(micro_risk_score),
+        'net_executable_edge_bps': _safe_float_value(net_edge_bps, _safe_float_value(expected_edge_bps, 0.0)),
+    }
+
+
+def _compute_reverse_t_action_score(signal: dict, details: dict) -> dict:
+    inventory = details.get('t0_inventory') if isinstance(details.get('t0_inventory'), dict) else {}
+    anti = details.get('anti_churn') if isinstance(details.get('anti_churn'), dict) else {}
+    env = details.get('do_not_t_env') if isinstance(details.get('do_not_t_env'), dict) else {}
+    index_gate = details.get('index_context_gate') if isinstance(details.get('index_context_gate'), dict) else {}
+    theme_guard = details.get('theme_leadership_guard') if isinstance(details.get('theme_leadership_guard'), dict) else {}
+    trend_guard = details.get('trend_guard') if isinstance(details.get('trend_guard'), dict) else {}
+    concept = details.get('concept_ecology') if isinstance(details.get('concept_ecology'), dict) else {}
+    industry = details.get('industry_ecology') if isinstance(details.get('industry_ecology'), dict) else {}
+    ms = details.get('market_structure') if isinstance(details.get('market_structure'), dict) else {}
+
+    robust_zscore = details.get('robust_zscore')
+    expected_edge_bps = anti.get('expected_edge_bps')
+    bid_ask_ratio = details.get('bid_ask_ratio')
+    super_order_bias = details.get('super_order_bias')
+    super_net_flow_bps = details.get('super_net_flow_bps')
+    pct_chg = details.get('pct_chg')
+
+    overextension_score = 45.0
+    overextension_score += (_normalized_score(float(robust_zscore), 1.8, 4.0, neutral=50.0) - 50.0) * 0.40 if robust_zscore is not None else 0.0
+    overextension_score += (_normalized_score(float(expected_edge_bps), 0.0, 100.0, neutral=50.0) - 50.0) * 0.30 if expected_edge_bps is not None else 0.0
+    overextension_score += (_normalized_score(float(pct_chg), 0.5, 6.0, neutral=50.0) - 50.0) * 0.20 if pct_chg is not None else 0.0
+    if bool(details.get('boll_over')):
+        overextension_score += 8.0
+    overextension_score = _clamp_score(overextension_score)
+
+    bearish_confirms = details.get('bearish_confirms') if isinstance(details.get('bearish_confirms'), list) else []
+    buy_fading_score = 35.0 + min(30.0, len(bearish_confirms) * 8.0)
+    if bool(details.get('v_power_divergence')):
+        buy_fading_score += 12.0
+    if bool(details.get('real_buy_fading')):
+        buy_fading_score += 14.0
+    if bool(details.get('ask_wall_building')):
+        buy_fading_score += 10.0
+    if bool(details.get('bid_wall_break')):
+        buy_fading_score += 12.0
+    buy_fading_score = _clamp_score(buy_fading_score)
+
+    orderflow_sell_score = 45.0
+    orderflow_sell_score += (_normalized_score(-float(super_order_bias), 0.0, 0.45, neutral=50.0) - 50.0) * 0.25 if super_order_bias is not None else 0.0
+    orderflow_sell_score += (_normalized_score(-float(super_net_flow_bps), 0.0, 220.0, neutral=50.0) - 50.0) * 0.30 if super_net_flow_bps is not None else 0.0
+    orderflow_sell_score += (_normalized_score(1.4 - float(bid_ask_ratio), -0.3, 0.7, neutral=50.0) - 50.0) * 0.20 if bid_ask_ratio is not None else 0.0
+    if str(ms.get('tag') or '') == 'real_sell':
+        orderflow_sell_score += 10.0
+    if bool(details.get('bid_wall_break')) or bool(ms.get('bid_wall_broken')):
+        orderflow_sell_score += 10.0
+    if str(ms.get('tag') or '') == 'real_buy':
+        orderflow_sell_score -= 10.0
+    orderflow_sell_score = _clamp_score(orderflow_sell_score)
+
+    max_action_qty = max(0, int(inventory.get('max_action_qty', 0) or 0))
+    tradable_qty = max(0, int(inventory.get('tradable_t_qty', 0) or 0))
+    today_t_count = max(0, int(inventory.get('today_t_count', 0) or 0))
+    inventory_score = 40.0
+    if bool(inventory.get('state_ready')):
+        inventory_score += 20.0
+    if max_action_qty > 0:
+        inventory_score += 18.0
+    if tradable_qty > 0:
+        inventory_score += 10.0
+    inventory_score -= max(0.0, float(today_t_count)) * 4.0
+    inventory_score = _clamp_score(inventory_score)
+
+    env_score = 60.0
+    env_score += (_normalized_score(float(concept.get('score', 0.0) or 0.0), 10.0, 60.0, neutral=50.0) - 50.0) * 0.10 if concept else 0.0
+    env_score += (_normalized_score(float(industry.get('score', 0.0) or 0.0), 5.0, 50.0, neutral=50.0) - 50.0) * 0.08 if industry else 0.0
+    if str(index_gate.get('state') or '') == 'risk_on':
+        env_score -= 15.0
+    elif str(index_gate.get('state') or '') == 'risk_off':
+        env_score += 6.0
+    if str(env.get('session_policy') or '') == 'open_strict':
+        env_score -= 8.0
+    if bool(env.get('theme_accelerating')) or bool(env.get('breadth_climax')):
+        env_score -= 8.0
+    env_score = _clamp_score(env_score)
+
+    main_rally_penalty = 0.0
+    distribution_count = _t0_distribution_confirm_count(details)
+    if bool(details.get('main_rally_guard')) or bool(trend_guard.get('active')):
+        main_rally_penalty += 12.0
+    if bool(trend_guard.get('surge_absorb_guard')):
+        main_rally_penalty += 18.0
+    if bool(theme_guard.get('active')):
+        main_rally_penalty += 10.0
+    if distribution_count >= 3:
+        main_rally_penalty = max(0.0, main_rally_penalty - 18.0)
+    main_rally_penalty = _clamp_score(main_rally_penalty, 0.0, 45.0)
+
+    score = (
+        overextension_score * 0.35
+        + buy_fading_score * 0.25
+        + orderflow_sell_score * 0.20
+        + inventory_score * 0.10
+        + env_score * 0.10
+        - main_rally_penalty
+    )
+    return {
+        'score': _clamp_score(score),
+        'overextension_score': _clamp_score(overextension_score),
+        'buy_fading_score': _clamp_score(buy_fading_score),
+        'orderflow_score': _clamp_score(orderflow_sell_score),
+        'inventory_score': _clamp_score(inventory_score),
+        'env_score': _clamp_score(env_score),
+        'main_rally_penalty': _clamp_score(main_rally_penalty),
+        'net_executable_edge_bps': _safe_float_value(expected_edge_bps, 0.0),
+    }
+
+
+def _collect_t0_hard_block_reasons(signal_type: str, details: dict) -> list[str]:
+    reasons: list[str] = []
+    threshold = details.get('threshold') if isinstance(details.get('threshold'), dict) else {}
+    inventory = details.get('t0_inventory') if isinstance(details.get('t0_inventory'), dict) else {}
+    rebuild = details.get('positive_rebuild_quality') if isinstance(details.get('positive_rebuild_quality'), dict) else {}
+    env = details.get('do_not_t_env') if isinstance(details.get('do_not_t_env'), dict) else {}
+    index_gate = details.get('index_context_gate') if isinstance(details.get('index_context_gate'), dict) else {}
+
+    if bool(threshold.get('blocked')):
+        reasons.append(str(threshold.get('blocked_reason') or 'threshold_blocked'))
+
+    observe_reason = str(inventory.get('observe_reason') or inventory.get('blocked_reason') or '')
+    if observe_reason in {
+        't0_inventory_missing',
+        'no_tradable_t_inventory',
+        'no_cash_available_for_positive_t',
+        't_count_exhausted',
+        'action_qty_below_lot',
+    }:
+        reasons.append(observe_reason)
+
+    for rr in rebuild.get('observe_reasons') or []:
+        if str(rr) in {'net_executable_edge_low'}:
+            reasons.append(str(rr))
+
+    for rr in env.get('reasons') or []:
+        reason = str(rr or '')
+        if reason.startswith('session_policy:'):
+            reasons.append(reason)
+        elif reason in {
+            'limit_magnet',
+            'board_seal_env',
+            'risk_warning',
+            'volume_drought_low_liquidity',
+        }:
+            reasons.append(reason)
+        elif reason.startswith('listing_stage:'):
+            reasons.append(reason)
+
+    if signal_type == 'positive_t' and bool(index_gate.get('blocked')):
+        reasons.extend(str(x) for x in (index_gate.get('reasons') or []) if str(x))
+
+    if bool(details.get('spoofing_suspected')):
+        reasons.append('spoofing_suspected')
+    if bool(details.get('wash_trade')) and bool(details.get('spread_abnormal')):
+        reasons.append('wash_trade_spread_abnormal')
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        rr = str(reason or '').strip()
+        if not rr or rr in seen:
+            continue
+        seen.add(rr)
+        deduped.append(rr)
+    return deduped
+
+
+def _apply_soft_downgrades(signal_type: str, details: dict, action_level: str, qty_multiplier: float) -> tuple[str, float, list[str]]:
+    level = str(action_level or T0ActionLevel.BLOCK.value)
+    soft_qty_multiplier = max(0.0, float(qty_multiplier or 0.0))
+    downgrade_reasons: list[str] = []
+    cfg = _get_t0_exec_effective_cfg()
+    soft_cfg = cfg.get('soft_downgrade') if isinstance(cfg.get('soft_downgrade'), dict) else {}
+    open_strict_qty_mult = float(soft_cfg.get('open_strict_qty_multiplier', _T0_EXEC_OPEN_STRICT_QTY_MULT) or _T0_EXEC_OPEN_STRICT_QTY_MULT)
+    open_strict_cap_level = str(soft_cfg.get('open_strict_cap_level', _T0_EXEC_OPEN_STRICT_CAP_LEVEL) or _T0_EXEC_OPEN_STRICT_CAP_LEVEL)
+    risk_off_qty_mult = float(soft_cfg.get('risk_off_qty_multiplier', _T0_EXEC_RISK_OFF_QTY_MULT) or _T0_EXEC_RISK_OFF_QTY_MULT)
+    risk_on_qty_mult = float(soft_cfg.get('risk_on_qty_multiplier', _T0_EXEC_RISK_ON_QTY_MULT) or _T0_EXEC_RISK_ON_QTY_MULT)
+    reverse_trend_qty_mult = float(soft_cfg.get('reverse_trend_guard_qty_multiplier', _T0_EXEC_REV_TREND_QTY_MULT) or _T0_EXEC_REV_TREND_QTY_MULT)
+    reverse_theme_qty_mult = float(soft_cfg.get('reverse_theme_guard_qty_multiplier', _T0_EXEC_REV_THEME_QTY_MULT) or _T0_EXEC_REV_THEME_QTY_MULT)
+    reverse_hard_cap = str(soft_cfg.get('reverse_hard_protect_cap_level', _T0_EXEC_REV_HARD_PROTECT_CAP) or _T0_EXEC_REV_HARD_PROTECT_CAP)
+    theme_accel_qty_mult = float(soft_cfg.get('theme_acceleration_qty_multiplier', _T0_EXEC_THEME_ACCEL_QTY_MULT) or _T0_EXEC_THEME_ACCEL_QTY_MULT)
+    breadth_climax_qty_mult = float(soft_cfg.get('breadth_climax_qty_multiplier', _T0_EXEC_BREADTH_CLIMAX_QTY_MULT) or _T0_EXEC_BREADTH_CLIMAX_QTY_MULT)
+    env = details.get('do_not_t_env') if isinstance(details.get('do_not_t_env'), dict) else {}
+    index_gate = details.get('index_context_gate') if isinstance(details.get('index_context_gate'), dict) else {}
+    trend_guard = details.get('trend_guard') if isinstance(details.get('trend_guard'), dict) else {}
+    theme_guard = details.get('theme_leadership_guard') if isinstance(details.get('theme_leadership_guard'), dict) else {}
+    threshold = details.get('threshold') if isinstance(details.get('threshold'), dict) else {}
+
+    if str(threshold.get('session_policy') or env.get('session_policy') or '') == 'open_strict':
+        capped = cap_action_level(level, open_strict_cap_level)
+        if capped != level:
+            level = capped
+            downgrade_reasons.append('open_strict_cap')
+        soft_qty_multiplier *= open_strict_qty_mult
+
+    state = str(index_gate.get('state') or '').strip()
+    if signal_type == 'positive_t' and state == 'risk_off':
+        level = downgrade_action_level(level, 1)
+        soft_qty_multiplier *= risk_off_qty_mult
+        downgrade_reasons.append('index_risk_off')
+    if signal_type == 'reverse_t' and state == 'risk_on':
+        distribution_count = _t0_distribution_confirm_count(details)
+        if distribution_count < 3:
+            level = downgrade_action_level(level, 1)
+            soft_qty_multiplier *= risk_on_qty_mult
+            downgrade_reasons.append('index_risk_on')
+
+    if signal_type == 'reverse_t':
+        distribution_count = _t0_distribution_confirm_count(details)
+        if bool(trend_guard.get('surge_absorb_guard')) and distribution_count < 3:
+            capped = cap_action_level(level, reverse_hard_cap)
+            if capped != level:
+                level = capped
+            downgrade_reasons.append('reverse_hard_protect')
+        elif (bool(details.get('main_rally_guard')) or bool(trend_guard.get('active'))) and distribution_count < 3:
+            level = downgrade_action_level(level, 1)
+            soft_qty_multiplier *= reverse_trend_qty_mult
+            downgrade_reasons.append('reverse_main_rally_guard')
+        if bool(theme_guard.get('active')) and distribution_count < 3:
+            level = downgrade_action_level(level, 1)
+            soft_qty_multiplier *= reverse_theme_qty_mult
+            downgrade_reasons.append('reverse_theme_guard')
+
+    if bool(env.get('theme_accelerating')):
+        level = downgrade_action_level(level, 1)
+        soft_qty_multiplier *= theme_accel_qty_mult
+        downgrade_reasons.append('theme_accelerating')
+    if bool(env.get('breadth_climax')):
+        level = downgrade_action_level(level, 1)
+        soft_qty_multiplier *= breadth_climax_qty_mult
+        downgrade_reasons.append('breadth_climax')
+
+    return level, max(0.0, soft_qty_multiplier), downgrade_reasons
+
+
+def _rewrite_t0_execution_message(message: str, *, action_level: str, final_qty: int, shadow_action_level: str, shadow_only: bool, hard_block_reasons: list[str], downgrade_reasons: list[str]) -> str:
+    msg = str(message or '')
+    for suffix in ('·仅观察', '·可执行'):
+        msg = msg.replace(suffix, '')
+    level_label_map = {
+        T0ActionLevel.BLOCK.value: '阻断',
+        T0ActionLevel.OBSERVE.value: '观察',
+        T0ActionLevel.TEST.value: '试单',
+        T0ActionLevel.EXECUTE.value: '执行',
+        T0ActionLevel.AGGRESSIVE.value: '激进',
+    }
+    action_label = level_label_map.get(str(action_level or ''), str(action_level or '--'))
+    parts = [msg] if msg else []
+    if shadow_only and shadow_action_level:
+        parts.append(f" | 影子档:{level_label_map.get(shadow_action_level, shadow_action_level)}")
+    else:
+        parts.append(f" | 执行层:{action_label}")
+    if final_qty > 0:
+        parts.append(f" | 数量:{int(final_qty)}股")
+    if hard_block_reasons:
+        parts.append(f" | 硬阻断:{'|'.join(hard_block_reasons[:2])}")
+    elif downgrade_reasons:
+        parts.append(f" | 降档:{'|'.join(downgrade_reasons[:2])}")
+    return ''.join(parts)
+
+def _finalize_pool2_execution_signal(signal: dict) -> dict:
+    if not _T0_EXEC_ENABLED or not isinstance(signal, dict) or not signal.get('has_signal'):
+        return signal
+    sig_type = str(signal.get('type') or '')
+    if sig_type not in {'positive_t', 'reverse_t'}:
+        return signal
+
+    out = dict(signal)
+    details = out.get('details') if isinstance(out.get('details'), dict) else {}
+    out['details'] = details
+    legacy_observe_only = bool(details.get('observe_only'))
+    legacy_observe_reason = str(details.get('observe_reason') or '')
+
+    score_info = _compute_positive_t_action_score(out, details) if sig_type == 'positive_t' else _compute_reverse_t_action_score(out, details)
+    score = _clamp_score(score_info.get('score', out.get('strength', 0)))
+    exec_cfg = _get_t0_exec_effective_cfg()
+    qty_cfg = exec_cfg.get('action_qty_multiplier') if isinstance(exec_cfg.get('action_qty_multiplier'), dict) else {}
+    live_qty_scale = max(0.0, _safe_float_value(exec_cfg.get('live_qty_scale', 1.0), 1.0))
+    action_level_before = score_to_action_level(score)
+    action_level_after = str(action_level_before)
+    qty_multiplier = float(qty_cfg.get(action_level_before, ACTION_QTY_MULTIPLIER.get(action_level_before, 0.0)) or ACTION_QTY_MULTIPLIER.get(action_level_before, 0.0))
+    soft_qty_multiplier = 1.0
+    downgrade_reasons: list[str] = []
+    hard_block_reasons = _collect_t0_hard_block_reasons(sig_type, details)
+    inventory = details.get('t0_inventory') if isinstance(details.get('t0_inventory'), dict) else {}
+    base_action_qty = max(0, int(inventory.get('max_action_qty', 0) or 0))
+    if base_action_qty <= 0:
+        base_action_qty = max(0, int(inventory.get('suggested_action_qty', 0) or 0))
+    lot_size = max(1, int(inventory.get('lot_size', _T0_INV_LOT_SIZE) or _T0_INV_LOT_SIZE))
+
+    if hard_block_reasons:
+        action_level_after = T0ActionLevel.BLOCK.value
+        soft_qty_multiplier = 0.0
+    else:
+        action_level_after, soft_qty_multiplier, downgrade_reasons = _apply_soft_downgrades(
+            sig_type,
+            details,
+            action_level_after,
+            1.0,
+        )
+
+    shadow_action_level = ''
+    shadow_only = False
+    if not hard_block_reasons and action_level_before == T0ActionLevel.AGGRESSIVE.value:
+        shadow_action_level = T0ActionLevel.AGGRESSIVE.value
+        if bool(exec_cfg.get('aggressive_shadow_only', _T0_EXEC_AGGRESSIVE_SHADOW_ONLY)) and not bool(exec_cfg.get('enable_aggressive_live', _T0_EXEC_ENABLE_AGGRESSIVE_LIVE)):
+            shadow_only = True
+            action_level_after = T0ActionLevel.OBSERVE.value
+            downgrade_reasons.append('aggressive_shadow_only')
+        elif not bool(exec_cfg.get('enable_aggressive_live', _T0_EXEC_ENABLE_AGGRESSIVE_LIVE)):
+            capped = cap_action_level(action_level_after, T0ActionLevel.EXECUTE.value)
+            if capped != action_level_after:
+                action_level_after = capped
+                downgrade_reasons.append('aggressive_capped_execute')
+
+    final_qty = 0
+    if not hard_block_reasons and not shadow_only and action_level_after not in {T0ActionLevel.BLOCK.value, T0ActionLevel.OBSERVE.value}:
+        final_qty = _t0_floor_to_lot(base_action_qty * qty_multiplier * soft_qty_multiplier * live_qty_scale, lot_size)
+        if final_qty < lot_size:
+            hard_block_reasons.append('qty_too_small_after_multiplier')
+            final_qty = 0
+            action_level_after = T0ActionLevel.OBSERVE.value
+
+    execution_observe_only = bool(final_qty <= 0)
+    if execution_observe_only and not hard_block_reasons and action_level_after == T0ActionLevel.BLOCK.value:
+        hard_block_reasons.append('action_level_block')
+
+    details['signal_observe_only_legacy'] = bool(legacy_observe_only)
+    details['signal_observe_reason_legacy'] = legacy_observe_reason
+    details['score'] = round(float(score), 2)
+    details['base_action_qty'] = int(base_action_qty)
+    details['final_qty'] = int(final_qty)
+    details['qty_multiplier'] = round(float(qty_multiplier), 4)
+    details['soft_qty_multiplier'] = round(float(soft_qty_multiplier), 4)
+    details['live_qty_scale'] = round(float(live_qty_scale), 4)
+    details['action_level_before_downgrade'] = str(action_level_before)
+    details['action_level_after_downgrade'] = str(action_level_after)
+    details['hard_block_reasons'] = list(hard_block_reasons)
+    details['downgrade_reasons'] = list(dict.fromkeys(downgrade_reasons))
+    details['shadow_action_level'] = str(shadow_action_level or '')
+    details['shadow_only'] = bool(shadow_only)
+    details['observe_only'] = bool(execution_observe_only)
+    details['observe_reason'] = (
+        hard_block_reasons[0]
+        if hard_block_reasons
+        else (details['downgrade_reasons'][0] if details['downgrade_reasons'] else (legacy_observe_reason if execution_observe_only else ''))
+    )
+    details['net_executable_edge_bps'] = round(float(score_info.get('net_executable_edge_bps', 0.0) or 0.0), 2)
+    for key, value in score_info.items():
+        if key == 'score':
+            continue
+        details[key] = round(float(value), 2)
+    details['t0_execution'] = {
+        'score': details['score'],
+        'base_action_qty': int(base_action_qty),
+        'final_qty': int(final_qty),
+        'action_level_before_downgrade': str(action_level_before),
+        'action_level_after_downgrade': str(action_level_after),
+        'qty_multiplier': details['qty_multiplier'],
+        'soft_qty_multiplier': details['soft_qty_multiplier'],
+        'live_qty_scale': details['live_qty_scale'],
+        'hard_block_reasons': list(hard_block_reasons),
+        'downgrade_reasons': list(details['downgrade_reasons']),
+        'shadow_action_level': str(shadow_action_level or ''),
+        'shadow_only': bool(shadow_only),
+        'runtime_override_updated_at': str((exec_cfg.get('override') or {}).get('updated_at') or ''),
+    }
+    out['message'] = _rewrite_t0_execution_message(
+        str(out.get('message') or ''),
+        action_level=str(action_level_after),
+        final_qty=int(final_qty),
+        shadow_action_level=str(shadow_action_level or ''),
+        shadow_only=bool(shadow_only),
+        hard_block_reasons=list(hard_block_reasons),
+        downgrade_reasons=list(details['downgrade_reasons']),
+    )
+    return out
+
 
 def _update_intraday_state(ts_code: str, tick: dict) -> dict:
     """更新日内状态（VWAP/价格窗口/GUB5），返回 state 供信号计算使用。"""
@@ -1275,6 +2019,9 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
             }
             s['message'] = s.get('message', '') + f" [{tag_map.get(ms_pool2['tag'], ms_pool2['tag'])}]"
 
+    if fired_pool2:
+        fired_pool2 = [_finalize_pool2_execution_signal(s) for s in fired_pool2]
+
     fired: list[dict] = fired_pool1 + fired_pool2
 
     if ts_code and price > 0:
@@ -1688,10 +2435,14 @@ def _postprocess_fired_signals(
         if sig_type not in {'positive_t', 'reverse_t'} or not s.get('is_new'):
             continue
         details = s.get('details') if isinstance(s.get('details'), dict) else {}
-        if bool(details.get('observe_only', False)):
+        final_qty = int(details.get('final_qty', 0) or 0)
+        shadow_only = bool(details.get('shadow_only', False))
+        if bool(details.get('observe_only', False)) and final_qty <= 0:
+            continue
+        if shadow_only or final_qty <= 0:
             continue
         inventory_info = details.get('t0_inventory') if isinstance(details.get('t0_inventory'), dict) else {}
-        action_qty = int(inventory_info.get('suggested_action_qty', 0) or 0)
+        action_qty = final_qty if final_qty > 0 else int(inventory_info.get('suggested_action_qty', 0) or 0)
         if action_qty <= 0:
             continue
         before_inventory, after_inventory = _pool2_apply_t0_signal(
@@ -1699,6 +2450,14 @@ def _postprocess_fired_signals(
             signal_type=sig_type,
             signal_price=float(s.get('price', tick.get('price', 0)) or 0.0),
             action_qty=action_qty,
+            action_level=str(details.get('action_level_after_downgrade') or ''),
+            shadow_action_level=str(details.get('shadow_action_level') or ''),
+            shadow_only=bool(details.get('shadow_only', False)),
+            qty_multiplier=details.get('qty_multiplier'),
+            soft_qty_multiplier=details.get('soft_qty_multiplier'),
+            base_action_qty=details.get('base_action_qty'),
+            final_qty=details.get('final_qty'),
+            score=details.get('score'),
             now_ts=now,
         )
         inventory_info = dict(inventory_info)
@@ -1712,6 +2471,7 @@ def _postprocess_fired_signals(
             'role': str(inventory_info.get('action_role') or ''),
             'family': 'base_rebalance',
             'applied_action_qty': int(action_qty),
+            'action_level': str(details.get('action_level_after_downgrade') or ''),
             'inventory_unchanged_expected': True,
         }
         s['details'] = details
