@@ -195,6 +195,13 @@ _T0_DO_NOT_T_CLIMAX_BREADTH = float(_T0_DO_NOT_T_ENV_CFG.get('theme_climax_bread
 _T0_DO_NOT_T_CLIMAX_LEADER_PCT = float(_T0_DO_NOT_T_ENV_CFG.get('theme_climax_leader_pct', 7.0) or 7.0)
 _T0_DO_NOT_T_LOW_LIQ_BIDASK = float(_T0_DO_NOT_T_ENV_CFG.get('low_liquidity_bidask', 0.75) or 0.75)
 _T0_DO_NOT_T_WHITELIST_BIDASK = float(_T0_DO_NOT_T_ENV_CFG.get('whitelist_bidask_support', 1.05) or 1.05)
+_T0_INDEX_GUARD_CFG = _T0_CFG.get('index_context_guard', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_INDEX_GUARD_ENABLED = bool(_T0_INDEX_GUARD_CFG.get('enabled', True))
+_T0_INDEX_POSITIVE_BLOCK_ON_PANIC = bool(_T0_INDEX_GUARD_CFG.get('positive_block_on_panic', True))
+_T0_INDEX_POSITIVE_OBSERVE_ON_RISK_OFF = bool(_T0_INDEX_GUARD_CFG.get('positive_observe_on_risk_off', True))
+_T0_INDEX_REVERSE_OBSERVE_ON_RISK_ON = bool(_T0_INDEX_GUARD_CFG.get('reverse_observe_on_risk_on', True))
+_T0_INDEX_REVERSE_MIN_DISTRIBUTION = int(_T0_INDEX_GUARD_CFG.get('reverse_distribution_min_confirms', 2) or 2)
+_T0_INDEX_REVERSE_SUPER_OUT_BPS = float(_T0_INDEX_GUARD_CFG.get('reverse_super_outflow_bps', -80.0) or -80.0)
 
 # T+0 滞回状态：{ts_code: {'positive_t': last_trigger_price, 'reverse_t': last_trigger_price}}
 _hysteresis_state: dict[str, dict[str, float]] = {}
@@ -249,6 +256,24 @@ _P1_RESONANCE_ENABLED = bool(_P1_RESONANCE_CFG.get('enabled', False))
 _P1_SCORING_CFG = _P1_CFG.get('scoring', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_SCORE_EXECUTABLE = float(_P1_SCORING_CFG.get('score_executable', 70) or 70)
 _P1_SCORE_OBSERVE = float(_P1_SCORING_CFG.get('score_observe', 55) or 55)
+_P1_LEFT_RECLAIM_SCORE_EXECUTABLE = float(
+    _P1_SCORING_CFG.get('left_reclaim_score_executable', _P1_SCORE_EXECUTABLE) or _P1_SCORE_EXECUTABLE
+)
+_P1_LEFT_RECLAIM_SCORE_OBSERVE = float(
+    _P1_SCORING_CFG.get('left_reclaim_score_observe', _P1_SCORE_OBSERVE) or _P1_SCORE_OBSERVE
+)
+_P1_BREAKOUT_SCORE_EXECUTABLE = float(
+    _P1_SCORING_CFG.get('breakout_continuation_score_executable', _P1_SCORE_EXECUTABLE) or _P1_SCORE_EXECUTABLE
+)
+_P1_BREAKOUT_SCORE_OBSERVE = float(
+    _P1_SCORING_CFG.get('breakout_continuation_score_observe', _P1_SCORE_OBSERVE) or _P1_SCORE_OBSERVE
+)
+_P1_EXIT_SCORE_EXECUTABLE = float(
+    _P1_SCORING_CFG.get('exit_score_executable', _P1_SCORE_EXECUTABLE) or _P1_SCORE_EXECUTABLE
+)
+_P1_EXIT_SCORE_OBSERVE = float(
+    _P1_SCORING_CFG.get('exit_score_observe', _P1_SCORE_OBSERVE) or _P1_SCORE_OBSERVE
+)
 _P1_EXIT_CFG = _P1_CFG.get('exit', {}) if isinstance(_P1_CFG, dict) else {}
 _P1_EXIT_ENABLED = bool(_P1_EXIT_CFG.get('enabled', True))
 _P1_EXIT_MIN_HOLD_DAYS = float(_P1_EXIT_CFG.get('min_hold_days', 14.0) or 14.0)
@@ -341,6 +366,7 @@ _P1_CONCEPT_ECOLOGY_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('enabled', False)
 _P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED = bool(_P1_CONCEPT_ECOLOGY_CFG.get('hard_gate_enabled', True))
 _P1_CONCEPT_ECOLOGY_BLOCK_ON_RETREAT = bool(_P1_CONCEPT_ECOLOGY_CFG.get('block_on_retreat', True))
 _P1_CONCEPT_ECOLOGY_OBSERVE_ON_HARD_WEAK = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_hard_weak', True))
+_P1_CONCEPT_ECOLOGY_OBSERVE_ON_MISSING = bool(_P1_CONCEPT_ECOLOGY_CFG.get('observe_on_missing', True))
 _P1_CONCEPT_ECOLOGY_HARD_RETREAT_THRESHOLD = float(
     _P1_CONCEPT_ECOLOGY_CFG.get('hard_retreat_threshold', _P1_CONCEPT_ECOLOGY_CFG.get('retreat_score_max', -20.0)) or -20.0
 )
@@ -1879,6 +1905,102 @@ def _compute_t0_do_not_t_env(
     return info
 
 
+def _compute_t0_index_context_gate(
+    *,
+    signal_type: str,
+    index_context: Optional[dict],
+    bearish_confirm_count: int = 0,
+    distribution_confirm_count: int = 0,
+    bid_wall_break: bool = False,
+    real_buy_fading: bool = False,
+    super_net_flow_bps: Optional[float] = None,
+) -> dict:
+    info = {
+        'enabled': bool(_T0_INDEX_GUARD_ENABLED),
+        'blocked': False,
+        'observe_only': False,
+        'reason': '',
+        'reasons': [],
+        'signal_type': str(signal_type or ''),
+        'state': 'disabled' if not _T0_INDEX_GUARD_ENABLED else 'missing',
+        'primary_index_code': '',
+        'primary_index_name': '',
+        'primary_pct_chg': None,
+        'primary_pct_delta': None,
+        'avg_pct_chg': None,
+        'positive_count': 0,
+        'negative_count': 0,
+        'valid_count': 0,
+        'broad_negative_ratio': None,
+        'signals': [],
+        'distribution_confirm_count': int(max(0, distribution_confirm_count)),
+        'bearish_confirm_count': int(max(0, bearish_confirm_count)),
+        'distribution_ok': False,
+    }
+    if not _T0_INDEX_GUARD_ENABLED:
+        info['reason'] = 'disabled'
+        return info
+
+    ctx = dict(index_context or {}) if isinstance(index_context, dict) else {}
+    if not ctx:
+        info['reason'] = 'missing'
+        return info
+
+    state = str(ctx.get('state') or 'missing').strip() or 'missing'
+    primary_pct_chg = _safe_float(ctx.get('primary_pct_chg'), 0.0) if ctx.get('primary_pct_chg') is not None else None
+    primary_pct_delta = _safe_float(ctx.get('primary_pct_delta'), 0.0) if ctx.get('primary_pct_delta') is not None else None
+    avg_pct_chg = _safe_float(ctx.get('avg_pct_chg'), 0.0) if ctx.get('avg_pct_chg') is not None else None
+    positive_count = int(ctx.get('positive_count', 0) or 0)
+    negative_count = int(ctx.get('negative_count', 0) or 0)
+    valid_count = int(ctx.get('valid_count', 0) or 0)
+    broad_negative_ratio = _safe_float(ctx.get('broad_negative_ratio'), 0.0) if ctx.get('broad_negative_ratio') is not None else None
+    signals = [str(x) for x in (ctx.get('signals') or []) if str(x)]
+
+    distribution_ok = bool(
+        distribution_confirm_count >= _T0_INDEX_REVERSE_MIN_DISTRIBUTION
+        or bearish_confirm_count >= _T0_INDEX_REVERSE_MIN_DISTRIBUTION
+        or bid_wall_break
+        or real_buy_fading
+        or (super_net_flow_bps is not None and super_net_flow_bps <= _T0_INDEX_REVERSE_SUPER_OUT_BPS)
+    )
+    reasons: list[str] = []
+    blocked = False
+    observe_only = False
+
+    if signal_type == 'positive_t':
+        if state == 'panic_selloff' and _T0_INDEX_POSITIVE_BLOCK_ON_PANIC:
+            blocked = True
+            observe_only = True
+            reasons.append('index_panic_selloff')
+        elif state == 'risk_off' and _T0_INDEX_POSITIVE_OBSERVE_ON_RISK_OFF:
+            observe_only = True
+            reasons.append('index_risk_off')
+    elif signal_type == 'reverse_t':
+        if state == 'risk_on' and _T0_INDEX_REVERSE_OBSERVE_ON_RISK_ON and not distribution_ok:
+            observe_only = True
+            reasons.append('index_risk_on_no_distribution')
+
+    info.update({
+        'blocked': bool(blocked),
+        'observe_only': bool(observe_only),
+        'reason': reasons[0] if reasons else str(ctx.get('reason') or state or 'allow'),
+        'reasons': reasons,
+        'state': state,
+        'primary_index_code': str(ctx.get('primary_index_code') or ''),
+        'primary_index_name': str(ctx.get('primary_index_name') or ''),
+        'primary_pct_chg': primary_pct_chg,
+        'primary_pct_delta': primary_pct_delta,
+        'avg_pct_chg': avg_pct_chg,
+        'positive_count': positive_count,
+        'negative_count': negative_count,
+        'valid_count': valid_count,
+        'broad_negative_ratio': broad_negative_ratio,
+        'signals': signals,
+        'distribution_ok': bool(distribution_ok),
+    })
+    return info
+
+
 def _compute_pool1_concept_ecology_gate(
     *,
     core_concept_board: Optional[str],
@@ -1953,10 +2075,16 @@ def _compute_pool1_concept_ecology_gate(
     if not info['core_concept_board']:
         info['reason'] = 'concept_missing'
         info['gate_level'] = 'missing'
+        if _P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED and _P1_CONCEPT_ECOLOGY_OBSERVE_ON_MISSING:
+            info['observe_only'] = True
+            info['observe_reason'] = 'concept_ecology_missing_observe'
         return info
     if not ecology:
         info['reason'] = 'concept_snapshot_missing'
         info['gate_level'] = 'snapshot_missing'
+        if _P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED and _P1_CONCEPT_ECOLOGY_OBSERVE_ON_MISSING:
+            info['observe_only'] = True
+            info['observe_reason'] = 'concept_snapshot_missing_observe'
         return info
 
     state = str(ecology.get('state') or 'unknown').strip().lower()
@@ -3082,6 +3210,73 @@ def _compute_t0_gates(
     return raw_score, gate, ';'.join(reasons)
 
 
+def _pool1_score_thresholds(sig_type: str, details: Optional[dict] = None) -> tuple[float, float, str]:
+    """Return the independent calibration group for a Pool1 signal."""
+    details = details if isinstance(details, dict) else {}
+    clear_family = str(details.get('clear_family') or '').strip().lower()
+    if sig_type == 'left_side_buy':
+        return _P1_LEFT_RECLAIM_SCORE_EXECUTABLE, _P1_LEFT_RECLAIM_SCORE_OBSERVE, 'left_reclaim_score'
+    if sig_type == 'right_side_breakout':
+        return _P1_BREAKOUT_SCORE_EXECUTABLE, _P1_BREAKOUT_SCORE_OBSERVE, 'breakout_continuation_score'
+    if sig_type == 'timing_clear':
+        if clear_family == 'beta_reduce':
+            return _P1_EXIT_SCORE_EXECUTABLE, _P1_EXIT_SCORE_OBSERVE, 'exit_beta_reduce_score'
+        if clear_family == 'take_profit':
+            return _P1_EXIT_SCORE_EXECUTABLE, _P1_EXIT_SCORE_OBSERVE, 'exit_take_profit_score'
+        return _P1_EXIT_SCORE_EXECUTABLE, _P1_EXIT_SCORE_OBSERVE, 'exit_score'
+    return _P1_SCORE_EXECUTABLE, _P1_SCORE_OBSERVE, 'pool1_score'
+
+
+def _pool1_final_ecology_gate(details: Optional[dict]) -> dict:
+    """Last-resort ecology gate before a Pool1 signal can be executable."""
+    info = {
+        'enabled': bool(_P1_CONCEPT_ECOLOGY_ENABLED),
+        'blocked': False,
+        'observe_only': False,
+        'reason': '',
+        'gate_level': '',
+    }
+    if not _P1_CONCEPT_ECOLOGY_ENABLED or not isinstance(details, dict):
+        info['reason'] = 'disabled'
+        return info
+
+    concept_info = details.get('concept_ecology')
+    if not isinstance(concept_info, dict):
+        concept_info = {}
+    if not concept_info:
+        if _P1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED and _P1_CONCEPT_ECOLOGY_OBSERVE_ON_MISSING:
+            info.update({
+                'observe_only': True,
+                'reason': 'concept_ecology_missing_observe',
+                'gate_level': 'missing',
+            })
+        else:
+            info['reason'] = 'missing_ignored'
+        return info
+
+    gate_level = str(concept_info.get('gate_level') or '').strip().lower()
+    reason = str(concept_info.get('reason') or '').strip()
+    info['gate_level'] = gate_level
+    if bool(concept_info.get('blocked')):
+        info.update({
+            'blocked': True,
+            'reason': str(concept_info.get('blocked_reason') or reason or 'concept_ecology_blocked'),
+        })
+    elif bool(concept_info.get('observe_only')):
+        info.update({
+            'observe_only': True,
+            'reason': str(concept_info.get('observe_reason') or reason or 'concept_ecology_observe'),
+        })
+    elif gate_level in {'missing', 'snapshot_missing'} and _P1_CONCEPT_ECOLOGY_OBSERVE_ON_MISSING:
+        info.update({
+            'observe_only': True,
+            'reason': 'concept_snapshot_missing_observe' if gate_level == 'snapshot_missing' else 'concept_ecology_missing_observe',
+        })
+    else:
+        info['reason'] = reason or gate_level or 'neutral'
+    return info
+
+
 def finalize_pool1_signal(signal: dict, thresholds: Optional[dict] = None) -> dict:
     """
     Pool1 评分结果分级：<observe 为过滤，observe~executable 为观察，>=executable 为可执行。
@@ -3095,9 +3290,6 @@ def finalize_pool1_signal(signal: dict, thresholds: Optional[dict] = None) -> di
     except Exception:
         strength = 0.0
 
-    if strength < _P1_SCORE_OBSERVE:
-        return _empty(sig_type)
-
     out = dict(signal)
     details = out.get('details')
     if not isinstance(details, dict):
@@ -3110,13 +3302,54 @@ def finalize_pool1_signal(signal: dict, thresholds: Optional[dict] = None) -> di
         if th_meta:
             details['threshold'] = th_meta
 
+    score_exec_th, score_observe_th, score_profile = _pool1_score_thresholds(sig_type, details)
+    if strength < score_observe_th:
+        return _empty(sig_type)
+
+    ecology_gate = _pool1_final_ecology_gate(details) if sig_type in ('left_side_buy', 'right_side_breakout') else {
+        'enabled': False,
+        'reason': 'not_buy_signal',
+    }
+    details['concept_ecology_final_gate'] = ecology_gate
+    if isinstance(ecology_gate, dict) and bool(ecology_gate.get('blocked')):
+        return _pool1_reject(
+            _empty(sig_type),
+            str(ecology_gate.get('reason') or 'concept_ecology_blocked'),
+            {
+                'concept_ecology_final_gate': ecology_gate,
+                'threshold': th_meta,
+            },
+        )
+
     detail_observe_only = bool(details.get('observe_only', False))
-    observe_only = (strength < _P1_SCORE_EXECUTABLE) or bool(
+    observe_only = (strength < score_exec_th) or bool(
         th_meta.get('observer_only') if isinstance(th_meta, dict) else False
-    ) or detail_observe_only
+    ) or detail_observe_only or bool(ecology_gate.get('observe_only') if isinstance(ecology_gate, dict) else False)
     details['observe_only'] = bool(observe_only)
-    details['score_exec_th'] = _P1_SCORE_EXECUTABLE
-    details['score_observe_th'] = _P1_SCORE_OBSERVE
+    if observe_only and not details.get('observe_reason'):
+        if isinstance(ecology_gate, dict) and ecology_gate.get('observe_only'):
+            details['observe_reason'] = str(ecology_gate.get('reason') or 'concept_ecology_observe')
+        elif isinstance(th_meta, dict) and th_meta.get('observer_reason'):
+            details['observe_reason'] = str(th_meta.get('observer_reason'))
+        elif strength < score_exec_th:
+            details['observe_reason'] = 'score_below_executable'
+    details['score_exec_th'] = score_exec_th
+    details['score_observe_th'] = score_observe_th
+    details['score_profile'] = score_profile
+    details['pool1_score_profiles'] = {
+        'left_reclaim_score': {
+            'observe': _P1_LEFT_RECLAIM_SCORE_OBSERVE,
+            'executable': _P1_LEFT_RECLAIM_SCORE_EXECUTABLE,
+        },
+        'breakout_continuation_score': {
+            'observe': _P1_BREAKOUT_SCORE_OBSERVE,
+            'executable': _P1_BREAKOUT_SCORE_EXECUTABLE,
+        },
+        'exit_score': {
+            'observe': _P1_EXIT_SCORE_OBSERVE,
+            'executable': _P1_EXIT_SCORE_EXECUTABLE,
+        },
+    }
     if sig_type == 'timing_clear':
         clear_level = str(details.get('clear_level_hint') or 'full').strip().lower()
         clear_family = str(details.get('clear_family') or 'defense').strip().lower()
@@ -3132,10 +3365,15 @@ def finalize_pool1_signal(signal: dict, thresholds: Optional[dict] = None) -> di
             details['suggest_reduce_ratio'] = round(float(_P1_EXIT_PARTIAL_REDUCE_RATIO), 2)
         if clear_level == 'full':
             details['clear_label'] = '清仓执行'
+            clear_subtype = 'timing_clear_full'
         elif clear_level == 'partial':
             details['clear_label'] = '分批减仓'
+            clear_subtype = 'timing_beta_reduce' if clear_family == 'beta_reduce' else 'timing_clear_partial'
         else:
             details['clear_label'] = '观察减仓'
+            clear_subtype = 'timing_clear_observe'
+        details['signal_subtype'] = clear_subtype
+        details['semantic_type'] = clear_subtype
 
     msg = str(out.get('message') or '')
     if sig_type == 'timing_clear':
@@ -3526,9 +3764,9 @@ def detect_right_side_breakout(
     """
     右侧突破信号（顺势突破）
     - 价格有效突破布林中轨/上轨（正向穿越，过滤贴线噪音）
-    - 量比 >= 1.3（放量）
-    - MA5 上穿 MA10（金叉辅助）
-    - RSI6 保持在可持续区间（45~85）
+    - 对中轨/上轨突破都限制偏离上限，避免分时追高
+    - AVWAP 锚上方是必要条件，但离锚过热时只允许观察
+    - 确认项升级为：盘口承接 + （放量 / 60m 共振 二选一）
     """
     result = _empty('right_side_breakout')
     if price <= 0 or boll_mid <= 0:
@@ -3566,51 +3804,97 @@ def detect_right_side_breakout(
         eps_mid = _threshold_value(thresholds, 'eps_mid', 1.002)
         eps_upper = _threshold_value(thresholds, 'eps_upper', 1.001)
         breakout_max_offset_pct = _threshold_value(thresholds, 'breakout_max_offset_pct', 3.0) / 100.0
+        breakout_max_offset_upper_pct = _threshold_value(thresholds, 'breakout_max_offset_upper_pct', 2.0) / 100.0
+        session_avwap_premium_pct_max = _threshold_value(thresholds, 'session_avwap_premium_pct_max', 1.8)
+        breakout_anchor_premium_pct_max = _threshold_value(thresholds, 'breakout_anchor_premium_pct_max', 2.5)
+        event_anchor_premium_pct_max = _threshold_value(thresholds, 'event_anchor_premium_pct_max', 2.0)
     else:
         eps_mid = 1.002
         eps_upper = 1.001
         breakout_max_offset_pct = 0.03
+        breakout_max_offset_upper_pct = 0.02
+        session_avwap_premium_pct_max = 1.8
+        breakout_anchor_premium_pct_max = 2.5
+        event_anchor_premium_pct_max = 2.0
     if (not isinstance(thresholds, dict)) and _P1_DYNAMIC_ENABLED:
         band_width_pct = ((boll_upper - boll_lower) / boll_mid * 100) if boll_mid > 0 else 0
         if band_width_pct >= 6:
             eps_mid = 1.001
             eps_upper = 1.0005
-    break_mid = price > boll_mid * eps_mid and (price - boll_mid) / boll_mid <= breakout_max_offset_pct
-    break_upper = boll_upper > 0 and price > boll_upper * eps_upper
+            breakout_max_offset_upper_pct = min(breakout_max_offset_upper_pct, 0.018)
+            session_avwap_premium_pct_max = min(session_avwap_premium_pct_max, 1.6)
+    mid_offset_pct = ((price - boll_mid) / boll_mid * 100.0) if boll_mid > 0 else None
+    upper_offset_pct = ((price - boll_upper) / boll_upper * 100.0) if boll_upper > 0 else None
+    break_mid = bool(
+        price > boll_mid * eps_mid
+        and mid_offset_pct is not None
+        and mid_offset_pct <= breakout_max_offset_pct * 100.0
+    )
+    break_upper_raw = bool(boll_upper > 0 and price > boll_upper * eps_upper)
+    break_upper = bool(
+        break_upper_raw
+        and upper_offset_pct is not None
+        and upper_offset_pct <= breakout_max_offset_upper_pct * 100.0
+    )
     cross_mid = False
     cross_upper = False
     if prev_price is not None and prev_price > 0:
         cross_mid = prev_price <= boll_mid and price > boll_mid * eps_mid
         if boll_upper > 0:
             cross_upper = prev_price <= boll_upper and price > boll_upper * eps_upper
+    if _P1_ENABLED_V2 and cross_upper and break_upper_raw and not break_upper:
+        return _pool1_reject(
+            result,
+            'break_upper_offset_too_high',
+            {
+                'price': price,
+                'boll_upper': boll_upper,
+                'break_upper_offset_pct': round(float(upper_offset_pct or 0.0), 4) if upper_offset_pct is not None else None,
+                'breakout_max_offset_upper_pct': round(float(breakout_max_offset_upper_pct * 100.0), 4),
+                'threshold': th_meta,
+            },
+        )
     if _P1_ENABLED_V2 and not (cross_mid or cross_upper):
         return _pool1_reject(result, 'breakout_not_cross')
 
     rsi_ok = (rsi6 is None) or (45 <= rsi6 <= 85)
     vol_break_th = 1.3
+    volume_confirm = bool(volume_ratio is not None and volume_ratio >= vol_break_th)
+    bid_ask_confirm = bool(bid_ask_ratio is not None and bid_ask_ratio >= _P1_BID_ASK_TH)
+    resonance_confirm = bool(_P1_RESONANCE_ENABLED and resonance_60m)
 
     conditions = []
     if break_mid:
         conditions.append('突破中轨')
     if break_upper:
         conditions.append('突破上轨')
-    if volume_ratio is not None and volume_ratio >= vol_break_th:
-        conditions.append(f'量比{volume_ratio:.2f}')
     if ma5 and ma10 and ma5 > ma10:
         conditions.append('MA5>MA10')
     if rsi6 is not None and rsi_ok:
         conditions.append(f'RSI6={rsi6:.1f}')
 
     if _P1_ENABLED_V2:
-        if _P1_RESONANCE_ENABLED and not resonance_60m:
-            return _pool1_reject(result, 'resonance_missing')
         confirm_items = []
-        if bid_ask_ratio is not None and bid_ask_ratio >= _P1_BID_ASK_TH:
+        if bid_ask_confirm:
             confirm_items.append(f'承接{bid_ask_ratio:.2f}')
-        if _P1_RESONANCE_ENABLED and resonance_60m:
+        if volume_confirm:
+            confirm_items.append(f'放量{volume_ratio:.2f}')
+        if resonance_confirm:
             confirm_items.append('60m共振')
-        if not confirm_items:
-            return _pool1_reject(result, 'confirm_missing')
+        if not bid_ask_confirm:
+            return _pool1_reject(result, 'confirm_bid_ask_missing', {
+                'bid_ask_ratio': bid_ask_ratio,
+                'bid_ask_min': _P1_BID_ASK_TH,
+                'threshold': th_meta,
+            })
+        if not (volume_confirm or resonance_confirm):
+            return _pool1_reject(result, 'confirm_flow_or_resonance_missing', {
+                'volume_ratio': volume_ratio,
+                'volume_ratio_min': vol_break_th,
+                'resonance_60m': bool(resonance_60m),
+                'resonance_enabled': bool(_P1_RESONANCE_ENABLED),
+                'threshold': th_meta,
+            })
         conditions.append('确认:' + '+'.join(confirm_items))
 
     if not conditions or not (break_mid or break_upper):
@@ -3682,6 +3966,48 @@ def detect_right_side_breakout(
                 'threshold': th_meta,
             },
         )
+    premium_guard = {
+        'enabled': True,
+        'observe_only': False,
+        'observe_reason': '',
+        'reasons': [],
+        'labels': [],
+        'thresholds': {
+            'session_avwap_premium_pct_max': round(float(session_avwap_premium_pct_max), 4),
+            'breakout_anchor_premium_pct_max': round(float(breakout_anchor_premium_pct_max), 4),
+            'event_anchor_premium_pct_max': round(float(event_anchor_premium_pct_max), 4),
+        },
+        'premiums': {
+            'session_avwap_premium_pct': avwap_stack.get('session_avwap_premium_pct'),
+            'breakout_anchor_premium_pct': avwap_stack.get('breakout_anchor_premium_pct'),
+            'event_anchor_premium_pct': avwap_stack.get('event_anchor_premium_pct'),
+        },
+    }
+    try:
+        session_avwap_premium_pct = float(avwap_stack.get('session_avwap_premium_pct')) if avwap_stack.get('session_avwap_premium_pct') is not None else None
+    except Exception:
+        session_avwap_premium_pct = None
+    try:
+        breakout_anchor_premium_pct = float(avwap_stack.get('breakout_anchor_premium_pct')) if avwap_stack.get('breakout_anchor_premium_pct') is not None else None
+    except Exception:
+        breakout_anchor_premium_pct = None
+    try:
+        event_anchor_premium_pct = float(avwap_stack.get('event_anchor_premium_pct')) if avwap_stack.get('event_anchor_premium_pct') is not None else None
+    except Exception:
+        event_anchor_premium_pct = None
+    if session_avwap_premium_pct is not None and session_avwap_premium_pct > session_avwap_premium_pct_max:
+        premium_guard['reasons'].append('session_avwap_premium_too_high')
+        premium_guard['labels'].append(f'日内AVWAP溢价{session_avwap_premium_pct:.2f}%')
+    if breakout_anchor_premium_pct is not None and breakout_anchor_premium_pct > breakout_anchor_premium_pct_max:
+        premium_guard['reasons'].append('breakout_anchor_premium_too_high')
+        premium_guard['labels'].append(f'突破锚溢价{breakout_anchor_premium_pct:.2f}%')
+    if event_anchor_premium_pct is not None and event_anchor_premium_pct > event_anchor_premium_pct_max:
+        premium_guard['reasons'].append('event_anchor_premium_too_high')
+        premium_guard['labels'].append(f'事件锚溢价{event_anchor_premium_pct:.2f}%')
+    if premium_guard['reasons']:
+        premium_guard['observe_only'] = True
+        premium_guard['observe_reason'] = str(premium_guard['reasons'][0])
+        conditions.append('过热保护:' + '+'.join(premium_guard['labels'][:3]))
 
     pace_state = _resolve_volume_pace_state(
         volume_pace_ratio,
@@ -3714,8 +4040,13 @@ def detect_right_side_breakout(
             pace_adj += _P1_VOL_RIGHT_SURGE_BONUS
     concept_adj = int(concept_gate.get('score_adj', 0) or 0)
     avwap_adj = min(12, max(0, avwap_control_count) * 4) if avwap_stack_ready else 0
-    observe_only_gate = bool(concept_gate.get('observe_only'))
-    observe_reason = str(concept_gate.get('observe_reason') or '') if observe_only_gate else ''
+    observe_reasons: list[str] = []
+    if concept_gate.get('observe_only'):
+        observe_reasons.append(str(concept_gate.get('observe_reason') or 'concept_ecology_observe'))
+    if premium_guard.get('observe_only'):
+        observe_reasons.append(str(premium_guard.get('observe_reason') or 'breakout_premium_too_high'))
+    observe_only_gate = bool(observe_reasons)
+    observe_reason = str(observe_reasons[0]) if observe_reasons else ''
 
     strength = 0
     if break_mid:
@@ -3739,6 +4070,10 @@ def detect_right_side_breakout(
         'triggered_at': int(time.time()),
         'details': {
             'price': price, 'boll_mid': boll_mid, 'boll_upper': boll_upper,
+            'break_mid_offset_pct': round(float(mid_offset_pct), 4) if mid_offset_pct is not None else None,
+            'break_upper_offset_pct': round(float(upper_offset_pct), 4) if upper_offset_pct is not None else None,
+            'breakout_max_offset_pct': round(float(breakout_max_offset_pct * 100.0), 4),
+            'breakout_max_offset_upper_pct': round(float(breakout_max_offset_upper_pct * 100.0), 4),
             'volume_ratio': volume_ratio, 'ma5': ma5, 'ma10': ma10,
             'rsi6': rsi6, 'rsi_ok': rsi_ok,
             'prev_price': prev_price, 'cross_mid': cross_mid, 'cross_upper': cross_upper,
@@ -3751,6 +4086,7 @@ def detect_right_side_breakout(
             'avwap_control_count': int(avwap_control_count),
             'avwap_control_labels': avwap_control_labels,
             'avwap_adj': int(avwap_adj),
+            'premium_guard': premium_guard,
             'concept_board': str(core_concept_board or ''),
             'concept_boards': list(concept_boards or []),
             'concept_codes': list(concept_codes or []),
@@ -3763,6 +4099,7 @@ def detect_right_side_breakout(
             'concept_ecology_adj': int(concept_adj),
             'observe_only': observe_only_gate,
             'observe_reason': observe_reason if observe_only_gate else None,
+            'observe_reasons': observe_reasons,
             'threshold': th_meta,
         },
     }
@@ -4478,6 +4815,7 @@ def detect_positive_t(
     industry_ecology: Optional[dict] = None,
     concept_ecology: Optional[dict] = None,
     concept_ecology_multi: Optional[list[dict]] = None,
+    index_context: Optional[dict] = None,
 ) -> dict:
     """T+0 正T回补信号。"""
     result = _empty('positive_t')
@@ -4637,6 +4975,10 @@ def detect_positive_t(
         wash_trade=wash_trade,
         ask_wall_absorb=ask_wall_absorb,
     )
+    index_gate = _compute_t0_index_context_gate(
+        signal_type='positive_t',
+        index_context=index_context,
+    )
 
     if ts_code:
         update_hysteresis(ts_code, 'positive_t', tick_price)
@@ -4647,6 +4989,8 @@ def detect_positive_t(
         or bool(inventory_gate.get('observe_only'))
         or bool(rebuild_quality.get('observe_only'))
         or bool(env_gate.get('observe_only'))
+        or bool(index_gate.get('observe_only'))
+        or bool(index_gate.get('blocked'))
     )
     if ts_code and not observe_only:
         _update_t0_last_signal_state(ts_code, 'positive_t', tick_price, now_ts)
@@ -4668,6 +5012,9 @@ def detect_positive_t(
     env_reasons = env_gate.get('reasons') if isinstance(env_gate.get('reasons'), list) else []
     if env_reasons:
         quality_suffix += f"·环境门:{'|'.join(str(x) for x in env_reasons[:2])}"
+    index_reasons = index_gate.get('reasons') if isinstance(index_gate.get('reasons'), list) else []
+    if index_reasons:
+        quality_suffix += f"·指数门:{'|'.join(str(x) for x in index_reasons[:2])}"
 
     return {
         'has_signal': True,
@@ -4708,6 +5055,8 @@ def detect_positive_t(
             't0_inventory': inventory_gate,
             'positive_rebuild_quality': rebuild_quality,
             'do_not_t_env': env_gate,
+            'index_context_gate': index_gate,
+            'index_context': dict(index_context or {}),
             'industry_ecology': dict(industry_ecology or {}),
             'concept_ecology': dict(concept_ecology or {}),
             'concept_ecology_multi': list(concept_ecology_multi or []),
@@ -4745,6 +5094,7 @@ def detect_reverse_t(
     industry_ecology: Optional[dict] = None,
     concept_ecology: Optional[dict] = None,
     concept_ecology_multi: Optional[list[dict]] = None,
+    index_context: Optional[dict] = None,
     ts_code: Optional[str] = None,
     thresholds: Optional[dict] = None,
     position_state: Optional[dict] = None,
@@ -5014,6 +5364,15 @@ def detect_reverse_t(
         wash_trade=wash_trade_severe,
         ask_wall_absorb=ask_wall_absorb,
     )
+    index_gate = _compute_t0_index_context_gate(
+        signal_type='reverse_t',
+        index_context=index_context,
+        bearish_confirm_count=len(bearish_confirms),
+        distribution_confirm_count=int(theme_guard.get('distribution_confirm_count', 0) or 0),
+        bid_wall_break=bool(bid_wall_break),
+        real_buy_fading=bool(real_buy_fading),
+        super_net_flow_bps=super_net_flow_bps,
+    )
 
     if ts_code:
         update_hysteresis(ts_code, 'reverse_t', tick_price)
@@ -5024,6 +5383,8 @@ def detect_reverse_t(
         or bool(inventory_gate.get('observe_only'))
         or bool(theme_guard.get('observe_only'))
         or bool(env_gate.get('observe_only'))
+        or bool(index_gate.get('observe_only'))
+        or bool(index_gate.get('blocked'))
     )
     if ts_code and not observe_only:
         _update_t0_last_signal_state(ts_code, 'reverse_t', tick_price, now_ts)
@@ -5041,6 +5402,9 @@ def detect_reverse_t(
     env_reasons = env_gate.get('reasons') if isinstance(env_gate.get('reasons'), list) else []
     if env_reasons:
         guard_suffix += f"·环境门:{'|'.join(str(x) for x in env_reasons[:2])}"
+    index_reasons = index_gate.get('reasons') if isinstance(index_gate.get('reasons'), list) else []
+    if index_reasons:
+        guard_suffix += f"·指数门:{'|'.join(str(x) for x in index_reasons[:2])}"
 
     return {
         'has_signal': True,
@@ -5089,6 +5453,8 @@ def detect_reverse_t(
                 and int(theme_guard.get('distribution_confirm_count', 0) or 0) >= int(theme_guard.get('distribution_required', 0) or 0)
             ),
             'do_not_t_env': env_gate,
+            'index_context_gate': index_gate,
+            'index_context': dict(index_context or {}),
             'anti_churn': anti_detail,
             'observe_only': observe_only,
             'score_exec_th': _SCORE_EXECUTABLE,

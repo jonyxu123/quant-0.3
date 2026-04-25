@@ -360,6 +360,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
     down_limit = None
     pre_close = float(tick.get('pre_close', 0) or 0)
     instrument_profile = dict(_main_instrument_profile.get(ts_code, {}) or {})
+    index_context = load_t0_index_context(instrument_profile=instrument_profile, ts_code=ts_code)
     industry_name = str(_main_stock_industry.get(ts_code, '') or '')
     industry_code = str(_main_stock_industry_code.get(ts_code, '') or '').strip().upper()
     industry_ecology = dict(_main_industry_snapshot.get(industry_code, {}) or {}) if industry_code else {}
@@ -452,6 +453,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     'concept_ecology': concept_ecology,
                     'concept_ecology_multi': concept_ecology_multi,
                     'instrument_profile': instrument_profile,
+                    'index_context': index_context,
                 },
             )
             # Pool1 limit-magnet distance now follows dynamic threshold engine config.
@@ -1137,6 +1139,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     industry_ecology=industry_ecology,
                     concept_ecology=concept_ecology,
                     concept_ecology_multi=concept_ecology_multi,
+                    index_context=index_context,
                 )
                 if pos_t.get('has_signal'):
                     fired_pool2.append(_attach_signal_channel_meta(pos_t, pool_id=2))
@@ -1174,6 +1177,7 @@ def _compute_signals_for_tick(tick: dict, daily: dict, ts_code: str = '') -> lis
                     industry_ecology=industry_ecology,
                     concept_ecology=concept_ecology,
                     concept_ecology_multi=concept_ecology_multi,
+                    index_context=index_context,
                     ts_code=ts_code,
                     thresholds=t0_rev_th,
                     position_state=pool2_inventory_before,

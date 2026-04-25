@@ -14,6 +14,7 @@ install_patch(proxy_api_scheme="socks5h", proxy_api_url="http://bapi.51daili.com
 import queue
 import tushare as ts
 import pandas as pd
+import akshare as ak
 import duckdb
 import time
 import threading
@@ -22,6 +23,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 from config import DB_PATH, TUSHARE_TOKEN
 from backend.realtime.eastmoney_board_service import get_eastmoney_board_service
+
+_MIN_EXPECTED_CONCEPT_BOARD_COUNT = 150
 
 
 def _normalize_code6_local(raw: object) -> str:
@@ -56,6 +59,74 @@ def _normalize_em_board_code_local(raw: object) -> str:
         return f"BK{digits.zfill(4)}" if digits else s
     digits = "".join(ch for ch in s if ch.isdigit())
     return f"BK{digits.zfill(4)}" if digits else s
+
+
+def _build_concept_board_table_from_akshare(
+    concept_name_df: pd.DataFrame,
+    service,
+) -> pd.DataFrame:
+    if concept_name_df is None or concept_name_df.empty:
+        return service.to_board_table(pd.DataFrame(), "concept")
+
+    df = concept_name_df.copy()
+    synced_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    up_count = pd.to_numeric(df.get("上涨家数"), errors="coerce")
+    down_count = pd.to_numeric(df.get("下跌家数"), errors="coerce")
+    total_count = up_count.fillna(0) + down_count.fillna(0)
+    breadth_ratio = (up_count / total_count.where(total_count != 0)).round(4)
+
+    out = pd.DataFrame(
+        {
+            "board_type": "concept",
+            "board_type_name": service.BOARD_TYPE_LABEL["concept"],
+            "board_code": df.get("板块代码", "").map(service.normalize_board_code),
+            "board_name": df.get("板块名称", "").astype(str).str.strip(),
+            "板块代码": df.get("板块代码", "").map(service.normalize_board_code),
+            "板块名称": df.get("板块名称", "").astype(str).str.strip(),
+            "最新价": pd.to_numeric(df.get("最新价"), errors="coerce"),
+            "涨跌幅": pd.to_numeric(df.get("涨跌幅"), errors="coerce"),
+            "涨跌额": pd.to_numeric(df.get("涨跌额"), errors="coerce"),
+            "成交量": pd.Series([None] * len(df), dtype="float64"),
+            "成交额": pd.Series([None] * len(df), dtype="float64"),
+            "换手率": pd.to_numeric(df.get("换手率"), errors="coerce"),
+            "总市值": pd.to_numeric(df.get("总市值"), errors="coerce"),
+            "上涨家数": up_count,
+            "下跌家数": down_count,
+            "上涨占比": breadth_ratio,
+            "领涨股票": df.get("领涨股票", "").astype(str).str.strip(),
+            "领涨股票代码": "",
+            "领涨股票完整代码": "",
+            "领涨股票-涨跌幅": pd.to_numeric(df.get("领涨股票-涨跌幅"), errors="coerce"),
+            "source": "akshare_eastmoney_concept_board",
+            "synced_at": synced_at,
+            "concept_code": df.get("板块代码", "").map(service.normalize_board_code),
+            "concept_name": df.get("板块名称", "").astype(str).str.strip(),
+        }
+    )
+    return out.reset_index(drop=True)
+
+
+def _load_complete_concept_board_catalog(service) -> tuple[pd.DataFrame, str]:
+    errors: list[str] = []
+    try:
+        board_df = service.fetch_boards("concept")
+        concept_df = service.to_board_table(board_df, "concept")
+        if concept_df is not None and len(concept_df) >= _MIN_EXPECTED_CONCEPT_BOARD_COUNT:
+            return concept_df, "eastmoney_push2"
+        errors.append(f"eastmoney_push2_count={0 if concept_df is None else len(concept_df)}")
+    except Exception as e:
+        errors.append(f"eastmoney_push2_error={e}")
+
+    concept_name_df = ak.stock_board_concept_name_em()
+    concept_df = _build_concept_board_table_from_akshare(concept_name_df, service)
+    if concept_df is None or concept_df.empty:
+        error_text = "; ".join(errors) if errors else "concept board catalog empty"
+        raise RuntimeError(error_text)
+    if errors:
+        logger.warning(
+            f"EastMoney push2 concept catalog incomplete, fallback to AKShare full concept catalog: {', '.join(errors)}"
+        )
+    return concept_df, "akshare_eastmoney_fallback"
 
 
 class RateLimiter:
@@ -895,8 +966,7 @@ class FullDataSync:
         logger.info("开始同步东方财富概念板块列表...")
         try:
             service = get_eastmoney_board_service()
-            board_df = service.fetch_boards("concept")
-            concept_df = service.to_board_table(board_df, "concept")
+            concept_df, _ = _load_complete_concept_board_catalog(service)
             if concept_df is None or concept_df.empty:
                 logger.warning("东方财富概念板块列表为空")
                 return
@@ -909,7 +979,7 @@ class FullDataSync:
         logger.info("开始同步东方财富概念板块成分股...")
         try:
             concept_df = pd.read_sql("SELECT * FROM concept", self.conn)
-            if concept_df.empty:
+            if concept_df.empty or len(concept_df) < _MIN_EXPECTED_CONCEPT_BOARD_COUNT:
                 logger.info("概念板块目录为空，先刷新板块目录...")
                 self.sync_historical_concept()
                 concept_df = pd.read_sql("SELECT * FROM concept", self.conn)

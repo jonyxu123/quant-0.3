@@ -167,6 +167,7 @@ POOL1_SIGNAL_CONFIG = {
         "hard_gate_enabled": os.getenv("POOL1_CONCEPT_ECOLOGY_HARD_GATE_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
         "block_on_retreat": os.getenv("POOL1_CONCEPT_ECOLOGY_BLOCK_ON_RETREAT", "1").lower() in ("1", "true", "yes", "on"),
         "observe_on_hard_weak": os.getenv("POOL1_CONCEPT_ECOLOGY_OBSERVE_ON_HARD_WEAK", "1").lower() in ("1", "true", "yes", "on"),
+        "observe_on_missing": os.getenv("POOL1_CONCEPT_ECOLOGY_OBSERVE_ON_MISSING", "1").lower() in ("1", "true", "yes", "on"),
         "hard_retreat_threshold": float(os.getenv("POOL1_CONCEPT_ECOLOGY_HARD_RETREAT_THRESHOLD", "-20")),
         "hard_weak_threshold": float(os.getenv("POOL1_CONCEPT_ECOLOGY_HARD_WEAK_THRESHOLD", "5")),
         "hard_strong_threshold": float(os.getenv("POOL1_CONCEPT_ECOLOGY_HARD_STRONG_THRESHOLD", "30")),
@@ -347,6 +348,12 @@ POOL1_SIGNAL_CONFIG = {
     "scoring": {
         "score_executable": float(os.getenv("POOL1_SCORE_EXECUTABLE", "70")),
         "score_observe": float(os.getenv("POOL1_SCORE_OBSERVE", "55")),
+        "left_reclaim_score_executable": float(os.getenv("POOL1_LEFT_RECLAIM_SCORE_EXECUTABLE", "72")),
+        "left_reclaim_score_observe": float(os.getenv("POOL1_LEFT_RECLAIM_SCORE_OBSERVE", "55")),
+        "breakout_continuation_score_executable": float(os.getenv("POOL1_BREAKOUT_CONTINUATION_SCORE_EXECUTABLE", "74")),
+        "breakout_continuation_score_observe": float(os.getenv("POOL1_BREAKOUT_CONTINUATION_SCORE_OBSERVE", "56")),
+        "exit_score_executable": float(os.getenv("POOL1_EXIT_SCORE_EXECUTABLE", "68")),
+        "exit_score_observe": float(os.getenv("POOL1_EXIT_SCORE_OBSERVE", "52")),
     },
     # 盘中量能进度：当日累计量相对昨量，并按交易时段进度归一化
     "volume_pace": {
@@ -515,6 +522,25 @@ T0_SIGNAL_CONFIG = {
         "low_liquidity_bidask": float(os.getenv("T0_DO_NOT_T_LOW_LIQ_BIDASK", "0.75")),
         "whitelist_bidask_support": float(os.getenv("T0_DO_NOT_T_WHITELIST_BIDASK", "1.05")),
     },
+    "index_context_guard": {
+        "enabled": os.getenv("T0_INDEX_GUARD_ENABLED", "1").lower() in ("1", "true", "yes", "on"),
+        "cache_ttl_sec": float(os.getenv("T0_INDEX_GUARD_CACHE_TTL_SEC", "3")),
+        "risk_off_primary_pct": float(os.getenv("T0_INDEX_GUARD_RISK_OFF_PRIMARY_PCT", "-0.90")),
+        "risk_off_avg_pct": float(os.getenv("T0_INDEX_GUARD_RISK_OFF_AVG_PCT", "-0.60")),
+        "risk_off_negative_count": int(os.getenv("T0_INDEX_GUARD_RISK_OFF_NEGATIVE_COUNT", "3")),
+        "risk_off_min_signals": int(os.getenv("T0_INDEX_GUARD_RISK_OFF_MIN_SIGNALS", "2")),
+        "panic_primary_pct": float(os.getenv("T0_INDEX_GUARD_PANIC_PRIMARY_PCT", "-1.60")),
+        "panic_avg_pct": float(os.getenv("T0_INDEX_GUARD_PANIC_AVG_PCT", "-1.00")),
+        "panic_negative_count": int(os.getenv("T0_INDEX_GUARD_PANIC_NEGATIVE_COUNT", "4")),
+        "risk_on_primary_pct": float(os.getenv("T0_INDEX_GUARD_RISK_ON_PRIMARY_PCT", "0.80")),
+        "risk_on_avg_pct": float(os.getenv("T0_INDEX_GUARD_RISK_ON_AVG_PCT", "0.45")),
+        "risk_on_positive_count": int(os.getenv("T0_INDEX_GUARD_RISK_ON_POSITIVE_COUNT", "3")),
+        "positive_block_on_panic": os.getenv("T0_INDEX_GUARD_POS_BLOCK_ON_PANIC", "1").lower() in ("1", "true", "yes", "on"),
+        "positive_observe_on_risk_off": os.getenv("T0_INDEX_GUARD_POS_OBSERVE_ON_RISK_OFF", "1").lower() in ("1", "true", "yes", "on"),
+        "reverse_observe_on_risk_on": os.getenv("T0_INDEX_GUARD_REV_OBSERVE_ON_RISK_ON", "1").lower() in ("1", "true", "yes", "on"),
+        "reverse_distribution_min_confirms": int(os.getenv("T0_INDEX_GUARD_REV_MIN_DISTRIBUTION", "2")),
+        "reverse_super_outflow_bps": float(os.getenv("T0_INDEX_GUARD_REV_SUPER_OUT_BPS", "-80")),
+    },
     "quality": {
         "horizons_sec": [60, 180, 300],
         "alert_precision_drop": 0.08,
@@ -609,6 +635,10 @@ DYNAMIC_THRESHOLD_CONFIG = {
             "eps_mid": 1.002,
             "eps_upper": 1.001,
             "breakout_max_offset_pct": 3.0,
+            "breakout_max_offset_upper_pct": 2.0,
+            "session_avwap_premium_pct_max": 1.8,
+            "breakout_anchor_premium_pct_max": 2.5,
+            "event_anchor_premium_pct_max": 2.0,
         },
         "positive_t": {
             "bias_vwap_th": -1.5,
@@ -640,6 +670,10 @@ DYNAMIC_THRESHOLD_CONFIG = {
                 "eps_mid": 1.003,
                 "eps_upper": 1.0015,
                 "breakout_max_offset_pct": 2.0,
+                "breakout_max_offset_upper_pct": 1.2,
+                "session_avwap_premium_pct_max": 1.2,
+                "breakout_anchor_premium_pct_max": 2.0,
+                "event_anchor_premium_pct_max": 1.5,
                 "session_hint": "open_strict",
             },
             "positive_t": {
@@ -733,7 +767,12 @@ DYNAMIC_THRESHOLD_CONFIG = {
     "regime_overrides": {
         "high_vol": {
             "left_side_buy": {"near_lower_th": 0.8},
-            "right_side_breakout": {"eps_mid": 1.001, "eps_upper": 1.0005},
+            "right_side_breakout": {
+                "eps_mid": 1.001,
+                "eps_upper": 1.0005,
+                "breakout_max_offset_upper_pct": 1.8,
+                "session_avwap_premium_pct_max": 1.6,
+            },
             "positive_t": {"bias_vwap_th": -2.0},
             "reverse_t": {"z_th": 2.6},
         },
@@ -743,13 +782,27 @@ DYNAMIC_THRESHOLD_CONFIG = {
         },
         "drought": {
             "left_side_buy": {"near_lower_th": 0.35, "rsi_oversold": 28.0},
-            "right_side_breakout": {"eps_mid": 1.003, "eps_upper": 1.0015, "breakout_max_offset_pct": 2.0},
+            "right_side_breakout": {
+                "eps_mid": 1.003,
+                "eps_upper": 1.0015,
+                "breakout_max_offset_pct": 2.0,
+                "breakout_max_offset_upper_pct": 1.5,
+                "session_avwap_premium_pct_max": 1.3,
+                "breakout_anchor_premium_pct_max": 2.2,
+                "event_anchor_premium_pct_max": 1.8,
+            },
             "positive_t": {"bias_vwap_th": -1.8},
             "reverse_t": {"z_th": 2.6},
         },
         "seal_env": {
             "left_side_buy": {"blocked": True},
-            "right_side_breakout": {"observer_only": True, "eps_mid": 1.003, "eps_upper": 1.0015},
+            "right_side_breakout": {
+                "observer_only": True,
+                "eps_mid": 1.003,
+                "eps_upper": 1.0015,
+                "breakout_max_offset_upper_pct": 1.2,
+                "session_avwap_premium_pct_max": 1.0,
+            },
             "positive_t": {"observer_only": True, "bias_vwap_th": -2.0},
             "reverse_t": {"observer_only": True, "z_th": 2.8},
         },
@@ -764,7 +817,15 @@ DYNAMIC_THRESHOLD_CONFIG = {
         {
             "signal_type": "right_side_breakout",
             "board_segment": "gem",
-            "params": {"eps_mid": 1.0025, "eps_upper": 1.0012, "breakout_max_offset_pct": 2.5},
+            "params": {
+                "eps_mid": 1.0025,
+                "eps_upper": 1.0012,
+                "breakout_max_offset_pct": 2.5,
+                "breakout_max_offset_upper_pct": 1.8,
+                "session_avwap_premium_pct_max": 1.6,
+                "breakout_anchor_premium_pct_max": 2.3,
+                "event_anchor_premium_pct_max": 1.8,
+            },
             "reason": "gem_breakout_tighten",
         },
         {
@@ -788,7 +849,15 @@ DYNAMIC_THRESHOLD_CONFIG = {
         {
             "signal_type": "right_side_breakout",
             "board_segment": "star",
-            "params": {"eps_mid": 1.0025, "eps_upper": 1.0012, "breakout_max_offset_pct": 2.5},
+            "params": {
+                "eps_mid": 1.0025,
+                "eps_upper": 1.0012,
+                "breakout_max_offset_pct": 2.5,
+                "breakout_max_offset_upper_pct": 1.8,
+                "session_avwap_premium_pct_max": 1.6,
+                "breakout_anchor_premium_pct_max": 2.3,
+                "event_anchor_premium_pct_max": 1.8,
+            },
             "reason": "star_breakout_tighten",
         },
         {
@@ -884,7 +953,13 @@ DYNAMIC_THRESHOLD_CONFIG = {
         {
             "signal_type": "right_side_breakout",
             "listing_stage": "ipo_young",
-            "params": {"observer_only": True, "eps_mid": 1.003, "eps_upper": 1.0015},
+            "params": {
+                "observer_only": True,
+                "eps_mid": 1.003,
+                "eps_upper": 1.0015,
+                "breakout_max_offset_upper_pct": 1.5,
+                "session_avwap_premium_pct_max": 1.2,
+            },
             "reason": "ipo_young_pool1_observe_only",
         },
         {

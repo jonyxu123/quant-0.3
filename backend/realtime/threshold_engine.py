@@ -676,6 +676,7 @@ def build_signal_context(
     core_concept_board = str(market.get("core_concept_board") or "").strip()
     concept_ecology = market.get("concept_ecology") if isinstance(market.get("concept_ecology"), dict) else {}
     industry_ecology = market.get("industry_ecology") if isinstance(market.get("industry_ecology"), dict) else {}
+    index_context = market.get("index_context") if isinstance(market.get("index_context"), dict) else {}
     micro_environment = _detect_micro_environment(
         price=price,
         bid_ask_ratio=bid_ask_ratio,
@@ -728,6 +729,8 @@ def build_signal_context(
         "core_concept_board": core_concept_board,
         "concept_ecology": dict(concept_ecology),
         "industry_ecology": dict(industry_ecology),
+        "index_context": dict(index_context),
+        "index_state": str(index_context.get("state") or ""),
         "volume_drought": bool(micro_environment.get("volume_drought")),
         "board_seal_env": bool(micro_environment.get("board_seal_env")),
         "seal_side": micro_environment.get("seal_side"),

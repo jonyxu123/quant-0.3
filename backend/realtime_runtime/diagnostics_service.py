@@ -6,6 +6,7 @@ from .persistence_service import *  # noqa: F401,F403
 from .pool_service import _build_member_data, _evaluate_signals_fast_internal
 from . import pool_service as pool_service_module
 import backend.realtime_runtime.runtime_jobs as runtime_jobs
+from backend.realtime.gm_runtime.common import load_t0_index_context
 
 def runtime_pool1_left_replay(
     hours: int = Query(72, ge=1, le=240),
@@ -865,6 +866,7 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
             "concept_ecology": m.get("concept_ecology"),
             "concept_ecology_multi": m.get("concept_ecology_multi"),
             "instrument_profile": m.get("instrument_profile"),
+            "index_context": load_t0_index_context(instrument_profile=m.get("instrument_profile"), ts_code=ts_code),
         },
     )
     thresholds = get_thresholds("positive_t", ctx)
@@ -902,6 +904,7 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
         industry_ecology=m.get("industry_ecology"),
         concept_ecology=m.get("concept_ecology"),
         concept_ecology_multi=m.get("concept_ecology_multi"),
+        index_context=load_t0_index_context(instrument_profile=m.get("instrument_profile"), ts_code=ts_code),
     )
 
     try:
@@ -953,6 +956,8 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
     strength = float(pos.get("strength", 0) or 0)
     positive_rebuild_quality = details.get("positive_rebuild_quality") if isinstance(details.get("positive_rebuild_quality"), dict) else {}
     t0_inventory = details.get("t0_inventory") if isinstance(details.get("t0_inventory"), dict) else inventory_state
+    index_context_gate = details.get("index_context_gate") if isinstance(details.get("index_context_gate"), dict) else {}
+    index_context = details.get("index_context") if isinstance(details.get("index_context"), dict) else {}
 
     candidate_reasons: list[str] = []
     boll_lower = float(feat.get("boll_lower", 0) or 0)
@@ -994,6 +999,8 @@ def _build_t0_positive_diag_row(member: dict, provider) -> dict:
         "threshold": details.get("threshold") if isinstance(details.get("threshold"), dict) else thresholds,
         "positive_rebuild_quality": positive_rebuild_quality,
         "t0_inventory": t0_inventory,
+        "index_context_gate": index_context_gate,
+        "index_context": index_context,
         "market_structure": {
             "tag": ms.get("tag"),
             "big_order_bias": ms.get("big_order_bias"),
@@ -1062,6 +1069,9 @@ def runtime_t0_positive_diagnostics(
         "members": total_rows,
         "triggered": 0,
         "observe_only": 0,
+        "index_observe_only": 0,
+        "index_panic_selloff": 0,
+        "index_risk_off": 0,
         "veto": 0,
         "trigger_no_confirm": 0,
         "trigger_score_filtered": 0,
@@ -1092,6 +1102,15 @@ def runtime_t0_positive_diagnostics(
             summary["off_session_skip"] += 1
         elif status == "error":
             summary["error"] += 1
+
+        index_gate = row.get("index_context_gate") if isinstance(row.get("index_context_gate"), dict) else {}
+        index_reasons = [str(x or "").strip() for x in (index_gate.get("reasons") or [])] if isinstance(index_gate.get("reasons"), list) else []
+        if bool(index_gate.get("observe_only")):
+            summary["index_observe_only"] += 1
+        if "index_panic_selloff" in index_reasons:
+            summary["index_panic_selloff"] += 1
+        if "index_risk_off" in index_reasons:
+            summary["index_risk_off"] += 1
 
         quality = row.get("positive_rebuild_quality") if isinstance(row.get("positive_rebuild_quality"), dict) else {}
         if bool(quality.get("quality_pass", False)):
@@ -2445,6 +2464,7 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
             "concept_ecology": m.get("concept_ecology"),
             "concept_ecology_multi": m.get("concept_ecology_multi"),
             "instrument_profile": m.get("instrument_profile"),
+            "index_context": load_t0_index_context(instrument_profile=m.get("instrument_profile"), ts_code=ts_code),
         },
     )
     thresholds = get_thresholds("reverse_t", ctx)
@@ -2478,6 +2498,7 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
         industry_ecology=m.get("industry_ecology"),
         concept_ecology=m.get("concept_ecology"),
         concept_ecology_multi=m.get("concept_ecology_multi"),
+        index_context=load_t0_index_context(instrument_profile=m.get("instrument_profile"), ts_code=ts_code),
         ts_code=ts_code,
         thresholds=thresholds,
     )
@@ -2522,6 +2543,8 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
     has_signal = bool(rev.get("has_signal", False))
     observe_only = bool(details.get("observe_only", False))
     strength = float(rev.get("strength", 0) or 0)
+    index_context_gate = details.get("index_context_gate") if isinstance(details.get("index_context_gate"), dict) else {}
+    index_context = details.get("index_context") if isinstance(details.get("index_context"), dict) else {}
 
     if has_signal:
         status = "trigger_observe_only" if observe_only else "triggered"
@@ -2555,6 +2578,8 @@ def _build_t0_reverse_diag_row(member: dict, provider) -> dict:
         "confirm_items": confirm_items,
         "bearish_confirm_count": len(confirm_items),
         "threshold": details.get("threshold") if isinstance(details.get("threshold"), dict) else thresholds,
+        "index_context_gate": index_context_gate,
+        "index_context": index_context,
         "momentum_divergence": dict(vpower_info or {}),
         "market_structure": {
             "tag": ms.get("tag"),
@@ -2609,6 +2634,8 @@ def runtime_t0_reverse_diagnostics(
         "members": total_rows,
         "triggered": 0,
         "observe_only": 0,
+        "index_observe_only": 0,
+        "index_risk_on_no_distribution": 0,
         "surge_guard_veto": 0,
         "guard_veto": 0,
         "main_rally_guard": 0,
@@ -2641,6 +2668,12 @@ def runtime_t0_reverse_diagnostics(
             summary["error"] += 1
         if bool(row.get("main_rally_guard", False)):
             summary["main_rally_guard"] += 1
+        index_gate = row.get("index_context_gate") if isinstance(row.get("index_context_gate"), dict) else {}
+        index_reasons = [str(x or "").strip() for x in (index_gate.get("reasons") or [])] if isinstance(index_gate.get("reasons"), list) else []
+        if bool(index_gate.get("observe_only")):
+            summary["index_observe_only"] += 1
+        if "index_risk_on_no_distribution" in index_reasons:
+            summary["index_risk_on_no_distribution"] += 1
 
     if interesting_only:
         rows = [r for r in rows if str(r.get("status") or "") not in {"idle", "off_session_skip"}]

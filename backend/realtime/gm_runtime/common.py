@@ -56,6 +56,30 @@ except Exception:
     _resolve_market_phase_detail = None
     _resolve_session_policy = None
 
+_T0_INDEX_GUARD_CFG = _T0_CFG.get('index_context_guard', {}) if isinstance(_T0_CFG, dict) else {}
+_T0_INDEX_CONTEXT_ENABLED = bool(_T0_INDEX_GUARD_CFG.get('enabled', True))
+_T0_INDEX_CONTEXT_CACHE_TTL_SEC = max(
+    1.0,
+    float(_T0_INDEX_GUARD_CFG.get('cache_ttl_sec', 3.0) or 3.0),
+)
+_T0_INDEX_RISK_OFF_PRIMARY_PCT = float(_T0_INDEX_GUARD_CFG.get('risk_off_primary_pct', -0.90) or -0.90)
+_T0_INDEX_RISK_OFF_AVG_PCT = float(_T0_INDEX_GUARD_CFG.get('risk_off_avg_pct', -0.60) or -0.60)
+_T0_INDEX_RISK_OFF_NEGATIVE_COUNT = int(_T0_INDEX_GUARD_CFG.get('risk_off_negative_count', 3) or 3)
+_T0_INDEX_RISK_OFF_MIN_SIGNALS = max(1, int(_T0_INDEX_GUARD_CFG.get('risk_off_min_signals', 2) or 2))
+_T0_INDEX_PANIC_PRIMARY_PCT = float(_T0_INDEX_GUARD_CFG.get('panic_primary_pct', -1.60) or -1.60)
+_T0_INDEX_PANIC_AVG_PCT = float(_T0_INDEX_GUARD_CFG.get('panic_avg_pct', -1.00) or -1.00)
+_T0_INDEX_PANIC_NEGATIVE_COUNT = int(_T0_INDEX_GUARD_CFG.get('panic_negative_count', 4) or 4)
+_T0_INDEX_RISK_ON_PRIMARY_PCT = float(_T0_INDEX_GUARD_CFG.get('risk_on_primary_pct', 0.80) or 0.80)
+_T0_INDEX_RISK_ON_AVG_PCT = float(_T0_INDEX_GUARD_CFG.get('risk_on_avg_pct', 0.45) or 0.45)
+_T0_INDEX_RISK_ON_POSITIVE_COUNT = int(_T0_INDEX_GUARD_CFG.get('risk_on_positive_count', 3) or 3)
+_T0_INDEX_CONTEXT_CODES: tuple[tuple[str, str], ...] = (
+    ('000300.SH', '沪深300'),
+    ('399006.SZ', '创业板指'),
+    ('000905.SH', '中证500'),
+    ('000001.SH', '上证指数'),
+    ('399001.SZ', '深证成指'),
+)
+
 # 尝试导入 gm
 try:
     from gm.api import *  # type: ignore
@@ -209,6 +233,245 @@ def _derive_price_from_order_book(tick: dict) -> tuple[float, str]:
     if ask1 > 0:
         return ask1, 'ask1'
     return 0.0, 'none'
+
+
+def _pick_t0_primary_index_code(
+    instrument_profile: Optional[dict] = None,
+    ts_code: Optional[str] = None,
+) -> str:
+    profile = instrument_profile if isinstance(instrument_profile, dict) else {}
+    board_segment = str(profile.get('board_segment') or '').strip().lower()
+    code = str(ts_code or '').split('.', 1)[0]
+    if not board_segment:
+        if code.startswith(('300', '301')):
+            board_segment = 'gem'
+        elif code.startswith('688'):
+            board_segment = 'star'
+        elif str(ts_code or '').upper().endswith('.BJ') or code.startswith(('4', '8')):
+            board_segment = 'beijing'
+    if board_segment == 'gem':
+        return '399006.SZ'
+    if board_segment in {'star', 'beijing'}:
+        return '000905.SH'
+    return '000300.SH'
+
+
+def _load_t0_index_snapshot(force_refresh: bool = False) -> dict[str, dict]:
+    global _main_index_context_at
+    if not _T0_INDEX_CONTEXT_ENABLED:
+        return {}
+    now = time.time()
+    ttl = max(1.0, float(_T0_INDEX_CONTEXT_CACHE_TTL_SEC))
+    if not force_refresh:
+        with _main_index_context_lock:
+            if _main_index_context_cache and (now - float(_main_index_context_at or 0.0)) < ttl:
+                return {str(k): dict(v or {}) for k, v in _main_index_context_cache.items()}
+
+    snapshot: dict[str, dict] = {}
+    now_ts = int(now)
+    for ts_code, name in _T0_INDEX_CONTEXT_CODES:
+        previous = dict(_main_index_snapshot.get(ts_code) or {})
+        try:
+            tick = mootdx_client.get_index_tick(ts_code) or {}
+            source = 'mootdx_index'
+        except Exception:
+            tick = {}
+            source = 'index_fetch_error'
+
+        try:
+            price = float(tick.get('price', 0) or 0)
+        except Exception:
+            price = 0.0
+        try:
+            pre_close = float(tick.get('pre_close', 0) or 0)
+        except Exception:
+            pre_close = 0.0
+        try:
+            raw_pct_chg = float(tick.get('pct_chg', 0) or 0)
+        except Exception:
+            raw_pct_chg = 0.0
+
+        valid = bool(price > 0 and (pre_close > 0 or abs(raw_pct_chg) > 1e-9))
+        if not valid and previous:
+            tick = previous
+            source = 'cache_last_good'
+            price = float(previous.get('price', 0) or 0)
+            pre_close = float(previous.get('pre_close', 0) or 0)
+            raw_pct_chg = float(previous.get('pct_chg', 0) or 0)
+            valid = bool(price > 0 and (pre_close > 0 or abs(raw_pct_chg) > 1e-9))
+
+        if pre_close <= 0 and price > 0 and abs(raw_pct_chg) > 1e-9 and abs(raw_pct_chg) < 90:
+            try:
+                pre_close = price / (1.0 + raw_pct_chg / 100.0)
+            except Exception:
+                pre_close = 0.0
+        pct_chg = ((price - pre_close) / pre_close * 100.0) if (price > 0 and pre_close > 0) else raw_pct_chg
+
+        try:
+            amount = float(tick.get('amount', 0) or 0)
+        except Exception:
+            amount = 0.0
+        try:
+            updated_at = int(tick.get('timestamp', 0) or 0)
+        except Exception:
+            updated_at = 0
+        if updated_at <= 0:
+            updated_at = now_ts
+
+        prev_pct = None
+        if previous:
+            try:
+                prev_pct = float(previous.get('pct_chg', 0) or 0)
+            except Exception:
+                prev_pct = None
+        pct_delta = (pct_chg - prev_pct) if prev_pct is not None else None
+
+        item = {
+            'ts_code': ts_code,
+            'name': name,
+            'price': price,
+            'pre_close': pre_close,
+            'pct_chg': pct_chg,
+            'pct_chg_delta': pct_delta,
+            'amount': amount,
+            'updated_at': updated_at,
+            'source': source,
+            'is_mock': bool(tick.get('is_mock', False)),
+            'valid': bool(valid),
+        }
+        snapshot[ts_code] = item
+        if valid:
+            _main_index_snapshot[ts_code] = dict(item)
+
+    with _main_index_context_lock:
+        _main_index_context_cache.clear()
+        _main_index_context_cache.update({str(k): dict(v or {}) for k, v in snapshot.items()})
+        _main_index_context_at = float(time.time())
+    return {str(k): dict(v or {}) for k, v in snapshot.items()}
+
+
+def load_t0_index_context(
+    instrument_profile: Optional[dict] = None,
+    *,
+    ts_code: Optional[str] = None,
+    force_refresh: bool = False,
+) -> dict:
+    info = {
+        'enabled': bool(_T0_INDEX_CONTEXT_ENABLED),
+        'state': 'disabled' if not _T0_INDEX_CONTEXT_ENABLED else 'missing',
+        'reason': 'disabled' if not _T0_INDEX_CONTEXT_ENABLED else 'snapshot_missing',
+        'primary_index_code': '',
+        'primary_index_name': '',
+        'primary_pct_chg': None,
+        'primary_pct_delta': None,
+        'avg_pct_chg': None,
+        'positive_count': 0,
+        'negative_count': 0,
+        'valid_count': 0,
+        'broad_negative_ratio': None,
+        'signals': [],
+        'snapshot': [],
+        'by_code': {},
+    }
+    if not _T0_INDEX_CONTEXT_ENABLED:
+        return info
+
+    snapshot = _load_t0_index_snapshot(force_refresh=force_refresh)
+    if not snapshot:
+        return info
+
+    valid_items: list[dict] = []
+    for item in snapshot.values():
+        if not isinstance(item, dict):
+            continue
+        try:
+            pct = float(item.get('pct_chg', 0) or 0)
+        except Exception:
+            pct = 0.0
+        try:
+            price = float(item.get('price', 0) or 0)
+        except Exception:
+            price = 0.0
+        if price > 0 or abs(pct) > 1e-9:
+            valid_items.append(item)
+
+    primary_code = _pick_t0_primary_index_code(instrument_profile, ts_code=ts_code)
+    primary = dict(snapshot.get(primary_code) or {})
+    if not primary and valid_items:
+        primary = dict(valid_items[0] or {})
+        primary_code = str(primary.get('ts_code') or '')
+
+    pct_values = [float(item.get('pct_chg', 0) or 0) for item in valid_items]
+    positive_count = sum(1 for pct in pct_values if pct > 0)
+    negative_count = sum(1 for pct in pct_values if pct < 0)
+    avg_pct_chg = (sum(pct_values) / len(pct_values)) if pct_values else None
+    broad_negative_ratio = (negative_count / len(pct_values)) if pct_values else None
+
+    primary_pct_chg = None
+    primary_pct_delta = None
+    if primary:
+        try:
+            primary_pct_chg = float(primary.get('pct_chg', 0) or 0)
+        except Exception:
+            primary_pct_chg = None
+        try:
+            primary_pct_delta = float(primary.get('pct_chg_delta')) if primary.get('pct_chg_delta') is not None else None
+        except Exception:
+            primary_pct_delta = None
+
+    signals: list[str] = []
+    if primary_pct_chg is not None and primary_pct_chg <= _T0_INDEX_RISK_OFF_PRIMARY_PCT:
+        signals.append('primary_weak')
+    if avg_pct_chg is not None and avg_pct_chg <= _T0_INDEX_RISK_OFF_AVG_PCT:
+        signals.append('avg_weak')
+    if negative_count >= _T0_INDEX_RISK_OFF_NEGATIVE_COUNT:
+        signals.append('breadth_negative')
+
+    panic_selloff = bool(
+        primary_pct_chg is not None
+        and avg_pct_chg is not None
+        and primary_pct_chg <= _T0_INDEX_PANIC_PRIMARY_PCT
+        and avg_pct_chg <= _T0_INDEX_PANIC_AVG_PCT
+        and negative_count >= _T0_INDEX_PANIC_NEGATIVE_COUNT
+    )
+    risk_off = bool(len(signals) >= _T0_INDEX_RISK_OFF_MIN_SIGNALS)
+    risk_on = bool(
+        primary_pct_chg is not None
+        and avg_pct_chg is not None
+        and primary_pct_chg >= _T0_INDEX_RISK_ON_PRIMARY_PCT
+        and avg_pct_chg >= _T0_INDEX_RISK_ON_AVG_PCT
+        and positive_count >= _T0_INDEX_RISK_ON_POSITIVE_COUNT
+    )
+
+    state = 'neutral'
+    reason = 'balanced'
+    if panic_selloff:
+        state = 'panic_selloff'
+        reason = 'panic_selloff'
+    elif risk_off:
+        state = 'risk_off'
+        reason = signals[0] if signals else 'risk_off'
+    elif risk_on:
+        state = 'risk_on'
+        reason = 'broad_risk_on'
+
+    info.update({
+        'state': state,
+        'reason': reason,
+        'primary_index_code': str(primary_code or ''),
+        'primary_index_name': str(primary.get('name') or ''),
+        'primary_pct_chg': primary_pct_chg,
+        'primary_pct_delta': primary_pct_delta,
+        'avg_pct_chg': avg_pct_chg,
+        'positive_count': int(positive_count),
+        'negative_count': int(negative_count),
+        'valid_count': int(len(valid_items)),
+        'broad_negative_ratio': broad_negative_ratio,
+        'signals': list(dict.fromkeys(signals)),
+        'snapshot': [dict(item or {}) for item in snapshot.values()],
+        'by_code': {str(k): dict(v or {}) for k, v in snapshot.items()},
+    })
+    return info
 
 
 # ============================================================
@@ -730,6 +993,10 @@ _main_stock_concept_codes: dict[str, list[str]] = {}  # ts_code -> [board_code, 
 _main_stock_core_concept_code: dict[str, str] = {}    # ts_code -> core board_code
 _main_concept_snapshot: dict[str, dict] = {}        # concept_name -> ecology snapshot
 _main_industry_snapshot: dict[str, dict] = {}       # industry_name -> ecology snapshot
+_main_index_snapshot: dict[str, dict] = {}          # index_code -> last-good tick snapshot
+_main_index_context_cache: dict[str, dict] = {}     # index_code -> cached snapshot for T+0 market gate
+_main_index_context_at = 0.0
+_main_index_context_lock = threading.Lock()
 _main_instrument_profile: dict[str, dict] = {}      # ts_code -> instrument profile
 # 信号去重：(ts_code, signal_type) -> 上次触发 timestamp
 _main_signal_last_fire: dict[tuple, int] = {}

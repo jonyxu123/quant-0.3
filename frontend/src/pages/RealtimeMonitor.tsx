@@ -724,6 +724,66 @@ interface RuntimeHealthResp {
   summary?: { green: number; yellow: number; red: number }
   items: RuntimeHealthItem[]
 }
+interface T0IndexContextGate {
+  enabled?: boolean
+  blocked?: boolean
+  observe_only?: boolean
+  reason?: string
+  reasons?: string[]
+  state?: string
+  primary_index_code?: string
+  primary_index_name?: string
+  primary_pct_chg?: number | null
+  primary_pct_delta?: number | null
+  avg_pct_chg?: number | null
+  positive_count?: number
+  negative_count?: number
+  valid_count?: number
+  broad_negative_ratio?: number | null
+  signals?: string[]
+  distribution_ok?: boolean
+  distribution_confirm_count?: number
+  bearish_confirm_count?: number
+}
+interface T0IndexContext extends T0IndexContextGate {
+  snapshot?: Array<Record<string, any>>
+  by_code?: Record<string, Record<string, any>>
+}
+interface T0DiagRow {
+  ts_code: string
+  name: string
+  price?: number
+  pct_chg?: number
+  status: string
+  has_signal?: boolean
+  observe_only?: boolean
+  strength?: number
+  message?: string
+  veto?: string | null
+  trigger_items?: string[]
+  confirm_items?: string[]
+  candidate_reasons?: string[]
+  bearish_confirm_count?: number
+  main_rally_guard?: boolean
+  trend_guard?: Record<string, any>
+  positive_rebuild_quality?: Record<string, any>
+  t0_inventory?: Record<string, any>
+  market_structure?: Record<string, any>
+  feature_snapshot?: Record<string, any>
+  threshold?: Record<string, any>
+  index_context_gate?: T0IndexContextGate
+  index_context?: T0IndexContext
+  error?: string
+}
+interface T0DiagResp {
+  ok: boolean
+  checked_at: string
+  interesting_only: boolean
+  summary: Record<string, number>
+  rows_total: number
+  count: number
+  rows: T0DiagRow[]
+}
 interface ConceptSnapshotStateNode {
   count?: number
   updated_at?: number | null
@@ -3101,6 +3161,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
   const [healthOpen, setHealthOpen] = useState(false)
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResp | null>(null)
   const [runtimeHealthLoading, setRuntimeHealthLoading] = useState(false)
+  const [t0PositiveDiag, setT0PositiveDiag] = useState<T0DiagResp | null>(null)
+  const [t0PositiveDiagLoading, setT0PositiveDiagLoading] = useState(false)
+  const [t0ReverseDiag, setT0ReverseDiag] = useState<T0DiagResp | null>(null)
+  const [t0ReverseDiagLoading, setT0ReverseDiagLoading] = useState(false)
   const [conceptSnapshotStatus, setConceptSnapshotStatus] = useState<ConceptSnapshotStatusResp | null>(null)
   const [conceptSnapshotLoading, setConceptSnapshotLoading] = useState(false)
   const [conceptSnapshotRefreshLoading, setConceptSnapshotRefreshLoading] = useState(false)
@@ -3369,6 +3433,34 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
       .finally(() => setIndustryMappingCoverageLoading(false))
   }, [pool.pool_id])
 
+  const loadT0PositiveDiag = useCallback(() => {
+    if (pool.pool_id !== 2) {
+      setT0PositiveDiag(null)
+      return
+    }
+    setT0PositiveDiagLoading(true)
+    axios.get<T0DiagResp>(`${API}/api/realtime/runtime/t0_positive_diagnostics`, {
+      params: { limit: 12, interesting_only: true },
+    })
+      .then(r => setT0PositiveDiag(r.data || null))
+      .catch(() => {})
+      .finally(() => setT0PositiveDiagLoading(false))
+  }, [pool.pool_id])
+
+  const loadT0ReverseDiag = useCallback(() => {
+    if (pool.pool_id !== 2) {
+      setT0ReverseDiag(null)
+      return
+    }
+    setT0ReverseDiagLoading(true)
+    axios.get<T0DiagResp>(`${API}/api/realtime/runtime/t0_reverse_diagnostics`, {
+      params: { limit: 12, interesting_only: true },
+    })
+      .then(r => setT0ReverseDiag(r.data || null))
+      .catch(() => {})
+      .finally(() => setT0ReverseDiagLoading(false))
+  }, [pool.pool_id])
+
   const exportIndustryCoverageCsv = useCallback((kind: 'fallback' | 'unmatched') => {
     const items = kind === 'fallback'
       ? (industryMappingCoverage?.fallback_items || [])
@@ -3510,6 +3602,25 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     return () => clearInterval(timer)
   }, [loadRuntimeHealth, loadConceptSnapshotStatus, loadBoardCatalogStatus, loadIndustryMappingCoverage, healthOpen, marketStatus.is_open, marketStatus.status, pageVisible])
 
+  useEffect(() => {
+    if (pool.pool_id !== 2) {
+      setT0PositiveDiag(null)
+      setT0ReverseDiag(null)
+      return
+    }
+    if (!healthOpen) return
+    loadT0PositiveDiag()
+    loadT0ReverseDiag()
+    const preAuction = isPreAuctionStatus(marketStatus.status)
+    const baseMs = preAuction ? 90_000 : (marketStatus.is_open ? 30_000 : 120_000)
+    const visFactor = pageVisible ? 1 : 2
+    const timer = setInterval(() => {
+      loadT0PositiveDiag()
+      loadT0ReverseDiag()
+    }, Math.max(15_000, baseMs * visFactor))
+    return () => clearInterval(timer)
+  }, [pool.pool_id, healthOpen, loadT0PositiveDiag, loadT0ReverseDiag, marketStatus.is_open, marketStatus.status, pageVisible])
+
   const diffSignalTypeOptions = useMemo(() => {
     const st = new Set<string>()
     for (const r of (fastSlowDiff?.rows || [])) {
@@ -3532,6 +3643,81 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
     }
     return rows
   }, [fastSlowDiff, diffOnlyMismatch, diffSignalType])
+
+  const t0LogicOverviewPanels = useMemo(() => {
+    const positiveSummary = t0PositiveDiag?.summary || {}
+    const reverseSummary = t0ReverseDiag?.summary || {}
+    const positiveTriggered = Number(positiveSummary.triggered || 0)
+    const positiveObserveOnly = Number(positiveSummary.observe_only || 0)
+    const positiveIndexObserveOnly = Number(positiveSummary.index_observe_only || 0)
+    const reverseTriggered = Number(reverseSummary.triggered || 0)
+    const reverseObserveOnly = Number(reverseSummary.observe_only || 0)
+    const reverseIndexObserveOnly = Number(reverseSummary.index_observe_only || 0)
+    const sessionLabel = marketStatusLabel(marketStatus.status, marketStatus.desc)
+
+    return [
+      {
+        key: 'positive_t',
+        title: '正T回补',
+        color: C.red,
+        rows: [
+          { label: '动作语义', value: '先买后卖旧仓，做底仓回补，目标是降低日内成本' },
+          { label: '触发', value: '跌破下轨 或 VWAP偏离过深；默认更偏向“下杀后回补”而不是追涨' },
+          { label: '确认', value: 'GUB5转向 / 买盘承接 / 诱空 / 卖墙被吃 / 超大单偏多或净流入' },
+          { label: '执行前还要过', value: '防抖费用门 + 底仓状态门 + 回补质量门 + do_not_t环境门 + 指数门' },
+          { label: '当前诊断', value: `触发 ${positiveTriggered} · 仅观察 ${positiveObserveOnly} · 指数压制 ${positiveIndexObserveOnly}` },
+        ],
+      },
+      {
+        key: 'reverse_t',
+        title: '反T卖出',
+        color: C.green,
+        rows: [
+          { label: '动作语义', value: '先卖旧仓后低位买回，做利润锁定与回补' },
+          { label: '触发', value: '突破上轨 或 RobustZ 过热；默认是“冲高后分歧”才考虑反T' },
+          { label: '确认', value: '量价背离 / 卖墙堆积 / 托盘击穿 / 买入力衰减 / 超大单偏空或净流出' },
+          { label: '执行前还要过', value: '防抖费用门 + 底仓状态门 + 主升浪保护 + 主线题材保护 + 环境门 + 指数门' },
+          { label: '当前诊断', value: `触发 ${reverseTriggered} · 仅观察 ${reverseObserveOnly} · 指数压制 ${reverseIndexObserveOnly}` },
+        ],
+      },
+      {
+        key: 'shared_gate',
+        title: '共用门',
+        color: C.cyan,
+        rows: [
+          { label: 'anti_churn', value: '预期边际不足、反向切换太快、价差覆盖不了手续费时，直接拒绝' },
+          { label: 'inventory_state', value: '必须结合隔夜底仓、可T仓、保留仓、T现金、今日T次数来决定能不能执行' },
+          { label: 'dedup + 状态机', value: '正T去重120秒、反T90秒，反向信号互斥，信号默认约12分钟衰减' },
+          { label: '微观结构修正', value: '诱多/诱空/对倒/真实流入流出会再二次修正强度，不是原始分数直接上屏' },
+          { label: '核心定位', value: 'Pool2 不是抽象买卖点，而是底仓再平衡动作系统' },
+        ],
+      },
+      {
+        key: 'dynamic_threshold',
+        title: '动态阈值',
+        color: C.yellow,
+        rows: [
+          { label: '时段', value: '集合竞价与午休禁止新信号；9:30-9:35 更严格；14:57后禁止正T新增动作' },
+          { label: '波动环境', value: 'high_vol 收紧，low_vol 放宽，drought 收紧，seal_env 默认只观察' },
+          { label: '品种画像', value: '创业/科创更严格，ETF更平滑，风险警示股与上市早期默认更谨慎' },
+          { label: '涨跌停环境', value: '接近涨跌停、封板环境、量能枯竭会改变阈值或直接压成 observe_only' },
+          { label: '当前市场状态', value: sessionLabel },
+        ],
+      },
+      {
+        key: 'common_blockers',
+        title: '常见卡点',
+        color: C.bright,
+        rows: [
+          { label: '正T高频卡点', value: 't0_inventory_missing / recovery_quality_low / net_executable_edge_low / env_whitelist_missing / index_risk_off' },
+          { label: '反T高频卡点', value: 'trend_extension_guard / trend_surge_absorb_guard / theme_leadership_distribution_missing / env_whitelist_missing / index_risk_on_no_distribution' },
+          { label: '容易误会的点', value: '“有信号”不等于“可执行”，很多信号会被保留为仅观察样本' },
+          { label: '调参顺序', value: '先看环境门和底仓建模，再看触发阈值，最后才看单个分数字段' },
+          { label: '实盘检查顺序', value: '时段 -> 指数 -> 主线/环境 -> 底仓状态 -> 触发/确认 -> 回补质量或反T分歧' },
+        ],
+      },
+    ]
+  }, [marketStatus.desc, marketStatus.status, t0PositiveDiag, t0ReverseDiag])
 
   const exportFastSlowCsv = useCallback(() => {
     if (!fastSlowDiff || !Array.isArray(fastSlowDiff.rows)) return
@@ -5299,6 +5485,32 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             color: C.dim,
             lineHeight: 1.55,
           }
+          const renderParamRow = (
+            keyLabel: string,
+            value: React.ReactNode,
+            note: string,
+            valueColor: string = C.text,
+          ) => (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              padding: '4px 0',
+              borderBottom: '1px dashed rgba(255,255,255,0.05)',
+            }}>
+              <div>
+                {keyLabel}: <span style={{ color: valueColor }}>{value}</span>
+              </div>
+              <div style={{
+                color: 'rgba(200,205,216,0.7)',
+                fontSize: 9,
+                lineHeight: 1.45,
+                fontFamily: 'system-ui, sans-serif',
+              }}>
+                {note}
+              </div>
+            </div>
+          )
           return (
             <div style={{
               marginBottom: 12,
@@ -5345,54 +5557,57 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
               </button>
               {pool1StrategyUiOpen && (
                 <div style={{ padding: '0 12px 12px' }}>
+                  <div style={{ color: C.dim, fontSize: 10, marginBottom: 8 }}>
+                    保留原始参数 key 便于和配置/代码对照；每项下面补了中文释义，方便直接理解这组模板在控制什么。
+                  </div>
                   <div style={{
                     display: 'grid',
                     gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
                     gap: 8,
                   }}>
                     <div style={tileStyle}>
-                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>Timing Clear</div>
-                      <div>enabled: <span style={{ color: pool1ExitUi.enabled ? C.green : C.red }}>{String(pool1ExitUi.enabled)}</span></div>
-                      <div>min_hold_days: <span style={{ color: C.text }}>{pool1ExitUi.minHoldDays.toFixed(0)}d</span></div>
-                      <div>long_hold_days: <span style={{ color: C.text }}>{pool1ExitUi.longHoldDays.toFixed(0)}d</span></div>
-                      <div>long_hold_min_confirm: <span style={{ color: C.text }}>{pool1ExitUi.longHoldMinConfirm}</span></div>
-                      <div>allow_early_risk_exit: <span style={{ color: pool1ExitUi.allowEarlyRiskExit ? C.green : C.red }}>{String(pool1ExitUi.allowEarlyRiskExit)}</span></div>
-                      <div>observe_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.observeReduceRatio)}</span></div>
-                      <div>partial_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.partialReduceRatio)}</span></div>
-                      <div>beta_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.betaReduceRatio)}</span></div>
-                      <div>atr_bucket: <span style={{ color: C.text }}>低波&lt;{pct(pool1ExitUi.atrLowPct, 1)} / 高波&gt;{pct(pool1ExitUi.atrHighPct, 1)}</span></div>
-                      <div>atr_confirm_bias: <span style={{ color: C.text }}>低波+{pool1ExitUi.atrLowExtraConfirm} / 高波-{pool1ExitUi.atrHighRelaxConfirm}</span></div>
-                      <div>bid_ask_weak_ratio: <span style={{ color: C.text }}>{pool1ExitUi.bidAskWeakRatio.toFixed(2)}</span></div>
-                      <div>net_outflow_bps: <span style={{ color: C.text }}>大单{pool1ExitUi.bigNetOutflowBpsTh.toFixed(0)} / 超大{pool1ExitUi.superNetOutflowBpsTh.toFixed(0)}</span></div>
+                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>Timing Clear 退出规则</div>
+                      {renderParamRow('enabled', String(pool1ExitUi.enabled), '是否启用这组 Pool1 退出模板。', pool1ExitUi.enabled ? C.green : C.red)}
+                      {renderParamRow('min_hold_days', `${pool1ExitUi.minHoldDays.toFixed(0)}d`, '最短持仓天数，未达到前优先不做主动退出。')}
+                      {renderParamRow('long_hold_days', `${pool1ExitUi.longHoldDays.toFixed(0)}d`, '进入长持观察档的天数门槛，超过后退出会更强调趋势破坏而不是短噪音。')}
+                      {renderParamRow('long_hold_min_confirm', pool1ExitUi.longHoldMinConfirm, '长持状态下至少需要多少个确认项，才升级为更明确的退出动作。')}
+                      {renderParamRow('allow_early_risk_exit', String(pool1ExitUi.allowEarlyRiskExit), '持仓早期如果出现明显风险恶化，是否允许提前退出。', pool1ExitUi.allowEarlyRiskExit ? C.green : C.red)}
+                      {renderParamRow('observe_reduce_ratio', pct(pool1ExitUi.observeReduceRatio), '仅观察级退出时的建议减仓比例，偏保守。')}
+                      {renderParamRow('partial_reduce_ratio', pct(pool1ExitUi.partialReduceRatio), '标准部分减仓比例，用于趋势转弱但未完全破坏的场景。')}
+                      {renderParamRow('beta_reduce_ratio', pct(pool1ExitUi.betaReduceRatio), '市场 Beta 风险抬升时的减仓比例，更偏系统性风险收缩。')}
+                      {renderParamRow('atr_bucket', `低波<${pct(pool1ExitUi.atrLowPct, 1)} / 高波>${pct(pool1ExitUi.atrHighPct, 1)}`, '按 ATR 百分比分层，决定当前个股属于低波模板还是高波模板。')}
+                      {renderParamRow('atr_confirm_bias', `低波+${pool1ExitUi.atrLowExtraConfirm} / 高波-${pool1ExitUi.atrHighRelaxConfirm}`, '低波股退出需要更严格确认，高波股允许适当放宽。')}
+                      {renderParamRow('bid_ask_weak_ratio', pool1ExitUi.bidAskWeakRatio.toFixed(2), '买卖盘比弱于该值时，视为盘口承接开始转弱。')}
+                      {renderParamRow('net_outflow_bps', `大单${pool1ExitUi.bigNetOutflowBpsTh.toFixed(0)} / 超大${pool1ExitUi.superNetOutflowBpsTh.toFixed(0)}`, '大单与超大单净流出阈值，超过后认为资金面明显走弱。')}
                     </div>
                     <div style={tileStyle}>
-                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>AVWAP Exit</div>
-                      <div>entry_cost_break_pct: <span style={{ color: C.text }}>{pool1ExitUi.entryCostBreakPct.toFixed(2)}%</span></div>
-                      <div>entry_avwap_break_pct: <span style={{ color: C.text }}>{pool1ExitUi.entryAvwapBreakPct.toFixed(2)}%</span></div>
-                      <div>entry_day_avwap: <span style={{ color: C.red }}>{pct(pool1ExitUi.entryAvwapReduceRatio)}</span></div>
-                      <div>breakout_day_avwap: <span style={{ color: C.yellow }}>{pct(pool1ExitUi.breakoutAvwapReduceRatio)}</span></div>
-                      <div>event_day_avwap: <span style={{ color: C.yellow }}>{pct(pool1ExitUi.eventAvwapReduceRatio)}</span></div>
-                      <div>session_avwap: <span style={{ color: C.cyan }}>{pct(pool1ExitUi.sessionAvwapReduceRatio)}</span></div>
-                      <div>entry_cost_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.entryCostReduceRatio)}</span></div>
-                      <div>avwap_soft_weak_reduce_ratio: <span style={{ color: C.text }}>{pct(pool1ExitUi.avwapSoftWeakReduceRatio)}</span></div>
-                      <div>intraday_avwap_min_bars: <span style={{ color: C.text }}>{pool1ExitUi.intradayAvwapMinBars}</span></div>
-                      <div>session_avwap_enabled: <span style={{ color: pool1ExitUi.sessionAvwapEnabled ? C.green : C.red }}>{String(pool1ExitUi.sessionAvwapEnabled)}</span></div>
-                      <div>flow_confirm_required: <span style={{ color: pool1ExitUi.timingClearAvwapFlowRequired ? C.green : C.red }}>{String(pool1ExitUi.timingClearAvwapFlowRequired)}</span></div>
+                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>AVWAP Exit 锚点</div>
+                      {renderParamRow('entry_cost_break_pct', `${pool1ExitUi.entryCostBreakPct.toFixed(2)}%`, '跌破建仓成本多少后，视为成本锚开始失守。')}
+                      {renderParamRow('entry_avwap_break_pct', `${pool1ExitUi.entryAvwapBreakPct.toFixed(2)}%`, '跌破建仓日 AVWAP 多少后，视为主控成本锚失守。')}
+                      {renderParamRow('entry_day_avwap', pct(pool1ExitUi.entryAvwapReduceRatio), '失守建仓日 AVWAP 时建议使用的减仓比例。', C.red)}
+                      {renderParamRow('breakout_day_avwap', pct(pool1ExitUi.breakoutAvwapReduceRatio), '失守突破日 AVWAP 时建议使用的减仓比例。', C.yellow)}
+                      {renderParamRow('event_day_avwap', pct(pool1ExitUi.eventAvwapReduceRatio), '失守事件日 AVWAP 时建议使用的减仓比例。', C.yellow)}
+                      {renderParamRow('session_avwap', pct(pool1ExitUi.sessionAvwapReduceRatio), '失守会话 AVWAP 时的轻量减仓比例，更偏日内收敛。', C.cyan)}
+                      {renderParamRow('entry_cost_reduce_ratio', pct(pool1ExitUi.entryCostReduceRatio), '仅成本锚转弱、但未完全坏掉时的减仓比例。')}
+                      {renderParamRow('avwap_soft_weak_reduce_ratio', pct(pool1ExitUi.avwapSoftWeakReduceRatio), 'AVWAP 轻微软化时的试探性减仓比例，用于先收一部分风险。')}
+                      {renderParamRow('intraday_avwap_min_bars', pool1ExitUi.intradayAvwapMinBars, '盘中至少累计多少根 bar 后，才启用 intraday/session AVWAP 判断。')}
+                      {renderParamRow('session_avwap_enabled', String(pool1ExitUi.sessionAvwapEnabled), '是否启用 session AVWAP 这条盘中会话锚。', pool1ExitUi.sessionAvwapEnabled ? C.green : C.red)}
+                      {renderParamRow('flow_confirm_required', String(pool1ExitUi.timingClearAvwapFlowRequired), '是否要求 AVWAP 失守同时伴随资金流/承接转弱确认。', pool1ExitUi.timingClearAvwapFlowRequired ? C.green : C.red)}
                     </div>
                     <div style={tileStyle}>
-                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>Rebuild</div>
-                      <div>enabled: <span style={{ color: pool1RebuildUi.enabled ? C.green : C.red }}>{String(pool1RebuildUi.enabled)}</span></div>
-                      <div>require_stage1_pass: <span style={{ color: pool1RebuildUi.requireStage1Pass ? C.green : C.red }}>{String(pool1RebuildUi.requireStage1Pass)}</span></div>
-                      <div>add_ratio: <span style={{ color: C.text }}>{pct(pool1RebuildUi.addRatio)}</span></div>
-                      <div>min_position_gap: <span style={{ color: C.text }}>{pct(pool1RebuildUi.minPositionGap)}</span></div>
-                      <div>min_minutes_after_reduce: <span style={{ color: C.text }}>{pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m</span></div>
-                      <div>min_signal_strength: <span style={{ color: C.text }}>{pool1RebuildUi.minSignalStrength.toFixed(0)}</span></div>
-                      <div>observe_tier_bias: <span style={{ color: pool1RebuildUi.observeTierAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.observeTierAddRatioBias)}</span></div>
-                      <div>full_tier_bias: <span style={{ color: pool1RebuildUi.fullTierAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.fullTierAddRatioBias)}</span></div>
-                      <div>soft_source_bias: <span style={{ color: pool1RebuildUi.softSourceAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.softSourceAddRatioBias)}</span></div>
-                      <div>core_source_bias: <span style={{ color: pool1RebuildUi.coreSourceAddRatioBias >= 0 ? C.green : C.red }}>{signedPct(pool1RebuildUi.coreSourceAddRatioBias)}</span></div>
-                      <div>extra_delay: <span style={{ color: C.text }}>full +{pool1RebuildUi.fullTierExtraDelayMinutes.toFixed(0)}m / core +{pool1RebuildUi.coreSourceExtraDelayMinutes.toFixed(0)}m</span></div>
-                      <div>allow_modes: <span style={{ color: C.text }}>左侧{pool1RebuildUi.allowLeftSideBuy ? 'Y' : 'N'} / 右侧{pool1RebuildUi.allowRightSideBreakout ? 'Y' : 'N'}</span></div>
+                      <div style={{ color: C.cyan, fontSize: 11, marginBottom: 6 }}>Rebuild 回补规则</div>
+                      {renderParamRow('enabled', String(pool1RebuildUi.enabled), '是否启用减仓后的回补模板。', pool1RebuildUi.enabled ? C.green : C.red)}
+                      {renderParamRow('require_stage1_pass', String(pool1RebuildUi.requireStage1Pass), '回补前是否必须先通过 Pool1 的 stage1 日线/结构筛选。', pool1RebuildUi.requireStage1Pass ? C.green : C.red)}
+                      {renderParamRow('add_ratio', pct(pool1RebuildUi.addRatio), '默认回补比例，是后续各种 bias 修正前的基准值。')}
+                      {renderParamRow('min_position_gap', pct(pool1RebuildUi.minPositionGap), '当前仓位距离目标仓位至少还要留出多少缺口，才允许继续回补。')}
+                      {renderParamRow('min_minutes_after_reduce', `${pool1RebuildUi.minMinutesAfterReduce.toFixed(0)}m`, '距离上一次减仓至少等待多久，避免刚减完又立刻追着补。')}
+                      {renderParamRow('min_signal_strength', pool1RebuildUi.minSignalStrength.toFixed(0), '回补信号至少达到的强度门槛，低于它只看不动。')}
+                      {renderParamRow('observe_tier_bias', signedPct(pool1RebuildUi.observeTierAddRatioBias), '来自观察级信号时，对回补比例做的修正。', pool1RebuildUi.observeTierAddRatioBias >= 0 ? C.green : C.red)}
+                      {renderParamRow('full_tier_bias', signedPct(pool1RebuildUi.fullTierAddRatioBias), '来自 full 级退出背景时，对回补比例的额外修正，通常更谨慎。', pool1RebuildUi.fullTierAddRatioBias >= 0 ? C.green : C.red)}
+                      {renderParamRow('soft_source_bias', signedPct(pool1RebuildUi.softSourceAddRatioBias), '减仓来源偏软时，对回补比例的修正。', pool1RebuildUi.softSourceAddRatioBias >= 0 ? C.green : C.red)}
+                      {renderParamRow('core_source_bias', signedPct(pool1RebuildUi.coreSourceAddRatioBias), '减仓来源属于核心风险源时，对回补比例的修正。', pool1RebuildUi.coreSourceAddRatioBias >= 0 ? C.green : C.red)}
+                      {renderParamRow('extra_delay', `full +${pool1RebuildUi.fullTierExtraDelayMinutes.toFixed(0)}m / core +${pool1RebuildUi.coreSourceExtraDelayMinutes.toFixed(0)}m`, 'full 级和核心风险源场景下，需要额外等待多久再允许回补。')}
+                      {renderParamRow('allow_modes', `左侧${pool1RebuildUi.allowLeftSideBuy ? 'Y' : 'N'} / 右侧${pool1RebuildUi.allowRightSideBreakout ? 'Y' : 'N'}`, '允许哪些信号模式驱动回补，分别对应左侧回收和右侧延续。')}
                     </div>
                   </div>
                 </div>
@@ -6641,7 +6856,7 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
             </span>
             <div style={{ flex: 1 }} />
             <button
-              onClick={() => { loadRuntimeHealth(); loadConceptSnapshotStatus(); loadBoardCatalogStatus(); loadIndustryMappingCoverage() }}
+              onClick={() => { loadRuntimeHealth(); loadConceptSnapshotStatus(); loadBoardCatalogStatus(); loadIndustryMappingCoverage(); loadT0PositiveDiag(); loadT0ReverseDiag() }}
               style={{ fontSize: 10, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, padding: '2px 6px', cursor: 'pointer' }}
             >
               刷新
@@ -7003,10 +7218,10 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                   </div>
                 </div>
               )}
-              {unmatchedIndustryGroups.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ color: C.dim }}>未命中行业聚合:</div>
+            {unmatchedIndustryGroups.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ color: C.dim }}>未命中行业聚合:</div>
                     <button
                       onClick={exportUnmatchedIndustryGroupCsv}
                       style={{
@@ -7057,6 +7272,204 @@ function PoolPanel({ pool, onChanged }: { pool: PoolInfo; onChanged: () => void 
                 <div style={{ color: C.dim }}>暂无行业映射覆盖率数据</div>
               )}
             </div>
+            {pool.pool_id === 2 && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                background: 'rgba(0,0,0,0.2)',
+                border: `1px solid ${C.border}`,
+                borderRadius: 4,
+                padding: '6px 8px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 4, background: C.cyan, display: 'inline-block' }} />
+                  <span style={{ color: C.bright, minWidth: 180 }}>t0_logic_overview</span>
+                  <span style={{ color: C.dim }}>当前代码口径的 T+0 执行链路说明</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 8 }}>
+                  {t0LogicOverviewPanels.map((panel) => (
+                    <div
+                      key={panel.key}
+                      style={{
+                        border: `1px solid ${C.border}`,
+                        borderRadius: 4,
+                        padding: '8px 10px',
+                        background: 'rgba(255,255,255,0.02)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ color: panel.color, fontWeight: 700 }}>{panel.title}</span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                        {panel.rows.map((row) => (
+                          <div key={`${panel.key}-${row.label}`} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <div style={{ color: C.dim }}>{row.label}</div>
+                            <div style={{ color: C.text, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.45 }}>
+                              {row.value}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {pool.pool_id === 2 && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                background: 'rgba(0,0,0,0.2)',
+                border: `1px solid ${C.border}`,
+                borderRadius: 4,
+                padding: '6px 8px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 4, background: C.cyan, display: 'inline-block' }} />
+                  <span style={{ color: C.bright, minWidth: 180 }}>t0_index_gate_diagnostics</span>
+                  <span style={{ color: C.dim }}>
+                    {t0PositiveDiag?.checked_at ? new Date(t0PositiveDiag.checked_at).toLocaleTimeString() : (t0ReverseDiag?.checked_at ? new Date(t0ReverseDiag.checked_at).toLocaleTimeString() : '--:--:--')}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 8 }}>
+                  {[
+                    {
+                      key: 'positive_t',
+                      title: '正T指数门',
+                      color: C.red,
+                      loading: t0PositiveDiagLoading,
+                      data: t0PositiveDiag,
+                    },
+                    {
+                      key: 'reverse_t',
+                      title: '反T指数门',
+                      color: C.green,
+                      loading: t0ReverseDiagLoading,
+                      data: t0ReverseDiag,
+                    },
+                  ].map((panel) => {
+                    const summary = panel.data?.summary || {}
+                    const rows = panel.data?.rows || []
+                    const triggerCount = Number(summary.triggered || 0)
+                    const observeCount = Number(summary.observe_only || 0)
+                    const indexObserveCount = Number(summary.index_observe_only || 0)
+                    const extraIndexCount = panel.key === 'positive_t'
+                      ? `恐慌:${Number(summary.index_panic_selloff || 0)} · risk_off:${Number(summary.index_risk_off || 0)}`
+                      : `risk_on分歧不足:${Number(summary.index_risk_on_no_distribution || 0)}`
+                    return (
+                      <div
+                        key={panel.key}
+                        style={{
+                          border: `1px solid ${C.border}`,
+                          borderRadius: 4,
+                          padding: '8px 10px',
+                          background: 'rgba(255,255,255,0.02)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 6,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ color: panel.color, fontWeight: 700 }}>{panel.title}</span>
+                          <span style={{ color: C.dim }}>
+                            {panel.loading ? '加载中...' : `样本 ${Number(panel.data?.count || 0)} / ${Number(panel.data?.rows_total || 0)}`}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, color: C.dim }}>
+                          <span>触发 <span style={{ color: triggerCount > 0 ? panel.color : C.text }}>{triggerCount}</span></span>
+                          <span>仅观察 <span style={{ color: observeCount > 0 ? C.yellow : C.text }}>{observeCount}</span></span>
+                          <span>指数压制 <span style={{ color: indexObserveCount > 0 ? C.yellow : C.text }}>{indexObserveCount}</span></span>
+                          <span>{extraIndexCount}</span>
+                        </div>
+                        {panel.loading && <div style={{ color: C.dim }}>正在拉取诊断数据...</div>}
+                        {!panel.loading && rows.length <= 0 && (
+                          <div style={{ color: C.dim }}>暂无有代表性的样本</div>
+                        )}
+                        {!panel.loading && rows.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {rows.slice(0, 6).map((row) => {
+                              const indexGate = row.index_context_gate || {}
+                              const reasons = Array.isArray(indexGate.reasons) ? indexGate.reasons : []
+                              const primaryLabel = String(indexGate.primary_index_name || indexGate.primary_index_code || '--')
+                              const stateLabel = t0IndexStateLabel(String(indexGate.state || ''))
+                              const stateColor = t0IndexStateColor(String(indexGate.state || ''))
+                              const statusLabel = t0DiagStatusLabel(row.status)
+                              const statusColor = t0DiagStatusColor(row.status)
+                              const reasonText = reasons.length > 0
+                                ? reasons.map((x: any) => t0IndexGateReasonLabel(String(x || ''))).join(' / ')
+                                : t0IndexGateReasonLabel(String(indexGate.reason || ''))
+                              return (
+                                <div
+                                  key={`${panel.key}-${row.ts_code}`}
+                                  style={{
+                                    border: `1px solid ${C.border}`,
+                                    borderRadius: 4,
+                                    padding: '6px 8px',
+                                    background: 'rgba(0,0,0,0.18)',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: 4,
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <button
+                                      onClick={() => locateMemberCard(row.ts_code)}
+                                      style={{
+                                        background: 'transparent',
+                                        border: 'none',
+                                        padding: 0,
+                                        color: C.cyan,
+                                        cursor: 'pointer',
+                                        fontSize: 10,
+                                        fontFamily: 'monospace',
+                                      }}
+                                      title={`定位 ${row.name || row.ts_code}`}
+                                    >
+                                      {row.ts_code}
+                                    </button>
+                                    <span style={{ color: C.bright }}>{row.name || '--'}</span>
+                                    <span style={{ color: statusColor, marginLeft: 'auto' }}>{statusLabel}</span>
+                                  </div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, color: C.dim }}>
+                                    <span>强度 <span style={{ color: C.text }}>{Number.isFinite(Number(row.strength ?? NaN)) ? Number(row.strength).toFixed(0) : '--'}</span></span>
+                                    <span>价格 <span style={{ color: C.text }}>{Number.isFinite(Number(row.price ?? NaN)) ? Number(row.price).toFixed(3) : '--'}</span></span>
+                                    <span>涨跌 <span style={{ color: Number(row.pct_chg ?? 0) >= 0 ? C.red : C.green }}>{fmtSignedPct(Number(row.pct_chg ?? NaN))}</span></span>
+                                    <span>指数状态 <span style={{ color: stateColor }}>{stateLabel}</span></span>
+                                  </div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, color: C.dim }}>
+                                    <span>{primaryLabel}</span>
+                                    <span style={{ color: C.text }}>{fmtSignedPct(Number(indexGate.primary_pct_chg ?? NaN))}</span>
+                                    <span>均值 <span style={{ color: C.text }}>{fmtSignedPct(Number(indexGate.avg_pct_chg ?? NaN))}</span></span>
+                                    <span>广度 <span style={{ color: C.text }}>{`${String(indexGate.positive_count ?? '--')}↑/${String(indexGate.negative_count ?? '--')}↓`}</span></span>
+                                  </div>
+                                  <div style={{ color: (indexGate.observe_only || indexGate.blocked) ? C.yellow : C.dim, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                                    指数门: {reasonText || '--'}
+                                  </div>
+                                  {row.message && (
+                                    <div style={{ color: C.dim, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                                      信号: {row.message}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
             {!runtimeHealthLoading && runtimeHealth && (runtimeHealth.items || []).map((it, idx) => {
               const lvl = it.level
               const lvlColor = lvl === 'red' ? C.red : lvl === 'yellow' ? C.yellow : C.green
@@ -8514,18 +8927,23 @@ function SignalBadge({ signal, onOpenDetail }: { signal: Signal; onOpenDetail?: 
   const themeGuard = themeGuardRaw && typeof themeGuardRaw === 'object' ? themeGuardRaw as Record<string, any> : null
   const doNotTEnvRaw = details.do_not_t_env
   const doNotTEnv = doNotTEnvRaw && typeof doNotTEnvRaw === 'object' ? doNotTEnvRaw as Record<string, any> : null
+  const indexGateRaw = details.index_context_gate
+  const indexGate = indexGateRaw && typeof indexGateRaw === 'object' ? indexGateRaw as Record<string, any> : null
   const trendGuardActive = Boolean(trendGuard?.active ?? trendGuard?.guard)
   const trendGuardOverride = Boolean(details.trend_guard_override)
   const surgeAbsorbGuard = Boolean(trendGuard?.surge_absorb_guard)
   const themeGuardActive = Boolean(themeGuard?.active)
   const themeGuardObserveOnly = Boolean(themeGuard?.observe_only)
   const doNotTEnvReasons = Array.isArray(doNotTEnv?.reasons) ? doNotTEnv.reasons as any[] : []
+  const indexGateReasons = Array.isArray(indexGate?.reasons) ? indexGate.reasons as any[] : []
   const trendGuardParts: string[] = []
   if (vetoLabel) trendGuardParts.push(`保护:${vetoLabel}`)
   else if (surgeAbsorbGuard) trendGuardParts.push('保护:强延续监控')
   else if (trendGuardActive) trendGuardParts.push('保护:主升浪监控')
   if (themeGuardActive) trendGuardParts.push(themeGuardObserveOnly ? '主线保护:仅观察' : '主线保护:已确认分歧')
   if (doNotTEnvReasons.length > 0) trendGuardParts.push(`T环境:${String(doNotTEnvReasons[0])}`)
+  if (indexGateReasons.length > 0) trendGuardParts.push(`指数门:${t0IndexGateReasonLabel(String(indexGateReasons[0]))}`)
+  else if (indexGate && String(indexGate.state || '') && String(indexGate.state || '') !== 'neutral') trendGuardParts.push(`指数:${t0IndexStateLabel(String(indexGate.state || ''))}`)
   if (trendGuardOverride) trendGuardParts.push('已突破保护')
   if (typeof trendGuard?.required_bearish_confirms === 'number') trendGuardParts.push(`需偏空确认:${trendGuard.required_bearish_confirms}`)
   if (Array.isArray(trendGuard?.bearish_confirms) && trendGuard.bearish_confirms.length > 0) {
@@ -8776,6 +9194,79 @@ function sessionPolicyColor(policy?: string | null, phaseDetail?: string | null)
   return C.dim
 }
 
+function t0IndexStateLabel(state?: string | null): string {
+  const key = String(state || '').trim()
+  const map: Record<string, string> = {
+    panic_selloff: '指数恐慌杀跌',
+    risk_off: '指数风险偏好弱',
+    risk_on: '指数广谱修复',
+    neutral: '指数中性',
+    missing: '指数快照缺失',
+    disabled: '指数门关闭',
+  }
+  return map[key] || key || '--'
+}
+
+function t0IndexStateColor(state?: string | null): string {
+  const key = String(state || '').trim()
+  if (key === 'panic_selloff') return C.red
+  if (key === 'risk_off') return '#fb7185'
+  if (key === 'risk_on') return C.cyan
+  if (key === 'neutral') return C.green
+  if (key === 'missing') return C.yellow
+  return C.dim
+}
+
+function t0IndexGateReasonLabel(reason?: string | null): string {
+  const key = String(reason || '').trim()
+  const map: Record<string, string> = {
+    index_panic_selloff: '指数恐慌下仅观察',
+    index_risk_off: '指数风险偏弱仅观察',
+    index_risk_on_no_distribution: '指数强修复且分歧不足',
+    panic_selloff: '指数恐慌杀跌',
+    broad_risk_on: '指数广谱修复',
+    balanced: '指数中性',
+    snapshot_missing: '指数快照缺失',
+    missing: '指数快照缺失',
+    disabled: '指数门关闭',
+  }
+  return map[key] || key || '--'
+}
+
+function fmtSignedPct(value?: number | null, digits = 2): string {
+  if (value == null || !Number.isFinite(Number(value))) return '--'
+  const num = Number(value)
+  return `${num > 0 ? '+' : ''}${num.toFixed(digits)}%`
+}
+
+function t0DiagStatusLabel(status?: string | null): string {
+  const key = String(status || '').trim()
+  const map: Record<string, string> = {
+    triggered: '已触发',
+    trigger_observe_only: '触发仅观察',
+    veto: 'Veto',
+    surge_guard_veto: '强攻保护拦截',
+    guard_veto: '趋势保护拦截',
+    trigger_no_confirm: '触发未确认',
+    trigger_score_filtered: '触发但分数不足',
+    candidate: '候选',
+    idle: '空闲',
+    off_session_skip: '非交易时段',
+    error: '异常',
+  }
+  return map[key] || key || '--'
+}
+
+function t0DiagStatusColor(status?: string | null): string {
+  const key = String(status || '').trim()
+  if (key === 'triggered') return C.red
+  if (key === 'trigger_observe_only') return C.yellow
+  if (key === 'surge_guard_veto' || key === 'guard_veto' || key === 'veto' || key === 'error') return C.red
+  if (key === 'candidate') return C.cyan
+  if (key === 'trigger_no_confirm' || key === 'trigger_score_filtered') return '#fb7185'
+  return C.dim
+}
+
 function marketStatusLabel(status?: string | null, desc?: string | null): string {
   const s = String(status || '').trim()
   const map: Record<string, string> = {
@@ -8881,6 +9372,12 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
   const doNotTEnv = details.do_not_t_env && typeof details.do_not_t_env === 'object'
     ? details.do_not_t_env as Record<string, any>
     : null
+  const indexContextGate = details.index_context_gate && typeof details.index_context_gate === 'object'
+    ? details.index_context_gate as Record<string, any>
+    : null
+  const indexContext = details.index_context && typeof details.index_context === 'object'
+    ? details.index_context as Record<string, any>
+    : null
   const pool1Decision = details.pool1_decision && typeof details.pool1_decision === 'object'
     ? details.pool1_decision as Record<string, any>
     : null
@@ -8930,6 +9427,9 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
   const themeDistributionEvidence = Array.isArray(themeLeadershipGuard?.distribution_evidence) ? themeLeadershipGuard.distribution_evidence as any[] : []
   const doNotTEnvReasons = Array.isArray(doNotTEnv?.reasons) ? doNotTEnv.reasons as any[] : []
   const doNotTEnvWhitelist = Array.isArray(doNotTEnv?.whitelist_reasons) ? doNotTEnv.whitelist_reasons as any[] : []
+  const indexGateReasons = Array.isArray(indexContextGate?.reasons) ? indexContextGate.reasons as any[] : []
+  const indexGateSignals = Array.isArray(indexContextGate?.signals) ? indexContextGate.signals as any[] : []
+  const indexSnapshotCount = Array.isArray(indexContext?.snapshot) ? indexContext.snapshot.length : 0
   const sessionLabel = sessionPolicyLabel(
     typeof threshold?.session_policy === 'string' ? threshold.session_policy : '',
     typeof threshold?.market_phase_detail === 'string' ? threshold.market_phase_detail : '',
@@ -9402,7 +9902,7 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
                 <div>negative_flags: <span style={{ color: C.text }}>{negativeFlags.length > 0 ? negativeFlags.join(', ') : '--'}</span></div>
               </div>
             )}
-            {(themeLeadershipGuard || doNotTEnv) && (
+            {(themeLeadershipGuard || doNotTEnv || indexContextGate) && (
               <div style={{
                 background: 'rgba(0,0,0,0.22)',
                 border: `1px solid ${C.border}`,
@@ -9427,9 +9927,28 @@ function SignalDetailModal({ signal, stockCode, stockName, conceptSnapshotStatus
                     <div>distribution_evidence: <span style={{ color: themeDistributionEvidence.length > 0 ? C.yellow : C.text }}>{themeDistributionEvidence.length > 0 ? themeDistributionEvidence.join(', ') : '--'}</span></div>
                   </>
                 )}
+                {indexContextGate && (
+                  <>
+                    <div style={{ marginTop: (themeLeadershipGuard || doNotTEnv) ? 4 : 0, color: C.bright }}>index_context_gate</div>
+                    <div>state: <span style={{ color: t0IndexStateColor(String(indexContextGate.state || '')) }}>{t0IndexStateLabel(String(indexContextGate.state || '--'))}</span></div>
+                    <div>observe_only: <span style={{ color: indexContextGate.observe_only ? C.yellow : C.text }}>{String(Boolean(indexContextGate.observe_only))}</span></div>
+                    <div>blocked: <span style={{ color: indexContextGate.blocked ? C.red : C.text }}>{String(Boolean(indexContextGate.blocked))}</span></div>
+                    <div>reason: <span style={{ color: (indexGateReasons.length > 0 || indexContextGate.observe_only || indexContextGate.blocked) ? C.yellow : C.text }}>{t0IndexGateReasonLabel(String(indexContextGate.reason || '--'))}</span></div>
+                    <div>reasons: <span style={{ color: indexGateReasons.length > 0 ? C.yellow : C.text }}>{indexGateReasons.length > 0 ? indexGateReasons.map((x: any) => t0IndexGateReasonLabel(String(x || ''))).join(', ') : '--'}</span></div>
+                    <div>primary_index: <span style={{ color: C.text }}>{`${String(indexContextGate.primary_index_name || indexContextGate.primary_index_code || '--')} (${fmtSignedPct(Number(indexContextGate.primary_pct_chg ?? NaN))})`}</span></div>
+                    <div>primary_delta: <span style={{ color: C.text }}>{fmtSignedPct(Number(indexContextGate.primary_pct_delta ?? NaN))}</span></div>
+                    <div>avg_pct_chg: <span style={{ color: C.text }}>{fmtSignedPct(Number(indexContextGate.avg_pct_chg ?? NaN))}</span></div>
+                    <div>breadth: <span style={{ color: C.text }}>{`${String(indexContextGate.positive_count ?? '--')}↑ / ${String(indexContextGate.negative_count ?? '--')}↓ / ${String(indexContextGate.valid_count ?? '--')} valid`}</span></div>
+                    <div>snapshot_count: <span style={{ color: C.text }}>{String(indexSnapshotCount || '--')}</span></div>
+                    <div>signals: <span style={{ color: indexGateSignals.length > 0 ? C.yellow : C.text }}>{indexGateSignals.length > 0 ? indexGateSignals.join(', ') : '--'}</span></div>
+                    <div>distribution_ok: <span style={{ color: indexContextGate.distribution_ok ? C.green : C.text }}>{String(indexContextGate.distribution_ok ?? '--')}</span></div>
+                    <div>distribution_confirm_count: <span style={{ color: C.text }}>{String(indexContextGate.distribution_confirm_count ?? '--')}</span></div>
+                    <div>bearish_confirm_count: <span style={{ color: C.text }}>{String(indexContextGate.bearish_confirm_count ?? '--')}</span></div>
+                  </>
+                )}
                 {doNotTEnv && (
                   <>
-                    <div style={{ marginTop: themeLeadershipGuard ? 4 : 0, color: C.bright }}>do_not_t_env</div>
+                    <div style={{ marginTop: (themeLeadershipGuard || indexContextGate) ? 4 : 0, color: C.bright }}>do_not_t_env</div>
                     <div>blocked: <span style={{ color: doNotTEnv.blocked ? C.yellow : C.text }}>{String(Boolean(doNotTEnv.blocked))}</span></div>
                     <div>reason: <span style={{ color: doNotTEnv.blocked ? C.yellow : C.text }}>{String(doNotTEnv.reason || '--')}</span></div>
                     <div>reasons: <span style={{ color: doNotTEnvReasons.length > 0 ? C.yellow : C.text }}>{doNotTEnvReasons.length > 0 ? doNotTEnvReasons.join(', ') : '--'}</span></div>
